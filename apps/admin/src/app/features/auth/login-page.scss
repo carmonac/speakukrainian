@@ -1,0 +1,25 @@
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--mat-sys-surface-container, #f3edf7);
+
+  &__card {
+    width: min(400px, 100%);
+    overflow: hidden;
+  }
+
+  &__form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  &__error {
+    margin: 0 0 8px;
+    color: var(--mat-sys-error, #b3261e);
+    font-size: 0.875rem;
+  }
+}

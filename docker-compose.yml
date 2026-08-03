@@ -1,0 +1,53 @@
+name: speakukrainian
+
+# Local backing services. None of this runs in production — Cloud Run talks to
+# real Firestore and Cloud Storage.
+services:
+  # Firestore + Auth emulators. `firebase.json` in the mounted workspace decides
+  # which emulators start and on which ports.
+  firebase:
+    build:
+      context: ./docker/firebase
+    working_dir: /workspace
+    command:
+      - firebase
+      - emulators:start
+      - --project=speakukrainian-local
+      - --only=firestore,auth
+      - --import=/workspace/.data
+      - --export-on-exit=/workspace/.data
+    ports:
+      - '8081:8081' # Firestore
+      - '9099:9099' # Auth
+      - '4001:4001' # Emulator UI
+    volumes:
+      - ./docker/firebase:/workspace
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:8081/']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Stands in for Cloud Storage. `-scheme http` avoids TLS trust setup and
+  # `-external-url` makes the URLs it returns resolvable from the browser.
+  storage:
+    image: fsouza/fake-gcs-server:latest
+    command:
+      - '-scheme=http'
+      - '-port=4443'
+      - '-external-url=http://localhost:4443'
+      - '-backend=filesystem'
+      - '-filesystem-root=/data'
+    ports:
+      - '4443:4443'
+    volumes:
+      # Top-level directories under the filesystem root become buckets, so the
+      # committed `speakukrainian-media/` directory is the bucket.
+      - ./docker/storage/data:/data
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:4443/storage/v1/b?project=test']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s

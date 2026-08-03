@@ -1,0 +1,60 @@
+.rte {
+  border: 1px solid var(--mat-sys-outline-variant, #cac4d0);
+  border-radius: 8px;
+  background: var(--mat-sys-surface, #fff);
+
+  &--disabled {
+    opacity: 0.6;
+    pointer-events: none;
+  }
+
+  &__toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--mat-sys-outline-variant, #cac4d0);
+
+    .is-active {
+      background: var(--mat-sys-secondary-container, #e8def8);
+    }
+  }
+
+  &__divider {
+    width: 1px;
+    height: 20px;
+    margin: 0 6px;
+    background: var(--mat-sys-outline-variant, #cac4d0);
+  }
+
+  &__content {
+    padding: 12px 16px;
+
+    :global(.ProseMirror) {
+      min-height: 180px;
+      outline: none;
+
+      > * + * {
+        margin-top: 0.75em;
+      }
+
+      img {
+        max-width: 100%;
+        height: auto;
+        border-radius: 4px;
+      }
+
+      audio {
+        width: 100%;
+        margin: 0.5em 0;
+      }
+
+      // Selected atom nodes (audio, image) get a visible ring.
+      .ProseMirror-selectednode {
+        outline: 2px solid var(--mat-sys-primary, #6750a4);
+        border-radius: 4px;
+      }
+    }
+  }
+}

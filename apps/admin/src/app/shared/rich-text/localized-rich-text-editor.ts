@@ -1,0 +1,74 @@
+import { Component, forwardRef, input, signal } from '@angular/core';
+import { FormsModule, NG_VALUE_ACCESSOR, type ControlValueAccessor } from '@angular/forms';
+import { MatTabsModule } from '@angular/material/tabs';
+import type { LocaleCode, RichText } from '@speakukrainian/shared';
+import { RichTextEditor } from './rich-text-editor';
+
+/**
+ * Edits one {@link RichText} value across every enabled locale, one tab per
+ * locale. Content models are localized end to end, so this — not the bare
+ * {@link RichTextEditor} — is what feature forms bind to.
+ */
+@Component({
+  selector: 'app-localized-rich-text-editor',
+  imports: [FormsModule, MatTabsModule, RichTextEditor],
+  providers: [
+    {
+      provide: NG_VALUE_ACCESSOR,
+      useExisting: forwardRef(() => LocalizedRichTextEditor),
+      multi: true,
+    },
+  ],
+  template: `
+    <mat-tab-group
+      [selectedIndex]="selectedIndex()"
+      (selectedIndexChange)="selectedIndex.set($event)"
+    >
+      @for (locale of locales(); track locale) {
+        <mat-tab [label]="locale.toUpperCase()">
+          <app-rich-text-editor
+            [placeholder]="placeholder()"
+            [inlineOnly]="inlineOnly()"
+            [ngModel]="valueFor(locale)"
+            (ngModelChange)="updateLocale(locale, $event)"
+          />
+        </mat-tab>
+      }
+    </mat-tab-group>
+  `,
+})
+export class LocalizedRichTextEditor implements ControlValueAccessor {
+  /** Enabled locale codes, in display order. Supplied by the locales store. */
+  readonly locales = input.required<LocaleCode[]>();
+  readonly placeholder = input('');
+  readonly inlineOnly = input(false);
+
+  protected readonly selectedIndex = signal(0);
+  protected readonly value = signal<RichText>({});
+
+  private onChange: (value: RichText) => void = () => {};
+  private onTouched: () => void = () => {};
+
+  protected valueFor(locale: LocaleCode): string {
+    return this.value()[locale] ?? '';
+  }
+
+  writeValue(value: RichText | null): void {
+    this.value.set(value ?? {});
+  }
+
+  registerOnChange(fn: (value: RichText) => void): void {
+    this.onChange = fn;
+  }
+
+  registerOnTouched(fn: () => void): void {
+    this.onTouched = fn;
+  }
+
+  protected updateLocale(locale: LocaleCode, content: string): void {
+    const next = { ...this.value(), [locale]: content };
+    this.value.set(next);
+    this.onChange(next);
+    this.onTouched();
+  }
+}

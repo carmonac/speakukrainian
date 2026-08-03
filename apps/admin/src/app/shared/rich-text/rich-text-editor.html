@@ -1,0 +1,87 @@
+<div class="rte" [class.rte--disabled]="disabled()">
+  <div class="rte__toolbar" role="toolbar" aria-label="Text formatting">
+    <button
+      type="button"
+      mat-icon-button
+      matTooltip="Bold"
+      [class.is-active]="active()['bold']"
+      (click)="toggle('bold')"
+    >
+      <mat-icon>format_bold</mat-icon>
+    </button>
+    <button
+      type="button"
+      mat-icon-button
+      matTooltip="Italic"
+      [class.is-active]="active()['italic']"
+      (click)="toggle('italic')"
+    >
+      <mat-icon>format_italic</mat-icon>
+    </button>
+    <button
+      type="button"
+      mat-icon-button
+      matTooltip="Strikethrough"
+      [class.is-active]="active()['strike']"
+      (click)="toggle('strike')"
+    >
+      <mat-icon>format_strikethrough</mat-icon>
+    </button>
+
+    @if (!inlineOnly()) {
+      <span class="rte__divider"></span>
+      <button
+        type="button"
+        mat-icon-button
+        matTooltip="Heading 2"
+        [class.is-active]="active()['h2']"
+        (click)="toggleHeading(2)"
+      >
+        <mat-icon>looks_two</mat-icon>
+      </button>
+      <button
+        type="button"
+        mat-icon-button
+        matTooltip="Heading 3"
+        [class.is-active]="active()['h3']"
+        (click)="toggleHeading(3)"
+      >
+        <mat-icon>looks_3</mat-icon>
+      </button>
+      <button
+        type="button"
+        mat-icon-button
+        matTooltip="Bulleted list"
+        [class.is-active]="active()['bulletList']"
+        (click)="toggle('bulletList')"
+      >
+        <mat-icon>format_list_bulleted</mat-icon>
+      </button>
+      <button
+        type="button"
+        mat-icon-button
+        matTooltip="Numbered list"
+        [class.is-active]="active()['orderedList']"
+        (click)="toggle('orderedList')"
+      >
+        <mat-icon>format_list_numbered</mat-icon>
+      </button>
+    }
+
+    <span class="rte__divider"></span>
+    <button type="button" mat-icon-button matTooltip="Link" [class.is-active]="active()['link']" (click)="setLink()">
+      <mat-icon>link</mat-icon>
+    </button>
+
+    @if (!inlineOnly()) {
+      <button type="button" mat-icon-button matTooltip="Insert image" (click)="insertImage()">
+        <mat-icon>image</mat-icon>
+      </button>
+      <button type="button" mat-icon-button matTooltip="Insert audio" (click)="insertAudio()">
+        <mat-icon>volume_up</mat-icon>
+      </button>
+    }
+  </div>
+
+  <div #editorHost class="rte__content" [attr.data-placeholder]="placeholder()"></div>
+</div>

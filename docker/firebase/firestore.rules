@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// All reads and writes go through the API, which runs with admin credentials
+// and bypasses these rules. Clients never talk to Firestore directly, so the
+// safe default is to deny everything.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

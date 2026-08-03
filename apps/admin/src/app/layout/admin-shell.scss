@@ -1,0 +1,40 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.shell {
+  &__toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  &__title {
+    margin-left: 8px;
+    font-size: 1rem;
+  }
+
+  &__spacer {
+    flex: 1 1 auto;
+  }
+
+  &__container {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  &__sidenav {
+    width: 240px;
+    border-right: 1px solid var(--mat-sys-outline-variant, #cac4d0);
+
+    .is-active {
+      background: var(--mat-sys-secondary-container, #e8def8);
+    }
+  }
+
+  &__content {
+    padding: 24px;
+  }
+}

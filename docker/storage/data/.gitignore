@@ -1,0 +1,6 @@
+# Uploaded objects are local scratch; keep the bucket directory itself.
+*
+!.gitignore
+!speakukrainian-media/
+speakukrainian-media/*
+!speakukrainian-media/.gitkeep

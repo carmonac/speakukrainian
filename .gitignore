@@ -1,0 +1,29 @@
+node_modules/
+dist/
+out-tsc/
+coverage/
+.turbo/
+.angular/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+.DS_Store
+Thumbs.db
+
+.idea/
+*.swp
+
+# Local emulator state
+.data/
+firestore-debug.log
+firebase-debug.log
+
+# H5P working dirs (local dev only)
+h5p/temporary-storage/
+h5p/content/
+
+# Agent loop working files: plans and per-issue state are scratch, not history.
+.agent/
