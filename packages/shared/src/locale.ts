@@ -32,5 +32,15 @@ export type CreateLocaleInput = z.infer<typeof createLocaleSchema>;
 export const updateLocaleSchema = createLocaleSchema.partial().omit({ code: true });
 export type UpdateLocaleInput = z.infer<typeof updateLocaleSchema>;
 
+/**
+ * Query for `GET /api/locales`. `?enabled=true` is what the public site asks
+ * for. `z.stringbool()` rather than `z.coerce.boolean()`, which reads the
+ * string `"false"` as `true`.
+ */
+export const listLocalesQuerySchema = z.object({
+  enabled: z.stringbool().optional(),
+});
+export type ListLocalesQuery = z.infer<typeof listLocalesQuerySchema>;
+
 export const SEED_LOCALES = ['en', 'es', 'uk'] as const;
 export const DEFAULT_LOCALE = 'en';

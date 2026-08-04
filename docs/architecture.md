@@ -99,6 +99,22 @@ modules that provide them — under ESM, the module ↔ service import cycle lea
 its temporal dead zone and the app crashes at boot with `Cannot access 'X' before
 initialization`. Both costs are paid once, in conventions.
 
+### ADR-009 — A missing translation falls back to the default locale
+
+`resolveLocalized(value, locale, defaultLocale)` in `packages/shared/src/common.ts` returns the
+requested locale's text, else the default locale's, else `''`. A value that is present but blank
+counts as missing: the localized editor writes a key for any tab the author opens, so
+`{ en: 'Hello', uk: '' }` is what half-translated content actually looks like.
+
+_Why:_ CLAUDE.md rule 2 requires a decision here, and the alternatives are worse. Rendering
+`undefined` is a defect; rendering an empty hole gives a learner a page with a missing heading and
+no way to guess what it said. A half-translated site that reads in English is usable, and the gap
+is visible to the admin rather than to the reader as a blank.
+
+_Cost:_ the public site cannot tell "translated" from "falling back" without comparing the two, so a
+translation-coverage view is its own feature. Disabling or deleting a locale therefore never touches
+stored content — the text stays in Firestore and reappears if the locale comes back.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
