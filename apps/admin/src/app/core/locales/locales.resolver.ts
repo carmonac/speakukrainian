@@ -1,6 +1,6 @@
 import { inject } from '@angular/core';
 import type { ResolveFn } from '@angular/router';
-import type { Locale } from '@speakukrainian/shared';
+import type { PublicLocale } from '@speakukrainian/shared';
 import { LocalesStore } from './locales.store';
 
 /**
@@ -9,7 +9,7 @@ import { LocalesStore } from './locales.store';
  * already reported by the error interceptor; resolving `[]` keeps the
  * navigation alive instead of stranding the user on the previous screen.
  */
-export const localesResolver: ResolveFn<readonly Locale[]> = () =>
+export const localesResolver: ResolveFn<readonly PublicLocale[]> = () =>
   inject(LocalesStore)
     .load()
     .catch(() => []);

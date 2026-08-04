@@ -4,6 +4,7 @@ import {
   editableLocaleFields,
   listLocalesQuerySchema,
   localeSchema,
+  publicLocaleSchema,
   updateLocaleSchema,
 } from './locale.js';
 
@@ -113,6 +114,54 @@ describe('localeSchema', () => {
       enabled: true,
       sortOrder: 0,
       audit,
+    });
+  });
+});
+
+describe('publicLocaleSchema', () => {
+  const stored = {
+    id: 'uk',
+    code: 'uk',
+    name: 'Ukrainian',
+    nativeName: 'Українська',
+    direction: 'ltr' as const,
+    isDefault: true,
+    enabled: true,
+    sortOrder: 2,
+    audit: {
+      createdAt: '2026-01-01T00:00:00.000Z',
+      createdBy: 'admin-uid',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+      updatedBy: 'admin-uid',
+    },
+  };
+
+  it('drops the audit uids an anonymous caller would otherwise read', () => {
+    const parsed = publicLocaleSchema.parse(stored);
+
+    expect(Object.keys(parsed).sort()).toEqual([
+      'code',
+      'direction',
+      'enabled',
+      'id',
+      'isDefault',
+      'name',
+      'nativeName',
+      'sortOrder',
+    ]);
+    expect(JSON.stringify(parsed)).not.toContain('admin-uid');
+  });
+
+  it('keeps every field the language switcher renders from', () => {
+    expect(publicLocaleSchema.parse(stored)).toEqual({
+      id: 'uk',
+      code: 'uk',
+      name: 'Ukrainian',
+      nativeName: 'Українська',
+      direction: 'ltr',
+      isDefault: true,
+      enabled: true,
+      sortOrder: 2,
     });
   });
 });

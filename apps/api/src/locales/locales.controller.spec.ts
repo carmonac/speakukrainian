@@ -61,6 +61,26 @@ describe('LocalesController', () => {
     expect(calls).toEqual([{ method: 'list', args: [{ enabled: true }] }]);
   });
 
+  it('answers the public list without the audit uids', async () => {
+    // ADR-010: the route is `@Public()`, and `audit.createdBy`/`updatedBy` are
+    // the Firebase uids of the staff who run the site.
+    const { service } = createServiceSpy();
+
+    const [first] = await new LocalesController(service).list({});
+
+    expect(first).toEqual({
+      id: 'uk',
+      code: 'uk',
+      name: 'Ukrainian',
+      nativeName: 'Українська',
+      direction: 'ltr',
+      isDefault: false,
+      enabled: true,
+      sortOrder: 2,
+    });
+    expect(JSON.stringify(first)).not.toContain('seed');
+  });
+
   it('rejects a create with no verified caller attached', () => {
     const { service } = createServiceSpy();
     const controller = new LocalesController(service);

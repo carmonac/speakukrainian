@@ -4,7 +4,7 @@ import { Router, provideRouter, withComponentInputBinding } from '@angular/route
 import { RouterTestingHarness } from '@angular/router/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { describe, expect, it } from 'vitest';
-import type { Locale } from '@speakukrainian/shared';
+import type { PublicLocale } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { LocaleFormPage } from './locale-form-page';
@@ -13,7 +13,7 @@ import { DEFAULT_LOCALE_TOOLTIP } from './locale-messages';
 @Component({ selector: 'app-locales-list-stub', template: 'list' })
 class ListStub {}
 
-function locale(code: string, overrides: Partial<Locale> = {}): Locale {
+function locale(code: string, overrides: Partial<PublicLocale> = {}): PublicLocale {
   return {
     id: code,
     code,
@@ -23,24 +23,18 @@ function locale(code: string, overrides: Partial<Locale> = {}): Locale {
     isDefault: false,
     enabled: true,
     sortOrder: 2,
-    audit: {
-      createdAt: '2026-01-01T00:00:00.000Z',
-      createdBy: 'seed',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      updatedBy: 'seed',
-    },
     ...overrides,
   };
 }
 
 interface Harnessed {
-  locales: WritableSignal<readonly Locale[]>;
+  locales: WritableSignal<readonly PublicLocale[]>;
   calls: { method: string; args: unknown[] }[];
   errors: string[];
 }
 
-function setup(seeded: Locale[]): Harnessed {
-  const locales = signal<readonly Locale[]>(seeded);
+function setup(seeded: PublicLocale[]): Harnessed {
+  const locales = signal<readonly PublicLocale[]>(seeded);
   const calls: { method: string; args: unknown[] }[] = [];
   const errors: string[] = [];
   const record =

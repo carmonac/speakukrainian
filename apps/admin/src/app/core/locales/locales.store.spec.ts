@@ -6,11 +6,11 @@ import {
   type TestRequest,
 } from '@angular/common/http/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Locale } from '@speakukrainian/shared';
+import type { PublicLocale } from '@speakukrainian/shared';
 import { environment } from '../../../environments/environment';
 import { LocalesStore } from './locales.store';
 
-function locale(code: string, overrides: Partial<Locale> = {}): Locale {
+function locale(code: string, overrides: Partial<PublicLocale> = {}): PublicLocale {
   return {
     id: code,
     code,
@@ -20,12 +20,6 @@ function locale(code: string, overrides: Partial<Locale> = {}): Locale {
     isDefault: false,
     enabled: true,
     sortOrder: 0,
-    audit: {
-      createdAt: '2026-01-01T00:00:00.000Z',
-      createdBy: 'seed',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      updatedBy: 'seed',
-    },
     ...overrides,
   };
 }

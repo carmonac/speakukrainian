@@ -8,7 +8,7 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTableModule } from '@angular/material/table';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
-import type { Locale } from '@speakukrainian/shared';
+import type { PublicLocale } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { navigationState } from '../../core/router/navigation-state';
@@ -58,14 +58,14 @@ export class LocalesPage {
     navigationState<string>(this.router, 'savedCode') ?? null,
   );
 
-  protected async makeDefault(locale: Locale): Promise<void> {
+  protected async makeDefault(locale: PublicLocale): Promise<void> {
     await this.run(
       () => this.store.setDefault(locale.code),
       `${locale.name} is now the default locale.`,
     );
   }
 
-  protected async setEnabled(locale: Locale, enabled: boolean): Promise<void> {
+  protected async setEnabled(locale: PublicLocale, enabled: boolean): Promise<void> {
     await this.run(
       () => this.store.update(locale.code, { enabled }),
       `${locale.name} is now ${enabled ? 'enabled' : 'disabled'}.`,
@@ -86,7 +86,7 @@ export class LocalesPage {
     await this.run(() => this.store.reorder(codes), 'Locale order saved.');
   }
 
-  protected async confirmDelete(locale: Locale): Promise<void> {
+  protected async confirmDelete(locale: PublicLocale): Promise<void> {
     const data: ConfirmDialogData = {
       title: `Delete ${locale.name}?`,
       message: `Content already authored in ${locale.name} stays stored and reappears if the locale is added back.`,

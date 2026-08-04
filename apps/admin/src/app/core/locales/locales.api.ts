@@ -1,6 +1,11 @@
 import { Injectable, inject } from '@angular/core';
 import type { Observable } from 'rxjs';
-import type { CreateLocaleInput, Locale, UpdateLocaleInput } from '@speakukrainian/shared';
+import type {
+  CreateLocaleInput,
+  Locale,
+  PublicLocale,
+  UpdateLocaleInput,
+} from '@speakukrainian/shared';
 import { ApiService } from '../http/api.service';
 
 /**
@@ -11,8 +16,9 @@ import { ApiService } from '../http/api.service';
 export class LocalesApi {
   private readonly api = inject(ApiService);
 
-  list(): Observable<Locale[]> {
-    return this.api.get<Locale[]>('/locales');
+  /** The list route is public and answers without the audit metadata (ADR-010). */
+  list(): Observable<PublicLocale[]> {
+    return this.api.get<PublicLocale[]>('/locales');
   }
 
   create(input: CreateLocaleInput): Observable<Locale> {

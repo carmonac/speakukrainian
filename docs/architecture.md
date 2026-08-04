@@ -120,6 +120,20 @@ _Cost:_ the public site cannot tell "translated" from "falling back" without com
 translation-coverage view is its own feature. Disabling or deleting a locale therefore never touches
 stored content — the text stays in Firestore and reappears if the locale comes back.
 
+### ADR-010 — Public read routes return a projection, never the stored document
+
+A route marked `@Public()` answers with a schema of its own — `publicLocaleSchema` is the first —
+that omits `audit`. Admin routes keep returning the full document.
+
+_Why:_ `audit.createdBy` / `updatedBy` are the Firebase uids of the staff who authored the content.
+A uid is not a credential, but handing every anonymous reader a list of the people who run the site
+buys nothing: no client reads `audit`. Deciding it on the first public route means sections, pages
+and schedule slots have a shape to copy rather than inventing one each.
+
+_Cost:_ a second schema per publicly-read collection, and the projection has to be applied at the
+route. It stays in `packages/shared` and is derived from the stored schema with `.omit()`, so the
+two cannot drift (rule 1).
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |

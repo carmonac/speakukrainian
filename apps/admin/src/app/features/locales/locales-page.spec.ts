@@ -6,11 +6,11 @@ import { MatDialog } from '@angular/material/dialog';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { of } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { Locale } from '@speakukrainian/shared';
+import type { PublicLocale } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { LocalesPage } from './locales-page';
 
-function locale(code: string, overrides: Partial<Locale> = {}): Locale {
+function locale(code: string, overrides: Partial<PublicLocale> = {}): PublicLocale {
   return {
     id: code,
     code,
@@ -20,23 +20,17 @@ function locale(code: string, overrides: Partial<Locale> = {}): Locale {
     isDefault: false,
     enabled: true,
     sortOrder: 0,
-    audit: {
-      createdAt: '2026-01-01T00:00:00.000Z',
-      createdBy: 'seed',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      updatedBy: 'seed',
-    },
     ...overrides,
   };
 }
 
 interface StoreSpy {
-  locales: WritableSignal<readonly Locale[]>;
+  locales: WritableSignal<readonly PublicLocale[]>;
   calls: { method: string; args: unknown[] }[];
 }
 
-function setup(seeded: Locale[]): StoreSpy {
-  const locales = signal<readonly Locale[]>(seeded);
+function setup(seeded: PublicLocale[]): StoreSpy {
+  const locales = signal<readonly PublicLocale[]>(seeded);
   const calls: { method: string; args: unknown[] }[] = [];
   const record =
     (method: string) =>

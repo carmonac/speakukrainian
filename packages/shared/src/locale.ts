@@ -43,6 +43,14 @@ export const localeSchema = z.object({
 });
 export type Locale = z.infer<typeof localeSchema>;
 
+/**
+ * What `GET /api/locales` answers with. The route is public, and `audit` holds
+ * the Firebase uids of the staff who run the site — see ADR-010. Derived from
+ * `localeSchema` so the two cannot drift.
+ */
+export const publicLocaleSchema = localeSchema.omit({ audit: true });
+export type PublicLocale = z.infer<typeof publicLocaleSchema>;
+
 export const createLocaleSchema = localeSchema
   .omit({ id: true, audit: true, isDefault: true })
   .extend({ code: localeCodeSchema });

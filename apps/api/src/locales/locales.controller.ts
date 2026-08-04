@@ -17,10 +17,12 @@ import {
   createLocaleSchema,
   listLocalesQuerySchema,
   localeCodeSchema,
+  publicLocaleSchema,
   updateLocaleSchema,
   type CreateLocaleInput,
   type ListLocalesQuery,
   type Locale,
+  type PublicLocale,
   type UpdateLocaleInput,
 } from '@speakukrainian/shared';
 import { CurrentUser } from '../auth/current-user.decorator.js';
@@ -40,13 +42,18 @@ import { LocalesService } from './locales.service.js';
 export class LocalesController {
   constructor(private readonly locales: LocalesService) {}
 
-  /** Public: both front ends need the locale list before any authenticated call. */
+  /**
+   * Public: both front ends need the locale list before any authenticated call.
+   * The response is projected through `publicLocaleSchema`, which drops the
+   * audit uids an anonymous caller has no business reading (ADR-010).
+   */
   @Get()
   @Public()
-  list(
+  async list(
     @Query(new ZodValidationPipe(listLocalesQuerySchema)) query: ListLocalesQuery,
-  ): Promise<Locale[]> {
-    return this.locales.list(query);
+  ): Promise<PublicLocale[]> {
+    const locales = await this.locales.list(query);
+    return locales.map((locale) => publicLocaleSchema.parse(locale));
   }
 
   @Post()

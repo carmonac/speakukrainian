@@ -4,6 +4,7 @@ import type {
   CreateLocaleInput,
   Locale,
   LocaleCode,
+  PublicLocale,
   UpdateLocaleInput,
 } from '@speakukrainian/shared';
 import { LocalesApi } from './locales.api';
@@ -17,9 +18,9 @@ import { LocalesApi } from './locales.api';
 export class LocalesStore {
   private readonly api = inject(LocalesApi);
 
-  private readonly all = signal<readonly Locale[]>([]);
+  private readonly all = signal<readonly PublicLocale[]>([]);
   /** In flight or settled fetch, so concurrent `load()` calls share one request. */
-  private request: Promise<readonly Locale[]> | null = null;
+  private request: Promise<readonly PublicLocale[]> | null = null;
 
   readonly locales = this.all.asReadonly();
   readonly enabled = computed(() => this.all().filter((locale) => locale.enabled));
@@ -34,11 +35,11 @@ export class LocalesStore {
   );
 
   /** Fetches once. Later calls reuse the same promise. */
-  load(): Promise<readonly Locale[]> {
+  load(): Promise<readonly PublicLocale[]> {
     return (this.request ??= this.fetch());
   }
 
-  refresh(): Promise<readonly Locale[]> {
+  refresh(): Promise<readonly PublicLocale[]> {
     return (this.request = this.fetch());
   }
 
@@ -81,7 +82,7 @@ export class LocalesStore {
     await this.refresh();
   }
 
-  private async fetch(): Promise<readonly Locale[]> {
+  private async fetch(): Promise<readonly PublicLocale[]> {
     try {
       const list = await firstValueFrom(this.api.list());
       this.all.set(list);
