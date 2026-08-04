@@ -51,6 +51,15 @@ export class LocalesService implements OnModuleInit {
 
     let written = 0;
     for (const code of SEED_LOCALES) {
+      if (stored.length + written >= MAX_LOCALES) {
+        // Seeding obeys the same cap as `create`, or it would push the
+        // collection past the window `list()` reads and hide a locale.
+        this.logger.warn(
+          `Skipped seeding "${code}": the site is already at ${MAX_LOCALES} locales.`,
+        );
+        break;
+      }
+
       const created = await this.repository.create(
         SEED_LOCALE_DEFINITIONS[code],
         SEED_ACTOR,
@@ -74,9 +83,11 @@ export class LocalesService implements OnModuleInit {
   }
 
   /**
-   * The cap is enforced here, not only on the read side: past it the list query
-   * would truncate, so a locale would be invisible to the admin and a default
-   * outside the window would never be cleared by the next default switch.
+   * Every write path — this one and `seed()` — refuses past the cap, because
+   * the list query truncates there: a locale beyond the window is invisible to
+   * the admin, and a default beyond it is never cleared by the next default
+   * switch. Documents written straight into Firestore bypass both checks, so
+   * this bounds what the API produces, not what the collection can hold.
    */
   async create(input: CreateLocaleInput, actorId: string): Promise<Locale> {
     const stored = await this.repository.list();

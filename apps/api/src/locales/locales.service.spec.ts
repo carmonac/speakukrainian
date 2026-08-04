@@ -144,6 +144,30 @@ describe('LocalesService.seed', () => {
     expect([...docs.values()].filter((l) => l.isDefault).map((l) => l.code)).toEqual(['pl']);
   });
 
+  it('stops at the cap the list query reads to', async () => {
+    // Seeding past the cap would hide the extra document from the admin, the
+    // residual half of the same hole `create` closes.
+    const full = Array.from({ length: MAX_LOCALES }, (_, index) =>
+      locale(`x${index}`, { sortOrder: index, isDefault: index === 0 }),
+    );
+    const { repository, docs } = createRepositoryFake(full);
+
+    expect(await new LocalesService(repository).seed()).toBe(0);
+    expect(docs.size).toBe(MAX_LOCALES);
+  });
+
+  it('seeds only as far as the cap allows', async () => {
+    const nearlyFull = Array.from({ length: MAX_LOCALES - 1 }, (_, index) =>
+      locale(`x${index}`, { sortOrder: index, isDefault: index === 0 }),
+    );
+    const { repository, docs } = createRepositoryFake(nearlyFull);
+
+    expect(await new LocalesService(repository).seed()).toBe(1);
+    expect(docs.size).toBe(MAX_LOCALES);
+    expect(docs.has('en')).toBe(true);
+    expect(docs.has('es')).toBe(false);
+  });
+
   it('does not throw out of onModuleInit when the repository fails', async () => {
     const failing = {
       list: () => Promise.reject(new Error('firestore unavailable')),
