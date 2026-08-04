@@ -9,7 +9,10 @@ import {
   type Auth,
   type User,
 } from 'firebase/auth';
-import { hasAtLeastRole, type UserRole } from '@speakukrainian/shared';
+// The `/roles` entry point carries no Zod: importing the comparison from the
+// barrel puts the whole schema package in the eager bundle.
+import { hasAtLeastRole } from '@speakukrainian/shared/roles';
+import type { UserRole } from '@speakukrainian/shared';
 import { environment } from '../../../environments/environment';
 
 export interface AdminUser {

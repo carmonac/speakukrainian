@@ -5,4 +5,5 @@ export * from './section.js';
 export * from './page.js';
 export * from './schedule.js';
 export * from './user.js';
+export * from './roles.js';
 export * from './h5p.js';
