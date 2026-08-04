@@ -38,13 +38,16 @@ claim the API's role guard reads, and writes the matching `users/{uid}` profile 
 ```bash
 pnpm seed:admin
 pnpm seed:admin --email=me@example.com --password=hunter22 --name="Me" --role=editor
+pnpm seed:admin --reset-password    # forgotten the password of an existing account
 ```
 
 Flags override `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` and `SEED_ADMIN_NAME` from `.env`. The
 script is idempotent: running it again reuses the same account and rewrites the same profile
-document rather than creating a second one. It refuses to run unless both
-`FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` are set, so it can never reach a
-real project.
+document rather than creating a second one. The password of an account that already exists is
+left alone unless `--reset-password` is given — setting it again would invalidate every ID token
+already issued for that account, and the API rejects revoked tokens. It refuses to run unless
+both `FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` are set, so it can never reach
+a real project.
 
 Only `editor` and `admin` may enter the admin panel. To promote someone, sign in as an admin and
 call `PATCH /api/users/:uid/role`; the change takes effect on their next page refresh, without a

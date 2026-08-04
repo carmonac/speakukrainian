@@ -18,20 +18,34 @@ export interface SeedOptions {
   password: string;
   displayName: string;
   role: UserRole;
+  /** Only set the password on an account that already exists when asked to. */
+  resetPassword: boolean;
 }
 
-const SUPPORTED_FLAGS = ['--email', '--password', '--name', '--role'] as const;
+const VALUE_FLAGS = ['--email', '--password', '--name', '--role'] as const;
+const BOOLEAN_FLAGS = ['--reset-password'] as const;
+
+function isFlag<T extends readonly string[]>(flags: T, name: string): name is T[number] {
+  return (flags as readonly string[]).includes(name);
+}
 
 export function parseOptions(argv: string[], env: NodeJS.ProcessEnv): SeedOptions {
   const flags = new Map<string, string>();
+  const switches = new Set<string>();
 
   for (const arg of argv) {
     const separator = arg.indexOf('=');
     const name = separator === -1 ? arg : arg.slice(0, separator);
-    if (!SUPPORTED_FLAGS.includes(name as (typeof SUPPORTED_FLAGS)[number]) || separator === -1) {
-      throw new Error(
-        `Unsupported argument "${arg}". Supported: ${SUPPORTED_FLAGS.map((flag) => `${flag}=<value>`).join(', ')}`,
+
+    if (separator === -1 && isFlag(BOOLEAN_FLAGS, name)) {
+      switches.add(name);
+      continue;
+    }
+    if (separator === -1 || !isFlag(VALUE_FLAGS, name)) {
+      const supported = [...VALUE_FLAGS.map((flag) => `${flag}=<value>`), ...BOOLEAN_FLAGS].join(
+        ', ',
       );
+      throw new Error(`Unsupported argument "${arg}". Supported: ${supported}`);
     }
     flags.set(name, arg.slice(separator + 1));
   }
@@ -41,6 +55,7 @@ export function parseOptions(argv: string[], env: NodeJS.ProcessEnv): SeedOption
     password: flags.get('--password') ?? env['SEED_ADMIN_PASSWORD'] ?? DEFAULT_PASSWORD,
     displayName: flags.get('--name') ?? env['SEED_ADMIN_NAME'] ?? DEFAULT_DISPLAY_NAME,
     role: userRoleSchema.parse(flags.get('--role') ?? env['SEED_ADMIN_ROLE'] ?? 'admin'),
+    resetPassword: switches.has('--reset-password'),
   };
 }
 
@@ -62,14 +77,17 @@ export function assertEmulator(env: NodeJS.ProcessEnv): void {
 
 /** Structural subset of `firebase-admin`'s `Auth`, so the spec needs no SDK. */
 export interface SeedAuth {
-  getUserByEmail(email: string): Promise<{ uid: string }>;
+  getUserByEmail(email: string): Promise<{ uid: string; displayName?: string }>;
   createUser(props: {
     email: string;
     password: string;
     displayName: string;
     emailVerified: boolean;
   }): Promise<{ uid: string }>;
-  updateUser(uid: string, props: { password: string; displayName: string }): Promise<{ uid: string }>;
+  updateUser(
+    uid: string,
+    props: { password?: string; displayName?: string },
+  ): Promise<{ uid: string }>;
   setCustomUserClaims(uid: string, claims: object | null): Promise<void>;
 }
 
@@ -83,6 +101,7 @@ export interface SeedResult {
   email: string;
   role: UserRole;
   created: boolean;
+  passwordReset: boolean;
 }
 
 function isUserNotFound(error: unknown): boolean {
@@ -103,7 +122,7 @@ export async function seedAdmin(
   options: SeedOptions,
   now: () => string = () => new Date().toISOString(),
 ): Promise<SeedResult> {
-  const { email, password, displayName, role } = options;
+  const { email, password, displayName, role, resetPassword } = options;
 
   const found = await auth.getUserByEmail(email).catch((error: unknown) => {
     if (isUserNotFound(error)) {
@@ -114,11 +133,24 @@ export async function seedAdmin(
 
   let uid: string;
   const created = found === null;
+  let passwordReset = created;
 
   if (found) {
     uid = found.uid;
-    // Repeat runs keep the documented password and name working.
-    await auth.updateUser(uid, { password, displayName });
+    const updates: { password?: string; displayName?: string } = {};
+    // Re-setting the password moves the account's `validSince`, and the API
+    // verifies tokens with `checkRevoked`, so an unconditional reset would 401
+    // every session that is already open. Only do it when asked.
+    if (resetPassword) {
+      updates.password = password;
+      passwordReset = true;
+    }
+    if (found.displayName !== displayName) {
+      updates.displayName = displayName;
+    }
+    if (Object.keys(updates).length > 0) {
+      await auth.updateUser(uid, updates);
+    }
   } else {
     ({ uid } = await auth.createUser({ email, password, displayName, emailVerified: true }));
   }
@@ -142,7 +174,7 @@ export async function seedAdmin(
   });
   await profiles.set(uid, profile);
 
-  return { uid, email, role, created };
+  return { uid, email, role, created, passwordReset };
 }
 
 async function main(): Promise<void> {
@@ -179,6 +211,11 @@ async function main(): Promise<void> {
     console.log(
       `${result.created ? 'Created' : 'Updated'} ${result.email} (uid ${result.uid}) with role "${result.role}".`,
     );
+    if (!result.passwordReset) {
+      console.log(
+        'The existing password was left alone so open sessions keep working. Pass --reset-password to set it back to the seed value.',
+      );
+    }
   } finally {
     await firestore.terminate();
   }

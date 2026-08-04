@@ -38,9 +38,11 @@ function createAuthDouble(seeded: AuthAccount[] = []): {
     getUserByEmail(email) {
       const found = [...accounts.values()].find((account) => account.email === email);
       if (!found) {
-        return Promise.reject(Object.assign(new Error('not found'), { code: 'auth/user-not-found' }));
+        return Promise.reject(
+          Object.assign(new Error('not found'), { code: 'auth/user-not-found' }),
+        );
       }
-      return Promise.resolve({ uid: found.uid });
+      return Promise.resolve({ uid: found.uid, displayName: found.displayName });
     },
     createUser(props) {
       const uid = `uid-${nextUid++}`;
@@ -86,6 +88,7 @@ const options: SeedOptions = {
   password: DEFAULT_PASSWORD,
   displayName: DEFAULT_DISPLAY_NAME,
   role: 'admin',
+  resetPassword: false,
 };
 
 describe('parseOptions', () => {
@@ -95,6 +98,7 @@ describe('parseOptions', () => {
       password: DEFAULT_PASSWORD,
       displayName: DEFAULT_DISPLAY_NAME,
       role: 'admin',
+      resetPassword: false,
     });
   });
 
@@ -110,7 +114,12 @@ describe('parseOptions', () => {
       password: 'env-secret',
       displayName: 'Env Admin',
       role: 'admin',
+      resetPassword: false,
     });
+  });
+
+  it('accepts --reset-password as a switch', () => {
+    expect(parseOptions(['--reset-password'], {}).resetPassword).toBe(true);
   });
 
   it('prefers a flag over the environment', () => {
@@ -165,6 +174,7 @@ describe('seedAdmin', () => {
       email: DEFAULT_EMAIL,
       role: 'admin',
       created: true,
+      passwordReset: true,
     });
     expect(accounts.get('uid-1')?.password).toBe(DEFAULT_PASSWORD);
     expect(claims.get('uid-1')).toEqual({ role: 'admin' });
@@ -204,7 +214,7 @@ describe('seedAdmin', () => {
 
   it('updates an account that already exists rather than re-creating it', async () => {
     const { auth, accounts, claims } = createAuthDouble([
-      { uid: 'existing', email: DEFAULT_EMAIL, password: 'stale', displayName: 'Old name' },
+      { uid: 'existing', email: DEFAULT_EMAIL, password: 'chosen', displayName: 'Old name' },
     ]);
     const { profiles } = createProfilesDouble();
 
@@ -213,11 +223,42 @@ describe('seedAdmin', () => {
     expect(result.uid).toBe('existing');
     expect(result.created).toBe(false);
     expect(accounts.size).toBe(1);
+    expect(accounts.get('existing')?.displayName).toBe(DEFAULT_DISPLAY_NAME);
+    expect(claims.get('existing')).toEqual({ role: 'editor' });
+  });
+
+  it('leaves the password of an existing account alone', async () => {
+    // Re-setting it moves `validSince`, and the API verifies with
+    // `checkRevoked`, so a repeat run would 401 every open session.
+    const { auth, accounts } = createAuthDouble([
+      {
+        uid: 'existing',
+        email: DEFAULT_EMAIL,
+        password: 'chosen',
+        displayName: DEFAULT_DISPLAY_NAME,
+      },
+    ]);
+    const { profiles } = createProfilesDouble();
+
+    const result = await seedAdmin(auth, profiles, options);
+
+    expect(accounts.get('existing')?.password).toBe('chosen');
+    expect(result.passwordReset).toBe(false);
+  });
+
+  it('resets the password of an existing account when asked', async () => {
+    const { auth, accounts } = createAuthDouble([
+      { uid: 'existing', email: DEFAULT_EMAIL, password: 'forgotten', displayName: 'Old name' },
+    ]);
+    const { profiles } = createProfilesDouble();
+
+    const result = await seedAdmin(auth, profiles, { ...options, resetPassword: true });
+
     expect(accounts.get('existing')).toMatchObject({
       password: DEFAULT_PASSWORD,
       displayName: DEFAULT_DISPLAY_NAME,
     });
-    expect(claims.get('existing')).toEqual({ role: 'editor' });
+    expect(result.passwordReset).toBe(true);
   });
 
   it('propagates an error that is not a missing account', async () => {
