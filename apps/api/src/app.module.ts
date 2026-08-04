@@ -5,6 +5,7 @@ import { envSchema } from './config/configuration.js';
 import { FirestoreModule } from './infra/firestore/firestore.module.js';
 import { StorageModule } from './infra/storage/storage.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { UsersModule } from './users/users.module.js';
 import { FirebaseAuthGuard } from './auth/firebase-auth.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { HttpExceptionFilter } from './common/http-exception.filter.js';
@@ -27,6 +28,7 @@ import { HealthController } from './health/health.controller.js';
     FirestoreModule,
     StorageModule,
     AuthModule,
+    UsersModule,
   ],
   controllers: [HealthController],
   providers: [
