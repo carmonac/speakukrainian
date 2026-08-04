@@ -1,0 +1,125 @@
+<section class="locales">
+  <header class="locales__header">
+    <div>
+      <h1>Locales</h1>
+      <p>Enable the languages the site is published in.</p>
+    </div>
+    <a matButton="filled" [routerLink]="['/locales', 'new']">
+      <mat-icon>add</mat-icon>
+      New locale
+    </a>
+  </header>
+
+  @if (busy()) {
+    <mat-progress-bar mode="indeterminate" />
+  }
+
+  <table mat-table [dataSource]="locales()" class="locales__table">
+    <ng-container matColumnDef="code">
+      <th mat-header-cell *matHeaderCellDef scope="col">Code</th>
+      <td mat-cell *matCellDef="let locale">{{ locale.code }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="name">
+      <th mat-header-cell *matHeaderCellDef scope="col">Name</th>
+      <td mat-cell *matCellDef="let locale">{{ locale.name }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="nativeName">
+      <th mat-header-cell *matHeaderCellDef scope="col">Native name</th>
+      <td mat-cell *matCellDef="let locale">{{ locale.nativeName }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="direction">
+      <th mat-header-cell *matHeaderCellDef scope="col">Direction</th>
+      <td mat-cell *matCellDef="let locale">{{ locale.direction }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="isDefault">
+      <th mat-header-cell *matHeaderCellDef scope="col">Default</th>
+      <td mat-cell *matCellDef="let locale">
+        @if (locale.isDefault) {
+          <span class="locales__badge">Default</span>
+        } @else {
+          <button
+            matButton
+            type="button"
+            class="locales__make-default"
+            [disabled]="busy()"
+            (click)="makeDefault(locale)"
+          >
+            Make default
+          </button>
+        }
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="enabled">
+      <th mat-header-cell *matHeaderCellDef scope="col">Enabled</th>
+      <td mat-cell *matCellDef="let locale">
+        <span [matTooltip]="locale.isDefault ? defaultTooltip : ''">
+          <mat-slide-toggle
+            [checked]="locale.enabled"
+            [disabled]="locale.isDefault || busy()"
+            [attr.aria-label]="'Enable ' + locale.name"
+            (change)="setEnabled(locale, $event.checked)"
+          />
+        </span>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="order">
+      <th mat-header-cell *matHeaderCellDef scope="col">Order</th>
+      <td mat-cell *matCellDef="let locale; let i = index">
+        <button
+          mat-icon-button
+          type="button"
+          class="locales__move-up"
+          [attr.aria-label]="'Move ' + locale.name + ' up'"
+          [disabled]="i === 0 || busy()"
+          (click)="move(i, -1)"
+        >
+          <mat-icon>arrow_upward</mat-icon>
+        </button>
+        <button
+          mat-icon-button
+          type="button"
+          class="locales__move-down"
+          [attr.aria-label]="'Move ' + locale.name + ' down'"
+          [disabled]="i === locales().length - 1 || busy()"
+          (click)="move(i, 1)"
+        >
+          <mat-icon>arrow_downward</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef scope="col">Actions</th>
+      <td mat-cell *matCellDef="let locale">
+        <a mat-icon-button [routerLink]="['/locales', locale.code]" [attr.aria-label]="'Edit ' + locale.name">
+          <mat-icon>edit</mat-icon>
+        </a>
+        @if (!locale.isDefault) {
+          <button
+            mat-icon-button
+            type="button"
+            class="locales__delete"
+            [attr.aria-label]="'Delete ' + locale.name"
+            [disabled]="busy()"
+            (click)="confirmDelete(locale)"
+          >
+            <mat-icon>delete</mat-icon>
+          </button>
+        }
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="columns"></tr>
+    <tr mat-row *matRowDef="let locale; columns: columns" [class.is-saved]="locale.code === savedCode()"></tr>
+  </table>
+
+  @if (locales().length === 0) {
+    <p class="locales__empty">No locales yet.</p>
+  }
+</section>

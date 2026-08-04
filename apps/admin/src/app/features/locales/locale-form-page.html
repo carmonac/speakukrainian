@@ -1,0 +1,60 @@
+<section class="locale-form">
+  <mat-card class="locale-form__card">
+    @if (saving()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+
+    <mat-card-header>
+      <mat-card-title>{{ isEdit() ? 'Edit locale' : 'New locale' }}</mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content>
+      <form [formGroup]="form" (ngSubmit)="submit()" class="locale-form__form">
+        <mat-form-field appearance="outline">
+          <mat-label>Code</mat-label>
+          <input matInput formControlName="code" autocomplete="off" placeholder="uk" />
+          <mat-hint>BCP-47, e.g. <code>uk</code> or <code>en-GB</code>.</mat-hint>
+          @if (form.controls.code.touched && form.controls.code.invalid) {
+            <mat-error>Enter a BCP-47 locale code.</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Name</mat-label>
+          <input matInput formControlName="name" autocomplete="off" placeholder="Ukrainian" />
+          @if (form.controls.name.touched && form.controls.name.invalid) {
+            <mat-error>Give the language its English name.</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Native name</mat-label>
+          <input matInput formControlName="nativeName" autocomplete="off" placeholder="Українська" />
+          @if (form.controls.nativeName.touched && form.controls.nativeName.invalid) {
+            <mat-error>Give the language its name in that language.</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Direction</mat-label>
+          <mat-select formControlName="direction">
+            <mat-option value="ltr">Left to right</mat-option>
+            <mat-option value="rtl">Right to left</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Sort order</mat-label>
+          <input matInput type="number" formControlName="sortOrder" />
+        </mat-form-field>
+
+        <mat-slide-toggle formControlName="enabled">Enabled</mat-slide-toggle>
+
+        <div class="locale-form__actions">
+          <a matButton type="button" routerLink="/locales">Cancel</a>
+          <button matButton="filled" type="submit" [disabled]="form.invalid || saving()">Save</button>
+        </div>
+      </form>
+    </mat-card-content>
+  </mat-card>
+</section>
