@@ -11,6 +11,7 @@ import { firstValueFrom } from 'rxjs';
 import type { Locale } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
+import { navigationState } from '../../core/router/navigation-state';
 import { ConfirmDialog, type ConfirmDialogData } from '../../shared/dialogs/confirm-dialog';
 import { DEFAULT_LOCALE_TOOLTIP } from './locale-messages';
 
@@ -50,14 +51,11 @@ export class LocalesPage {
 
   /**
    * Set by the form page on save, so the row the admin just touched is obvious.
-   * The pending navigation carries it during the save — the router only writes
-   * it into `history.state` after this component is activated — and the browser
-   * replays it from there across a refresh. A service would lose it (rule 5).
+   * It travels in the navigation state, never in a service, so it survives a
+   * refresh of `/locales` (rule 5).
    */
   protected readonly savedCode = signal<string | null>(
-    (this.router.getCurrentNavigation()?.extras.state?.['savedCode'] as string | undefined) ??
-      (history.state?.['savedCode'] as string | undefined) ??
-      null,
+    navigationState<string>(this.router, 'savedCode') ?? null,
   );
 
   protected async makeDefault(locale: Locale): Promise<void> {

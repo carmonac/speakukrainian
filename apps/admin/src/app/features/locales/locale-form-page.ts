@@ -19,7 +19,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 // The one value import of the shared barrel in the admin, and it sits inside a
 // lazily-loaded route chunk. Copying the regex into `Validators.pattern` would
 // be a second source of truth for the domain (rule 1).
-import { localeCodeSchema } from '@speakukrainian/shared';
+import { localeCodeSchema, type Locale } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { DEFAULT_LOCALE_TOOLTIP } from './locale-messages';
@@ -65,7 +65,7 @@ export class LocaleFormPage implements OnInit {
     code: ['', [Validators.required, localeCodeValidator]],
     name: ['', Validators.required],
     nativeName: ['', Validators.required],
-    direction: ['ltr' as 'ltr' | 'rtl', Validators.required],
+    direction: ['ltr' as Locale['direction'], Validators.required],
     enabled: [true],
     sortOrder: [0, Validators.required],
   });

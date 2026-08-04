@@ -9,6 +9,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { AuthService } from '../../core/auth/auth.service';
+import { navigationState } from '../../core/router/navigation-state';
 
 const DEFAULT_RETURN_URL = '/sections';
 
@@ -64,20 +65,8 @@ export class LoginPage {
   }
 
   private readNavigationState(): void {
-    this.errorMessage.set(this.navState<string>('message') ?? null);
-    this.returnUrl = this.navState<string>('returnUrl') ?? DEFAULT_RETURN_URL;
-  }
-
-  /**
-   * Reads a value a guard passed with `RedirectCommand`. During the redirect it
-   * is only on the pending navigation; after a refresh the browser still has it
-   * in `history.state`.
-   */
-  private navState<T>(key: string): T | undefined {
-    return (
-      (this.router.getCurrentNavigation()?.extras.state?.[key] as T | undefined) ??
-      (history.state?.[key] as T | undefined)
-    );
+    this.errorMessage.set(navigationState<string>(this.router, 'message') ?? null);
+    this.returnUrl = navigationState<string>(this.router, 'returnUrl') ?? DEFAULT_RETURN_URL;
   }
 
   protected async submit(): Promise<void> {
