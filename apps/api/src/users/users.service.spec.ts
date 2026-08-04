@@ -10,10 +10,14 @@ interface AuthRecord {
   uid: string;
   email?: string;
   displayName?: string;
+  customClaims?: { role: UserRole };
 }
 
 /** Keeps claims as state so assertions read what was written, not that a spy fired. */
-function createAuthDouble(records: AuthRecord[]): {
+function createAuthDouble(
+  records: AuthRecord[],
+  options: { claimWriteFails?: boolean } = {},
+): {
   auth: Auth;
   claims: Map<string, { role: UserRole }>;
 } {
@@ -26,6 +30,9 @@ function createAuthDouble(records: AuthRecord[]): {
       return record ? Promise.resolve(record) : Promise.reject(new Error('no such user'));
     },
     setCustomUserClaims: (uid: string, next: { role: UserRole }) => {
+      if (options.claimWriteFails) {
+        return Promise.reject(new Error('auth backend unavailable'));
+      }
       claims.set(uid, next);
       return Promise.resolve();
     },
@@ -34,7 +41,7 @@ function createAuthDouble(records: AuthRecord[]): {
   return { auth, claims };
 }
 
-function createRepositoryDouble(): {
+function createRepositoryDouble(options: { profileWriteFails?: boolean } = {}): {
   repository: UsersRepository;
   profiles: Map<string, UserProfile>;
 } {
@@ -58,6 +65,9 @@ function createRepositoryDouble(): {
       return Promise.resolve(profile);
     },
     setRole: (id: string, role: UserRole, actorId: string) => {
+      if (options.profileWriteFails) {
+        return Promise.reject(new Error('firestore unavailable'));
+      }
       const existing = profiles.get(id);
       if (!existing) {
         return Promise.resolve(null);
@@ -158,6 +168,47 @@ describe('UsersService.setRole', () => {
       BadRequestException,
     );
     expect(claims.has('admin-uid')).toBe(false);
+  });
+
+  it('leaves the custom claim untouched when the profile write fails', async () => {
+    // The claim is what authorizes requests, so a failed Firestore write must
+    // not leave a token that grants access the profile does not reflect.
+    const repo = createRepositoryDouble({ profileWriteFails: true });
+    const double = createAuthDouble([{ uid: 'uid-1', email: 'ada@example.com' }]);
+    const failing = new UsersService(repo.repository, double.auth);
+
+    await expect(failing.setRole('uid-1', 'admin', admin)).rejects.toThrow('firestore unavailable');
+    expect(double.claims.has('uid-1')).toBe(false);
+  });
+
+  it('refuses an account with no email before writing anything', async () => {
+    const repo = createRepositoryDouble();
+    const double = createAuthDouble([{ uid: 'uid-2' }]);
+    const failing = new UsersService(repo.repository, double.auth);
+
+    await expect(failing.setRole('uid-2', 'editor', admin)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(double.claims.has('uid-2')).toBe(false);
+    expect(repo.profiles.has('uid-2')).toBe(false);
+  });
+
+  it('puts the profile back to the role the token still carries when the claim write fails', async () => {
+    const repo = createRepositoryDouble();
+    const double = createAuthDouble(
+      [{ uid: 'uid-1', email: 'ada@example.com', customClaims: { role: 'student' } }],
+      { claimWriteFails: true },
+    );
+    const failing = new UsersService(repo.repository, double.auth);
+    await repo.repository.create(
+      { id: 'uid-1', email: 'ada@example.com', role: 'student' },
+      'seed',
+    );
+
+    await expect(failing.setRole('uid-1', 'admin', admin)).rejects.toThrow(
+      'auth backend unavailable',
+    );
+    expect(repo.profiles.get('uid-1')?.role).toBe('student');
   });
 
   it('creates a profile from the Auth record when none exists yet', async () => {
