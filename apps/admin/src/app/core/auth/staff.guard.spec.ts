@@ -34,6 +34,7 @@ function createAuthFake(options: {
   ready?: boolean;
   role?: UserRole | null;
   refreshedRole?: UserRole;
+  refreshFails?: boolean;
 }): AuthFake {
   const ready = signal(options.ready ?? true);
   const user = signal<AdminUser | null>(options.role ? adminUser(options.role) : null);
@@ -49,6 +50,9 @@ function createAuthFake(options: {
     },
     refreshClaims: () => {
       refreshCount += 1;
+      if (options.refreshFails) {
+        return Promise.reject(new Error('auth/network-request-failed'));
+      }
       if (options.refreshedRole) {
         user.set(adminUser(options.refreshedRole));
       }
@@ -117,6 +121,16 @@ describe('staffGuard', () => {
       returnUrl: ATTEMPTED_URL,
       message: STAFF_DENIED_MESSAGE,
     });
+  });
+
+  it('redirects rather than failing the navigation when the refresh throws', async () => {
+    const fake = createAuthFake({ role: 'student', refreshFails: true });
+
+    const result = await resolveGuard(fake);
+
+    expect(result).toBeInstanceOf(RedirectCommand);
+    const redirect = result as RedirectCommand;
+    expect(TestBed.inject(Router).serializeUrl(redirect.redirectTo)).toBe('/login');
   });
 
   it('does not claim a signed out visitor lacks access', async () => {

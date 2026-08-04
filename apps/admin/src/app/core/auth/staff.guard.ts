@@ -1,7 +1,7 @@
 import { inject } from '@angular/core';
 import { RedirectCommand, Router, type CanActivateFn } from '@angular/router';
 import { toObservable } from '@angular/core/rxjs-interop';
-import { filter, from, map, of, switchMap, take } from 'rxjs';
+import { catchError, filter, from, map, of, switchMap, take } from 'rxjs';
 import { AuthService } from './auth.service';
 
 export const STAFF_DENIED_MESSAGE = 'You do not have access to the admin panel.';
@@ -38,5 +38,10 @@ export const staffGuard: CanActivateFn = (_route, state) => {
       auth.isStaff() ? of(true) : from(auth.refreshClaims()).pipe(map(() => auth.isStaff())),
     ),
     map((allowed) => (allowed ? true : deny())),
+    // A token refresh can fail (the Auth backend is unreachable, the refresh
+    // token was revoked). Letting that error out of the guard fails the
+    // navigation and leaves the user staring at the previous screen, so an
+    // unprovable claim is treated as no claim.
+    catchError(() => of(deny())),
   );
 };
