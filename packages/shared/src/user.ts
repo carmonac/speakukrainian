@@ -34,3 +34,7 @@ export const ROLE_HIERARCHY: Record<UserRole, number> = {
 export function hasAtLeastRole(actual: UserRole, required: UserRole): boolean {
   return ROLE_HIERARCHY[actual] >= ROLE_HIERARCHY[required];
 }
+
+/** Body of `PATCH /api/users/:uid/role`. */
+export const updateUserRoleSchema = z.object({ role: userRoleSchema });
+export type UpdateUserRoleInput = z.infer<typeof updateUserRoleSchema>;
