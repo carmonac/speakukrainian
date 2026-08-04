@@ -27,7 +27,8 @@ export class LoginPage {
   private readonly fb = inject(FormBuilder);
 
   protected readonly submitting = signal(false);
-  protected readonly errorMessage = signal<string | null>(null);
+  /** Seeded from the guard's explanation when a signed-in user was refused. */
+  protected readonly errorMessage = signal<string | null>(this.navState<string>('message') ?? null);
 
   protected readonly form = this.fb.nonNullable.group({
     email: ['', [Validators.required, Validators.email]],
@@ -39,10 +40,19 @@ export class LoginPage {
    * in `history.state`, so a deep link survives the detour through login — and
    * survives a refresh of the login page too, since the browser retains it.
    */
-  private readonly returnUrl: string =
-    (this.router.getCurrentNavigation()?.extras.state?.['returnUrl'] as string | undefined) ??
-    (history.state?.['returnUrl'] as string | undefined) ??
-    '/sections';
+  private readonly returnUrl: string = this.navState<string>('returnUrl') ?? '/sections';
+
+  /**
+   * Reads a value a guard passed with `RedirectCommand`. During the redirect it
+   * is only on the pending navigation; after a refresh the browser still has it
+   * in `history.state`.
+   */
+  private navState<T>(key: string): T | undefined {
+    return (
+      (this.router.getCurrentNavigation()?.extras.state?.[key] as T | undefined) ??
+      (history.state?.[key] as T | undefined)
+    );
+  }
 
   protected async submit(): Promise<void> {
     if (this.form.invalid || this.submitting()) {

@@ -9,6 +9,7 @@
     <button mat-button [matMenuTriggerFor]="accountMenu">
       <mat-icon>account_circle</mat-icon>
       {{ currentUser.email }}
+      <span class="shell__role">{{ currentUser.role }}</span>
     </button>
     <mat-menu #accountMenu="matMenu">
       <button mat-menu-item (click)="signOut()">
