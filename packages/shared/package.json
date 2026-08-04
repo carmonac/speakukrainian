@@ -5,10 +5,15 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./roles": {
+      "types": "./dist/roles.d.ts",
+      "default": "./dist/roles.js"
     }
   },
   "files": [

@@ -298,6 +298,28 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(lightningcss@1.33.0)(sass@1.101.0)(supports-color@8.1.1)(terser@5.49.0)
 
+  scripts:
+    dependencies:
+      '@google-cloud/firestore':
+        specifier: ^8.7.0
+        version: 8.7.0(supports-color@8.1.1)
+      '@speakukrainian/shared':
+        specifier: workspace:*
+        version: link:../packages/shared
+      firebase-admin:
+        specifier: ^13.6.0
+        version: 13.10.0(@firebase/app-compat@0.5.16)(@firebase/app@0.16.0)(supports-color@8.1.1)
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.13.3
+      typescript:
+        specifier: ~6.0.0
+        version: 6.0.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.13.3)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(lightningcss@1.33.0)(sass@1.101.0)(supports-color@8.1.1)(terser@5.49.0)
+
 packages:
 
   '@acemir/cssom@0.9.31':

@@ -1,0 +1,22 @@
+{
+  "name": "@speakukrainian/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed:admin": "node --env-file-if-exists=../.env seed-admin.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^8.7.0",
+    "@speakukrainian/shared": "workspace:*",
+    "firebase-admin": "^13.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "~6.0.0",
+    "vitest": "^3.2.4"
+  }
+}

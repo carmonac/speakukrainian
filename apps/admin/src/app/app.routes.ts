@@ -1,5 +1,6 @@
 import type { Routes } from '@angular/router';
 import { authGuard } from './core/auth/auth.guard';
+import { staffGuard } from './core/auth/staff.guard';
 
 /**
  * Every admin screen is a real route with its own URL, so the browser back and
@@ -17,7 +18,9 @@ export const routes: Routes = [
   {
     path: '',
     loadComponent: () => import('./layout/admin-shell').then((m) => m.AdminShell),
-    canActivate: [authGuard],
+    // Guards run in order and stop at the first non-`true` result, so a signed
+    // out visitor is redirected by `authGuard` before `staffGuard` sees them.
+    canActivate: [authGuard, staffGuard],
     children: [
       { path: '', pathMatch: 'full', redirectTo: 'sections' },
       {

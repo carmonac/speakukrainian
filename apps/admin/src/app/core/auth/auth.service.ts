@@ -9,6 +9,9 @@ import {
   type Auth,
   type User,
 } from 'firebase/auth';
+// The `/roles` entry point carries no Zod: importing the comparison from the
+// barrel puts the whole schema package in the eager bundle.
+import { hasAtLeastRole } from '@speakukrainian/shared/roles';
 import type { UserRole } from '@speakukrainian/shared';
 import { environment } from '../../../environments/environment';
 
@@ -36,6 +39,11 @@ export class AuthService {
   readonly ready = this.initialized.asReadonly();
   readonly isAuthenticated = computed(() => this.currentUser() !== null);
   readonly isAdmin = computed(() => this.currentUser()?.role === 'admin');
+  /** Roles are hierarchical, so an admin is staff too. */
+  readonly isStaff = computed(() => {
+    const role = this.currentUser()?.role;
+    return role ? hasAtLeastRole(role, 'editor') : false;
+  });
 
   constructor() {
     if (environment.authEmulatorUrl) {
@@ -50,6 +58,20 @@ export class AuthService {
 
   async signIn(email: string, password: string): Promise<void> {
     await signInWithEmailAndPassword(this.auth, email, password);
+    // A claim granted since the last session is only in a freshly minted token.
+    await this.refreshClaims();
+  }
+
+  /**
+   * Forces a new ID token and re-reads its claims. Deliberately not called from
+   * `onIdTokenChanged` — minting a token there would re-enter the callback.
+   */
+  async refreshClaims(): Promise<AdminUser | null> {
+    const user = this.auth.currentUser;
+    const next = user ? await toAdminUser(user, true) : null;
+    this.currentUser.set(next);
+    this.initialized.set(true);
+    return next;
   }
 
   async signOut(): Promise<void> {
@@ -62,8 +84,8 @@ export class AuthService {
   }
 }
 
-async function toAdminUser(user: User): Promise<AdminUser> {
-  const token = await user.getIdTokenResult();
+async function toAdminUser(user: User, forceRefresh = false): Promise<AdminUser> {
+  const token = await user.getIdTokenResult(forceRefresh);
   return {
     uid: user.uid,
     email: user.email,

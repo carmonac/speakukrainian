@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    // The scripts run through Node's type stripping, which resolves the real
+    // file on disk — so the specs import `./seed-admin.ts`, not `.js`.
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}
