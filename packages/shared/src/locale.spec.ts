@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createLocaleSchema,
+  editableLocaleFields,
   listLocalesQuerySchema,
   localeSchema,
   updateLocaleSchema,
@@ -79,6 +80,17 @@ describe('updateLocaleSchema', () => {
     expect(updateLocaleSchema.safeParse({ sortOrder: 1.5 }).success).toBe(false);
     expect(updateLocaleSchema.safeParse({ name: '' }).success).toBe(false);
     expect(updateLocaleSchema.safeParse({ nativeName: 'N'.repeat(101) }).success).toBe(false);
+  });
+});
+
+describe('editableLocaleFields', () => {
+  it('names only fields the stored document also has', () => {
+    // A field that is patchable but not storable would be accepted by the API
+    // and then dropped by `localeSchema.parse()` in the repository — the same
+    // silent-write class of bug the split into editable fields fixed.
+    const stored = Object.keys(localeSchema.shape);
+
+    expect(Object.keys(editableLocaleFields).filter((field) => !stored.includes(field))).toEqual([]);
   });
 });
 

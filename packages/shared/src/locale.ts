@@ -12,7 +12,7 @@ const MAX_LOCALE_NAME_LENGTH = 100;
  * schema would fill in every field the request left out and silently rewrite
  * the stored value.
  */
-const editableLocaleFields = {
+export const editableLocaleFields = {
   /** Name in English, for the admin UI, e.g. "Ukrainian". */
   name: z.string().min(1).max(MAX_LOCALE_NAME_LENGTH),
   /** Name in the locale itself, for the public language switcher, e.g. "Українська". */
@@ -58,8 +58,9 @@ export type UpdateLocaleInput = z.infer<typeof updateLocaleSchema>;
 
 /**
  * Query for `GET /api/locales`. `?enabled=true` is what the public site asks
- * for. `z.stringbool()` rather than `z.coerce.boolean()`, which reads the
- * string `"false"` as `true`.
+ * for; the flag only ever narrows, so `?enabled=false` and an absent flag both
+ * mean "everything" rather than "only the disabled ones". `z.stringbool()`
+ * rather than `z.coerce.boolean()`, which reads the string `"false"` as `true`.
  */
 export const listLocalesQuerySchema = z.object({
   enabled: z.stringbool().optional(),
