@@ -111,6 +111,11 @@ _Why:_ CLAUDE.md rule 2 requires a decision here, and the alternatives are worse
 no way to guess what it said. A half-translated site that reads in English is usable, and the gap
 is visible to the admin rather than to the reader as a blank.
 
+_Scope:_ this governs **rendering**, not **authoring**. An editor never falls back:
+`LocalizedRichTextEditor` shows an empty tab for a locale it holds no text for, because showing the
+English text under the Ukrainian tab would have the author "translate" a copy of text that is
+already stored under another locale and save it as the Ukrainian translation.
+
 _Cost:_ the public site cannot tell "translated" from "falling back" without comparing the two, so a
 translation-coverage view is its own feature. Disabling or deleting a locale therefore never touches
 stored content — the text stays in Firestore and reappears if the locale comes back.
