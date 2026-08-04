@@ -1,11 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from '@google-cloud/firestore';
-import type { CreateLocaleInput } from '@speakukrainian/shared';
+import { updateLocaleSchema, type CreateLocaleInput } from '@speakukrainian/shared';
+import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { LocalesRepository, toDocumentData } from './locales.repository.js';
 
 interface StoredDoc {
   id: string;
   data: Record<string, unknown>;
+}
+
+interface DoubleOptions {
+  /**
+   * How many times the transaction body is aborted and re-run before it commits,
+   * which is what Firestore does under contention.
+   */
+  abortsBeforeCommit?: number;
+}
+
+interface Double {
+  firestore: Firestore;
+  docs: Map<string, StoredDoc['data']>;
+  /** How many times the last transaction body ran. */
+  transactionAttempts: () => number;
 }
 
 /**
@@ -16,9 +32,16 @@ interface StoredDoc {
  *
  * `create` rejects with gRPC code 6 for an existing id, which is the contract
  * the idempotent seed depends on.
+ *
+ * The transaction reproduces the two rules a transaction exists for, so a body
+ * that breaks either makes the test fail rather than pass quietly: a read after
+ * a write is rejected, and writes are buffered until the body has run to
+ * completion, so an aborted attempt leaves nothing behind and a retry re-reads
+ * committed data.
  */
-function createFirestoreDouble(): { firestore: Firestore; docs: Map<string, StoredDoc['data']> } {
+function createFirestoreDouble(options: DoubleOptions = {}): Double {
   const docs = new Map<string, StoredDoc['data']>();
+  let attempts = 0;
 
   const snapshot = (id: string) => ({
     id,
@@ -72,24 +95,47 @@ function createFirestoreDouble(): { firestore: Firestore; docs: Map<string, Stor
       doc: docRef,
       orderBy: query,
     }),
-    runTransaction: <T>(
+    runTransaction: async <T>(
       work: (tx: {
         get: (target: unknown) => Promise<unknown>;
         set: (ref: { id: string }, data: Record<string, unknown>) => void;
       }) => Promise<T>,
-    ): Promise<T> =>
-      work({
-        get: (target: unknown) => {
-          const candidate = target as { get: () => Promise<unknown> };
-          return candidate.get();
-        },
-        set: (ref, data) => {
-          docs.set(ref.id, data);
-        },
-      }),
+    ): Promise<T> => {
+      attempts = 0;
+      for (;;) {
+        const buffered = new Map<string, StoredDoc['data']>();
+        let wrote = false;
+        attempts += 1;
+
+        const result = await work({
+          get: (target: unknown) => {
+            if (wrote) {
+              return Promise.reject(
+                new Error('Firestore transactions require all reads before all writes'),
+              );
+            }
+            const candidate = target as { get: () => Promise<unknown> };
+            return candidate.get();
+          },
+          set: (ref, data) => {
+            wrote = true;
+            buffered.set(ref.id, data);
+          },
+        });
+
+        if (attempts <= (options.abortsBeforeCommit ?? 0)) {
+          continue;
+        }
+
+        for (const [id, data] of buffered) {
+          docs.set(id, data);
+        }
+        return result;
+      }
+    },
   } as unknown as Firestore;
 
-  return { firestore, docs };
+  return { firestore, docs, transactionAttempts: () => attempts };
 }
 
 function input(code: string, sortOrder: number): CreateLocaleInput {
@@ -173,6 +219,40 @@ describe('LocalesRepository', () => {
     expect(updated?.enabled).toBe(false);
   });
 
+  it('changes only the fields a patch parsed by the validation pipe carries', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    const repository = new LocalesRepository(firestore);
+    await repository.create(
+      { ...input('he', 42), name: 'Hebrew', nativeName: 'עברית', direction: 'rtl', enabled: false },
+      'admin-uid',
+    );
+
+    // The pipe is what the HTTP path actually applies to the body; going through
+    // it is the difference between testing a shape a request can produce and one
+    // it cannot.
+    const body = new ZodValidationPipe(updateLocaleSchema).transform({ name: 'Hebrew (Israel)' });
+    const updated = await repository.update('he', body, 'admin-uid');
+
+    expect(updated).toMatchObject({
+      name: 'Hebrew (Israel)',
+      direction: 'rtl',
+      enabled: false,
+      sortOrder: 42,
+    });
+    expect(docs.get('he')).toMatchObject({ direction: 'rtl', enabled: false, sortOrder: 42 });
+  });
+
+  it('does not re-enable a disabled locale when the reorder patch goes through the pipe', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    const repository = new LocalesRepository(firestore);
+    await repository.create({ ...input('es', 4), enabled: false }, 'admin-uid');
+
+    const body = new ZodValidationPipe(updateLocaleSchema).transform({ sortOrder: 1 });
+    await repository.update('es', body, 'admin-uid');
+
+    expect(docs.get('es')).toMatchObject({ enabled: false, sortOrder: 1 });
+  });
+
   it('returns null when updating an unknown code', async () => {
     const { firestore } = createFirestoreDouble();
     const repository = new LocalesRepository(firestore);
@@ -216,6 +296,22 @@ describe('LocalesRepository', () => {
     expect(defaultCodes(docs)).toEqual(['en']);
   });
 
+  it('still leaves exactly one default when the transaction is retried', async () => {
+    const { firestore, docs, transactionAttempts } = createFirestoreDouble({
+      abortsBeforeCommit: 1,
+    });
+    const repository = new LocalesRepository(firestore);
+    await repository.create(input('en', 0), 'seed', true);
+    await repository.create(input('es', 1), 'seed');
+    await repository.create(input('uk', 2), 'seed');
+
+    const updated = await repository.setDefault('uk', 'admin-uid');
+
+    expect(transactionAttempts()).toBe(2);
+    expect(updated?.isDefault).toBe(true);
+    expect(defaultCodes(docs)).toEqual(['uk']);
+  });
+
   it('returns null and writes nothing when the target code is unknown', async () => {
     const { firestore, docs } = createFirestoreDouble();
     const repository = new LocalesRepository(firestore);
@@ -234,6 +330,39 @@ describe('LocalesRepository', () => {
     docs.set('uk', { code: 'uk', name: 'Ukrainian' });
 
     await expect(repository.findById('uk')).rejects.toThrow();
+  });
+});
+
+// The transaction tests above are only worth anything if the double can reject
+// the mistakes Firestore rejects, so it is checked against both of them here.
+describe('the Firestore transaction double', () => {
+  it('rejects a read issued after a write', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    docs.set('en', { code: 'en' });
+
+    await expect(
+      firestore.runTransaction(async (tx) => {
+        const ref = firestore.collection('locales').doc('en');
+        tx.set(ref, { code: 'en', name: 'English' });
+        await tx.get(ref);
+      }),
+    ).rejects.toThrow(/all reads before all writes/);
+  });
+
+  it('discards the writes of an aborted attempt', async () => {
+    const { firestore, docs } = createFirestoreDouble({ abortsBeforeCommit: 1 });
+    const seen: (string | undefined)[] = [];
+
+    await firestore.runTransaction(async (tx) => {
+      const ref = firestore.collection('locales').doc('en');
+      const snapshot = await tx.get(ref);
+      seen.push(snapshot.exists ? 'exists' : 'missing');
+      tx.set(ref, { code: 'en' });
+    });
+
+    // The retry re-read committed data, not the aborted attempt's write.
+    expect(seen).toEqual(['missing', 'missing']);
+    expect(docs.get('en')).toEqual({ code: 'en' });
   });
 });
 

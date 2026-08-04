@@ -1,7 +1,7 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { CreateLocaleInput, Locale, UpdateLocaleInput } from '@speakukrainian/shared';
-import { LocalesRepository } from './locales.repository.js';
+import { LocalesRepository, MAX_LOCALES } from './locales.repository.js';
 import { LocalesService } from './locales.service.js';
 
 interface RepositoryFake {
@@ -120,8 +120,33 @@ describe('LocalesService.seed', () => {
     expect(docs.get('uk')?.isDefault).toBe(true);
   });
 
+  it('does not resurrect a deleted seed locale as a second default', async () => {
+    const { repository, docs } = createRepositoryFake();
+    const service = new LocalesService(repository);
+    await service.seed();
+    await service.setDefault('uk', 'admin-uid');
+    await service.remove('en');
+
+    // A deploy after the admin moved the default and dropped the old one.
+    expect(await service.seed()).toBe(1);
+
+    expect(docs.get('en')?.isDefault).toBe(false);
+    expect([...docs.values()].filter((l) => l.isDefault).map((l) => l.code)).toEqual(['uk']);
+  });
+
+  it('claims the default only on an empty collection', async () => {
+    const { repository, docs } = createRepositoryFake([locale('pl', { isDefault: true })]);
+    const service = new LocalesService(repository);
+
+    await service.seed();
+
+    expect(docs.get('en')?.isDefault).toBe(false);
+    expect([...docs.values()].filter((l) => l.isDefault).map((l) => l.code)).toEqual(['pl']);
+  });
+
   it('does not throw out of onModuleInit when the repository fails', async () => {
     const failing = {
+      list: () => Promise.reject(new Error('firestore unavailable')),
       create: () => Promise.reject(new Error('firestore unavailable')),
     } as unknown as LocalesRepository;
 
@@ -200,6 +225,31 @@ describe('LocalesService mutations', () => {
     expect(created.code).toBe('pl');
     expect(created.isDefault).toBe(false);
     expect(docs.get('pl')?.audit.createdBy).toBe('admin-uid');
+  });
+
+  it('refuses to create past the cap the list query reads to', async () => {
+    // Past the cap the list truncates: the extra locales would be invisible to
+    // the admin and a default outside the window would never be cleared.
+    const full = Array.from({ length: MAX_LOCALES }, (_, index) =>
+      locale(`x${index}`, { sortOrder: index, isDefault: index === 0 }),
+    );
+    const { repository, docs } = createRepositoryFake(full);
+    const service = new LocalesService(repository);
+
+    await expect(
+      service.create(
+        {
+          code: 'pl',
+          name: 'Polish',
+          nativeName: 'Polski',
+          direction: 'ltr',
+          enabled: true,
+          sortOrder: 3,
+        },
+        'admin-uid',
+      ),
+    ).rejects.toThrow(/limited to 100 locales/i);
+    expect(docs.size).toBe(MAX_LOCALES);
   });
 
   it('refuses to disable the default locale and says why', async () => {

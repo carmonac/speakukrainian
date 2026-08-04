@@ -12,7 +12,7 @@ import {
   type Locale,
   type UpdateLocaleInput,
 } from '@speakukrainian/shared';
-import { LocalesRepository } from './locales.repository.js';
+import { LocalesRepository, MAX_LOCALES } from './locales.repository.js';
 import { SEED_ACTOR, SEED_LOCALE_DEFINITIONS, isSeedDefault } from './locales.seed.js';
 
 @Injectable()
@@ -39,14 +39,22 @@ export class LocalesService implements OnModuleInit {
    * written, which is what makes idempotency assertable. An existing document is
    * never overwritten, so an admin who moved the default to `uk` does not find
    * `en` back as the default after the next deploy.
+   *
+   * The default flag is claimed only when the collection holds none, so a seed
+   * locale the admin deleted comes back as an ordinary locale instead of as a
+   * second default. The conflict is still decided by `create()`, so two
+   * instances booting at once cannot both write `en`.
    */
   async seed(): Promise<number> {
+    const stored = await this.repository.list();
+    const hasDefault = stored.some((locale) => locale.isDefault);
+
     let written = 0;
     for (const code of SEED_LOCALES) {
       const created = await this.repository.create(
         SEED_LOCALE_DEFINITIONS[code],
         SEED_ACTOR,
-        isSeedDefault(code),
+        !hasDefault && isSeedDefault(code),
       );
       if (created) {
         written += 1;
@@ -65,7 +73,19 @@ export class LocalesService implements OnModuleInit {
     return query.enabled === true ? all.filter((locale) => locale.enabled) : all;
   }
 
+  /**
+   * The cap is enforced here, not only on the read side: past it the list query
+   * would truncate, so a locale would be invisible to the admin and a default
+   * outside the window would never be cleared by the next default switch.
+   */
   async create(input: CreateLocaleInput, actorId: string): Promise<Locale> {
+    const stored = await this.repository.list();
+    if (stored.length >= MAX_LOCALES) {
+      throw new ConflictException(
+        `The site is limited to ${MAX_LOCALES} locales. Delete one before adding another.`,
+      );
+    }
+
     const created = await this.repository.create(input, actorId);
     if (!created) {
       throw new ConflictException(`Locale "${input.code}" already exists`);

@@ -37,4 +37,9 @@ export const SEED_LOCALE_DEFINITIONS: Record<(typeof SEED_LOCALES)[number], Crea
 /** Seeded documents are written by the system, not by a signed-in admin. */
 export const SEED_ACTOR = 'system';
 
+/**
+ * Which seed locale claims the default flag on an *empty* database. Whether it
+ * gets to claim it at all is `LocalesService.seed`'s call: once a default
+ * exists, seeding must not mint a second one.
+ */
 export const isSeedDefault = (code: string): boolean => code === DEFAULT_LOCALE;
