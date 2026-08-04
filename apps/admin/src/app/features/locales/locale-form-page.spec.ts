@@ -8,6 +8,7 @@ import type { Locale } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { LocaleFormPage } from './locale-form-page';
+import { DEFAULT_LOCALE_TOOLTIP } from './locale-messages';
 
 @Component({ selector: 'app-locales-list-stub', template: 'list' })
 class ListStub {}
@@ -169,6 +170,48 @@ describe('LocaleFormPage', () => {
         ],
       },
     ]);
+  });
+
+  it('does not offer to disable the default locale, and says why', async () => {
+    const { calls } = setup([locale('en', { isDefault: true })]);
+    const harness = await RouterTestingHarness.create('/locales/en');
+
+    expect(
+      root(harness).querySelector<HTMLButtonElement>('mat-slide-toggle button')?.disabled,
+    ).toBe(true);
+    expect(root(harness).querySelector('.locale-form__note')?.textContent?.trim()).toBe(
+      DEFAULT_LOCALE_TOOLTIP,
+    );
+
+    await submit(harness);
+
+    // The disabled control still saves the stored value, so nothing else the
+    // admin edited on this form is lost to it.
+    expect(calls).toEqual([
+      {
+        method: 'update',
+        args: [
+          'en',
+          {
+            name: 'Ukrainian',
+            nativeName: 'Українська',
+            direction: 'ltr',
+            enabled: true,
+            sortOrder: 2,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('leaves the toggle live for a non-default locale', async () => {
+    setup(seeded);
+    const harness = await RouterTestingHarness.create('/locales/uk');
+
+    expect(
+      root(harness).querySelector<HTMLButtonElement>('mat-slide-toggle button')?.disabled,
+    ).toBe(false);
+    expect(root(harness).querySelector('.locale-form__note')).toBeNull();
   });
 
   it('sends a deep link to an unknown code back to the list with an explanation', async () => {

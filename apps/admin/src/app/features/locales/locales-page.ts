@@ -12,8 +12,7 @@ import type { Locale } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { ConfirmDialog, type ConfirmDialogData } from '../../shared/dialogs/confirm-dialog';
-
-export const DEFAULT_LOCALE_TOOLTIP = 'The default locale cannot be disabled or deleted.';
+import { DEFAULT_LOCALE_TOOLTIP } from './locale-messages';
 
 @Component({
   selector: 'app-locales-page',

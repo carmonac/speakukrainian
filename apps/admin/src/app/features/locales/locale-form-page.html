@@ -48,7 +48,12 @@
           <input matInput type="number" formControlName="sortOrder" />
         </mat-form-field>
 
-        <mat-slide-toggle formControlName="enabled">Enabled</mat-slide-toggle>
+        <span [matTooltip]="isDefault() ? defaultTooltip : ''">
+          <mat-slide-toggle formControlName="enabled">Enabled</mat-slide-toggle>
+        </span>
+        @if (isDefault()) {
+          <p class="locale-form__note">{{ defaultTooltip }}</p>
+        }
 
         <div class="locale-form__actions">
           <a matButton type="button" routerLink="/locales">Cancel</a>
