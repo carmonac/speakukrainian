@@ -18,14 +18,37 @@ Modelled on [test-english.com](https://test-english.com).
 
 ## Getting started
 
-Requires Node 22+, pnpm 11+, and Docker.
+Requires Node 22.18+ (the seed script runs as TypeScript through Node's type stripping),
+pnpm 11+, and Docker.
 
 ```bash
 pnpm install
 cp .env.example .env
 pnpm emulators:up      # Firestore + Auth + fake Cloud Storage
+pnpm seed:admin        # an admin account to sign in with
 pnpm dev
 ```
+
+### The admin account
+
+The Auth emulator starts empty, so `pnpm seed:admin` creates the account the admin panel signs
+in with. It defaults to `admin@speakukrainian.local` / `password`, gives it the `admin` custom
+claim the API's role guard reads, and writes the matching `users/{uid}` profile document.
+
+```bash
+pnpm seed:admin
+pnpm seed:admin --email=me@example.com --password=hunter22 --name="Me" --role=editor
+```
+
+Flags override `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD` and `SEED_ADMIN_NAME` from `.env`. The
+script is idempotent: running it again reuses the same account and rewrites the same profile
+document rather than creating a second one. It refuses to run unless both
+`FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` are set, so it can never reach a
+real project.
+
+Only `editor` and `admin` may enter the admin panel. To promote someone, sign in as an admin and
+call `PATCH /api/users/:uid/role`; the change takes effect on their next page refresh, without a
+sign-out.
 
 |             |                                |
 | ----------- | ------------------------------ |
