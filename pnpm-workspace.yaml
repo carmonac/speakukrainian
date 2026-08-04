@@ -1,6 +1,7 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "scripts"
 
 # Native/postinstall builds we explicitly trust.
 allowBuilds:
