@@ -56,7 +56,11 @@ export class UsersRepository extends BaseRepository<UserProfile> {
       return null;
     }
 
-    const next: UserProfile = { ...existing, role, audit: this.touchAudit(existing.audit, actorId) };
+    const next: UserProfile = {
+      ...existing,
+      role,
+      audit: this.touchAudit(existing.audit, actorId),
+    };
     await this.collection.doc(id).set(toDocumentData(next));
     return next;
   }
