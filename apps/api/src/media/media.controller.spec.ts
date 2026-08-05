@@ -1,12 +1,15 @@
 import 'reflect-metadata';
 import { Readable } from 'node:stream';
 import { BadRequestException } from '@nestjs/common';
+import { INTERCEPTORS_METADATA } from '@nestjs/common/constants.js';
 import { describe, expect, it } from 'vitest';
+import { MEDIA_UPLOAD_RULES } from '@speakukrainian/shared';
 import type { AssetRef, MediaKind, UserRole } from '@speakukrainian/shared';
 import { IS_PUBLIC_KEY } from '../auth/public.decorator.js';
 import { ROLES_KEY } from '../auth/roles.decorator.js';
 import { MediaController } from './media.controller.js';
 import type { MediaService } from './media.service.js';
+import { UploadLimitInterceptor } from './media.upload-limit.interceptor.js';
 
 const storedAsset: AssetRef = {
   path: 'images/2026/03/2f7d1f1c-0b3a-4b2e-9d31-8b5f0a1c2d3e.png',
@@ -90,6 +93,24 @@ describe('MediaController', () => {
   });
 });
 
+/** A multer-backed `FileInterceptor` mixin, which holds its options on `multer`. */
+interface FileInterceptorMixin {
+  multer: { limits?: { fileSize?: number; files?: number } };
+}
+
+/**
+ * Instantiating the mixin is the only way to see which options `FileInterceptor`
+ * was given: they are captured in its closure and reachable only through the
+ * multer instance the constructor builds.
+ */
+function multerLimitsOf(entry: unknown): unknown {
+  if (typeof entry !== 'function') {
+    throw new Error('expected a FileInterceptor mixin class, got ' + typeof entry);
+  }
+  const Mixin = entry as new () => FileInterceptorMixin;
+  return new Mixin().multer.limits;
+}
+
 describe('MediaController route metadata', () => {
   // Rule 8: both routes mutate storage, so both carry a role guard and neither
   // is public. A dropped decorator compiles either way.
@@ -97,19 +118,38 @@ describe('MediaController route metadata', () => {
     Reflect.getMetadata(ROLES_KEY, handler) as UserRole[] | undefined;
   const isPublic = (handler: object): boolean | undefined =>
     Reflect.getMetadata(IS_PUBLIC_KEY, handler) as boolean | undefined;
+  const interceptors = (handler: object): unknown[] =>
+    (Reflect.getMetadata(INTERCEPTORS_METADATA, handler) as unknown[] | undefined) ?? [];
 
-  const routes = {
-    uploadImage: MediaController.prototype.uploadImage,
-    uploadAudio: MediaController.prototype.uploadAudio,
-  };
+  const routes: { name: string; handler: object; kind: MediaKind }[] = [
+    { name: 'uploadImage', handler: MediaController.prototype.uploadImage, kind: 'image' },
+    { name: 'uploadAudio', handler: MediaController.prototype.uploadAudio, kind: 'audio' },
+  ];
 
-  for (const [name, handler] of Object.entries(routes)) {
+  for (const { name, handler, kind } of routes) {
     it(`restricts ${name} to editors and above`, () => {
       expect(roles(handler)).toEqual(['editor']);
     });
 
     it(`does not mark ${name} public`, () => {
       expect(isPublic(handler)).toBeUndefined();
+    });
+
+    it(`puts the ${kind} limit interceptor ahead of multer on ${name}`, () => {
+      // Nothing at runtime would complain if these two were swapped or if one
+      // route were given the other's kind: the upload would still work and only
+      // the 413 message would be wrong, which no other test on the audio route
+      // reaches. Composing them in `MediaUpload` makes that impossible; this
+      // asserts the composition actually arrived on the route.
+      const [limit, upload, ...rest] = interceptors(handler);
+
+      expect(limit).toBeInstanceOf(UploadLimitInterceptor);
+      expect((limit as UploadLimitInterceptor).kind).toBe(kind);
+      expect(multerLimitsOf(upload)).toEqual({
+        fileSize: MEDIA_UPLOAD_RULES[kind].maxBytes,
+        files: 1,
+      });
+      expect(rest).toEqual([]);
     });
   }
 });

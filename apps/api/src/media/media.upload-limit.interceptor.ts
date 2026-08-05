@@ -16,13 +16,15 @@ import { uploadTooLargeMessage, type MediaKind } from '@speakukrainian/shared';
  * This cannot be a check in the route handler: multer aborts the upload before
  * the handler runs, and the exception surfaces out of `FileInterceptor`.
  * Listing this interceptor before `FileInterceptor` puts it upstream, where
- * `next.handle()` carries that rejection.
+ * `next.handle()` carries that rejection — which is why routes install it
+ * through `MediaUpload` rather than ordering it themselves.
  *
  * Constructed per route rather than injected — it has no dependencies beyond
- * the kind of the route it guards.
+ * the kind of the route it guards. `kind` is public so a test can read the
+ * pairing back off the route's interceptor metadata.
  */
 export class UploadLimitInterceptor implements NestInterceptor {
-  constructor(private readonly kind: MediaKind) {}
+  constructor(public readonly kind: MediaKind) {}
 
   intercept(_context: ExecutionContext, next: CallHandler): Observable<unknown> {
     return next
