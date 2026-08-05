@@ -3,7 +3,13 @@ import type { Firestore } from '@google-cloud/firestore';
 import type { Auth } from 'firebase-admin/auth';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { COLLECTIONS, SEED_LOCALES, type Locale, type PublicLocale } from '@speakukrainian/shared';
+import {
+  COLLECTIONS,
+  DEFAULT_LOCALE,
+  SEED_LOCALES,
+  type Locale,
+  type PublicLocale,
+} from '@speakukrainian/shared';
 import { FIRESTORE } from '../src/infra/firestore/firestore.tokens.js';
 import { LocalesService } from '../src/locales/locales.service.js';
 import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
@@ -13,7 +19,7 @@ import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
 const TEST_CODE = 'zu';
 const SWITCH_CODE = 'sw';
 const FILTER_CODE = 'yo';
-const CREATED_CODES = [TEST_CODE, SWITCH_CODE, FILTER_CODE];
+const CREATED_CODES: readonly string[] = [TEST_CODE, SWITCH_CODE, FILTER_CODE];
 
 describe('locales (e2e)', () => {
   let app: INestApplication;
@@ -33,17 +39,22 @@ describe('locales (e2e)', () => {
   };
 
   /**
-   * A run that fails while a test locale holds the default flag leaves the
-   * collection with zero defaults once the leftover document is dropped, and
-   * nothing recovers from that on its own: seeding only writes locales that
-   * are missing, so it never restores the flag on one that is already stored.
-   * Healing it here keeps one failed run from failing every run after it.
+   * `dropTestLocales` deletes straight through Firestore, so it bypasses the
+   * service's "the default cannot be deleted" rule: dropping a test locale
+   * that holds the flag leaves the collection with zero defaults, and nothing
+   * recovers from that on its own — seeding only writes locales that are
+   * *missing*, so it never restores the flag on one already stored.
+   *
+   * Handing the flag back before the drop repairs only the damage this suite
+   * can do, and only where it does it. Repairing whatever state is *found*
+   * instead would also repair a boot that genuinely seeded no default, which
+   * is the failure `seeds the site locales on boot` exists to catch.
    */
-  const restoreDefault = async (): Promise<void> => {
+  const releaseDefaultFromTestLocales = async (): Promise<void> => {
     const locales = app.get(LocalesService);
     const stored = await locales.list({});
-    if (!stored.some((locale) => locale.isDefault)) {
-      await locales.setDefault(SEED_LOCALES[0], 'e2e-setup');
+    if (stored.some((locale) => locale.isDefault && CREATED_CODES.includes(locale.code))) {
+      await locales.setDefault(DEFAULT_LOCALE, 'e2e-setup');
     }
   };
 
@@ -51,16 +62,17 @@ describe('locales (e2e)', () => {
     app = await createTestApp();
     auth = authOf(app);
     firestore = app.get<Firestore>(FIRESTORE);
-    // A run that failed half way through would otherwise poison the next one.
+    // A run killed before its teardown would otherwise poison the next one.
+    await releaseDefaultFromTestLocales();
     await dropTestLocales();
-    await restoreDefault();
     [admin, student] = await Promise.all([signInAs(auth, 'admin'), signInAs(auth, 'student')]);
   });
 
   // Guarded on what setup actually reached: when `beforeAll` fails, an
   // unguarded teardown throws over the top of it and hides why.
   afterAll(async () => {
-    if (firestore) {
+    if (app && firestore) {
+      await releaseDefaultFromTestLocales();
       await dropTestLocales();
     }
     const created = [admin, student].filter((user) => user !== undefined);
