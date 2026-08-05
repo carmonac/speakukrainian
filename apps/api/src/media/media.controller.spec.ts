@@ -93,9 +93,18 @@ describe('MediaController', () => {
   });
 });
 
+interface MulterInstance {
+  limits?: { fileSize?: number; files?: number };
+  fileFilter?: (
+    request: unknown,
+    file: { mimetype: string },
+    callback: (error: Error | null, acceptFile: boolean) => void,
+  ) => void;
+}
+
 /** A multer-backed `FileInterceptor` mixin, which holds its options on `multer`. */
 interface FileInterceptorMixin {
-  multer: { limits?: { fileSize?: number; files?: number } };
+  multer: MulterInstance;
 }
 
 /**
@@ -103,12 +112,29 @@ interface FileInterceptorMixin {
  * was given: they are captured in its closure and reachable only through the
  * multer instance the constructor builds.
  */
-function multerLimitsOf(entry: unknown): unknown {
+function multerOf(entry: unknown): MulterInstance {
   if (typeof entry !== 'function') {
     throw new Error('expected a FileInterceptor mixin class, got ' + typeof entry);
   }
   const Mixin = entry as new () => FileInterceptorMixin;
-  return new Mixin().multer.limits;
+  return new Mixin().multer;
+}
+
+/** Runs the route's own `fileFilter` over a declared content type. */
+function accepts(instance: MulterInstance, mimetype: string): boolean {
+  const filter = instance.fileFilter;
+  if (!filter) {
+    throw new Error('the route was given multer options with no fileFilter');
+  }
+
+  let outcome: boolean | undefined;
+  filter(null, { mimetype }, (error, acceptFile) => {
+    outcome = error === null && acceptFile;
+  });
+  if (outcome === undefined) {
+    throw new Error(`fileFilter never called back for ${mimetype}`);
+  }
+  return outcome;
 }
 
 describe('MediaController route metadata', () => {
@@ -145,11 +171,27 @@ describe('MediaController route metadata', () => {
 
       expect(limit).toBeInstanceOf(UploadLimitInterceptor);
       expect((limit as UploadLimitInterceptor).kind).toBe(kind);
-      expect(multerLimitsOf(upload)).toEqual({
+      expect(multerOf(upload).limits).toEqual({
         fileSize: MEDIA_UPLOAD_RULES[kind].maxBytes,
         files: 1,
       });
       expect(rest).toEqual([]);
+    });
+
+    it(`filters ${name} by the ${kind} allow-list, not the other kind's`, () => {
+      // The limits above tell the two kinds apart only because the byte limits
+      // happen to differ; the allow-list is what decides a 415, and it tells
+      // them apart by construction.
+      const other: MediaKind = kind === 'image' ? 'audio' : 'image';
+      const multer = multerOf(interceptors(handler)[1]);
+      const candidates = [
+        ...MEDIA_UPLOAD_RULES[kind].contentTypes,
+        ...MEDIA_UPLOAD_RULES[other].contentTypes,
+      ];
+
+      expect(candidates.filter((contentType) => accepts(multer, contentType))).toEqual([
+        ...MEDIA_UPLOAD_RULES[kind].contentTypes,
+      ]);
     });
   }
 });
