@@ -8,6 +8,15 @@ import { STORAGE_PREFIXES } from './collections.js';
  * message and the server's 415/413 cannot describe different rules. The
  * user-facing wording lives here for the same reason.
  */
+/**
+ * `image/svg+xml` is allowed on one condition: media is served from the storage
+ * origin, never from the admin's or the site's. An SVG can carry script, and
+ * script in a stored file runs with the origin that served it — harmless on the
+ * bucket's own origin, a session-stealing hole on ours. So a route that streams
+ * media through the API (`StorageService.createReadStream` already exists) or a
+ * same-origin CDN path in front of the bucket invalidates this entry: drop
+ * `image/svg+xml` and its extension, or sanitize on upload, before adding one.
+ */
 export const IMAGE_CONTENT_TYPES = [
   'image/png',
   'image/jpeg',

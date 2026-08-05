@@ -147,6 +147,12 @@ two cannot drift (rule 1).
 
 Storage prefixes: `images/`, `audio/`, `h5p/content/`, `h5p/libraries/`, `h5p/temp/`.
 
+Uploaded media lands at `<prefix>/<yyyy>/<mm>/<uuid>.<ext>`, with the year and month in UTC and
+the extension derived from the content type, never from the uploaded filename — so a caller
+cannot choose the name an object lands under, and two uploads of `intro.mp3` cannot collide.
+Nothing indexes these objects yet: the sweep for orphans that ADR-004 anticipates has to walk the
+prefix a month at a time and match paths against `data-asset-path` in published content.
+
 ## Local development
 
 `docker compose up` runs the Firestore and Auth emulators (a custom image with a JRE and
