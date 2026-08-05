@@ -4,7 +4,12 @@ import type { Storage } from '@google-cloud/storage';
 import type { Auth } from 'firebase-admin/auth';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MAX_IMAGE_UPLOAD_BYTES, assetRefSchema, type AssetRef } from '@speakukrainian/shared';
+import {
+  MAX_IMAGE_UPLOAD_BYTES,
+  assetRefSchema,
+  uploadTooLargeMessage,
+  type AssetRef,
+} from '@speakukrainian/shared';
 import type { Env } from '../src/config/configuration.js';
 import { CLOUD_STORAGE } from '../src/infra/storage/storage.tokens.js';
 import { StorageService } from '../src/infra/storage/storage.service.js';
@@ -131,6 +136,9 @@ describe('media (e2e)', () => {
   });
 
   it('rejects a part whose declared content type is not on the allow-list', async () => {
+    const prefix = currentMonthPrefix('audio');
+    const before = await countObjects(prefix);
+
     const response = await request(server())
       .post('/api/media/audio')
       .set('Authorization', `Bearer ${editor.idToken}`)
@@ -143,9 +151,12 @@ describe('media (e2e)', () => {
     const body = response.body as ErrorBody;
     expect(body.statusCode).toBe(415);
     expect(body.message).toContain('text/plain');
+    // The filter runs before the storage engine, so a refused part must leave
+    // the bucket exactly as it was.
+    await expect(countObjects(prefix)).resolves.toBe(before);
   });
 
-  it('rejects an oversize upload with 413 and writes nothing', async () => {
+  it('rejects an oversize upload with 413 naming the limit and writes nothing', async () => {
     const prefix = currentMonthPrefix('images');
     const before = await countObjects(prefix);
 
@@ -160,7 +171,11 @@ describe('media (e2e)', () => {
 
     // Pinned: multer's LIMIT_FILE_SIZE takes Nest's HttpException path, so the
     // response carries the normal error envelope rather than a bare 413.
-    expect((response.body as ErrorBody).statusCode).toBe(413);
+    const body = response.body as ErrorBody;
+    expect(body.statusCode).toBe(413);
+    // Not multer's bare `File too large`: a caller that skipped the admin's
+    // pre-check still has to be told what the limit is.
+    expect(body.message).toBe(uploadTooLargeMessage('image'));
     await expect(countObjects(prefix)).resolves.toBe(before);
   });
 
@@ -170,6 +185,45 @@ describe('media (e2e)', () => {
       .set('Authorization', `Bearer ${editor.idToken}`)
       .field('file', 'not-a-file')
       .expect(400);
+  });
+
+  it('answers 400 for a JSON body instead of a multipart upload', async () => {
+    const response = await request(server())
+      .post('/api/media/image')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .send({ file: 'https://example.com/diagram.png' })
+      .expect(400);
+
+    // Multer skips a non-multipart request entirely, so the handler decides.
+    expect((response.body as ErrorBody).message).toContain('file');
+  });
+
+  it('refuses a second file part rather than picking one', async () => {
+    const prefix = currentMonthPrefix('images');
+    const before = await countObjects(prefix);
+
+    const response = await request(server())
+      .post('/api/media/image')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', PNG, { filename: 'first.png', contentType: 'image/png' })
+      .attach('file', PNG, { filename: 'second.png', contentType: 'image/png' })
+      .expect(400);
+
+    // `limits.files: 1` is what produces this; without it the route would
+    // silently keep one of the two.
+    expect((response.body as ErrorBody).message).toBe('Too many files');
+    await expect(countObjects(prefix)).resolves.toBe(before);
+  });
+
+  it('refuses a file sent under a field name other than "file"', async () => {
+    const response = await request(server())
+      .post('/api/media/image')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('upload', PNG, { filename: 'diagram.png', contentType: 'image/png' })
+      .expect(400);
+
+    // The field name is part of the contract with `ApiService.upload`.
+    expect((response.body as ErrorBody).message).toBe('Unexpected field - upload');
   });
 
   it('refuses an upload without a token', async () => {

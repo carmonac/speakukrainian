@@ -10,6 +10,7 @@ import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { assetRefSchema, type AssetRef, type MediaKind } from '@speakukrainian/shared';
 import { Roles } from '../auth/roles.decorator.js';
 import { mediaUploadOptions } from './media.multer.js';
+import { UploadLimitInterceptor } from './media.upload-limit.interceptor.js';
 import { MediaService } from './media.service.js';
 
 /** OpenAPI shape of the multipart body; the field name matches `ApiService.upload`. */
@@ -37,7 +38,10 @@ export class MediaController {
 
   @Post('image')
   @Roles('editor')
-  @UseInterceptors(FileInterceptor('file', mediaUploadOptions('image')))
+  @UseInterceptors(
+    new UploadLimitInterceptor('image'),
+    FileInterceptor('file', mediaUploadOptions('image')),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiBody(FILE_BODY)
   uploadImage(@UploadedFile() file?: Express.Multer.File): Promise<AssetRef> {
@@ -46,7 +50,10 @@ export class MediaController {
 
   @Post('audio')
   @Roles('editor')
-  @UseInterceptors(FileInterceptor('file', mediaUploadOptions('audio')))
+  @UseInterceptors(
+    new UploadLimitInterceptor('audio'),
+    FileInterceptor('file', mediaUploadOptions('audio')),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiBody(FILE_BODY)
   uploadAudio(@UploadedFile() file?: Express.Multer.File): Promise<AssetRef> {

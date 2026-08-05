@@ -43,6 +43,11 @@ export class MediaPickerService {
    * against the shared rules first, so an author who drags in a 200 MB
    * recording is told why without waiting for the upload the API would refuse
    * anyway.
+   *
+   * `file.type` is what the browser declares, and it derives that from the
+   * extension: a text file renamed to `.mp3` reads as `audio/mpeg` here and
+   * passes both this check and the API's. Known and deferred, see
+   * https://github.com/carmonac/speakukrainian/issues/21.
    */
   async uploadFile(kind: MediaKind, file: File): Promise<AssetRef | null> {
     if (!isAllowedContentType(kind, file.type)) {
