@@ -10,12 +10,18 @@ import { FIREBASE_AUTH } from '../src/auth/auth.tokens.js';
 /**
  * Boots the real application against the emulators, prefixed the way `main.ts`
  * prefixes it — the routes under test are the ones the front ends call.
+ *
+ * It listens on an ephemeral port rather than stopping at `init()`: supertest
+ * binds and closes a fresh port per request against a non-listening server, and
+ * under rapid succession the client then reads a response that belongs to
+ * another request (a 401 the guard never raised, a 200 for a DELETE) or an
+ * ECONNRESET. `app.close()` releases the listener.
  */
 export async function createTestApp(): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   const app = moduleRef.createNestApplication();
   app.setGlobalPrefix('api', { exclude: ['healthz', 'readyz'] });
-  await app.init();
+  await app.listen(0);
   return app;
 }
 
