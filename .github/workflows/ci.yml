@@ -33,10 +33,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Format check
-        run: pnpm format:check
-
-      - name: Lint
+      # `pnpm lint` runs `format:check` before the per-package linters, so CI
+      # and the local gate cannot drift apart.
+      - name: Lint and format check
         run: pnpm lint
 
       - name: Typecheck
@@ -70,8 +69,10 @@ jobs:
       - name: Start Firestore and Cloud Storage emulators
         run: docker compose up -d --build --wait
 
+      # Through Turborepo, so `packages/shared` is built before the API imports
+      # it from `dist`.
       - name: Run API e2e tests
-        run: pnpm --filter @speakukrainian/api test:e2e
+        run: pnpm test:e2e
         env:
           GOOGLE_CLOUD_PROJECT: speakukrainian-local
           STORAGE_BUCKET: speakukrainian-media

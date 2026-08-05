@@ -23,6 +23,31 @@ export type LocalizedText = z.infer<typeof localizedTextSchema>;
 export const richTextSchema = z.record(localeCodeSchema, z.string());
 export type RichText = z.infer<typeof richTextSchema>;
 
+/**
+ * Reads one locale out of a localized value. See ADR-009: a value that is
+ * absent — or present but empty, which is what the editor writes for a tab the
+ * author opened and left blank — falls back to the default locale, and only
+ * then to `''`. Nothing localized ever reaches a template as `undefined`.
+ *
+ * `defaultLocale` is a parameter rather than the `DEFAULT_LOCALE` constant
+ * because that constant lives in `locale.ts`, which imports this module.
+ */
+export function resolveLocalized(
+  value: LocalizedText | RichText | null | undefined,
+  locale: LocaleCode,
+  defaultLocale: LocaleCode,
+): string {
+  return pickLocale(value, locale) ?? pickLocale(value, defaultLocale) ?? '';
+}
+
+function pickLocale(
+  value: LocalizedText | RichText | null | undefined,
+  locale: LocaleCode,
+): string | undefined {
+  const text = value?.[locale];
+  return text !== undefined && text.trim().length > 0 ? text : undefined;
+}
+
 export const publishStatusSchema = z.enum(['draft', 'published', 'archived']);
 export type PublishStatus = z.infer<typeof publishStatusSchema>;
 

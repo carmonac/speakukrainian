@@ -1,6 +1,7 @@
 import type { Routes } from '@angular/router';
 import { authGuard } from './core/auth/auth.guard';
 import { staffGuard } from './core/auth/staff.guard';
+import { localesResolver } from './core/locales/locales.resolver';
 
 /**
  * Every admin screen is a real route with its own URL, so the browser back and
@@ -21,6 +22,9 @@ export const routes: Routes = [
     // Guards run in order and stop at the first non-`true` result, so a signed
     // out visitor is redirected by `authGuard` before `staffGuard` sees them.
     canActivate: [authGuard, staffGuard],
+    // Resolvers run after the guards, so a visitor about to be bounced to
+    // `/login` never triggers the fetch.
+    resolve: { locales: localesResolver },
     children: [
       { path: '', pathMatch: 'full', redirectTo: 'sections' },
       {

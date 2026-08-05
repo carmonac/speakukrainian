@@ -6,14 +6,15 @@ import { FirestoreModule } from './infra/firestore/firestore.module.js';
 import { StorageModule } from './infra/storage/storage.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { UsersModule } from './users/users.module.js';
+import { LocalesModule } from './locales/locales.module.js';
 import { FirebaseAuthGuard } from './auth/firebase-auth.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { HttpExceptionFilter } from './common/http-exception.filter.js';
 import { HealthController } from './health/health.controller.js';
 
 /**
- * Root module. Feature modules (locales, sections, pages, schedule, h5p, media)
- * are added here as they land — see the GitHub milestones for the order.
+ * Root module. Feature modules (sections, pages, schedule, h5p, media) are
+ * added here as they land — see the GitHub milestones for the order.
  *
  * Authentication is global-by-default: every route requires a valid Firebase
  * token unless it is explicitly marked `@Public()`.
@@ -29,6 +30,7 @@ import { HealthController } from './health/health.controller.js';
     StorageModule,
     AuthModule,
     UsersModule,
+    LocalesModule,
   ],
   controllers: [HealthController],
   providers: [

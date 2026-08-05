@@ -49,6 +49,11 @@ export class LocalizedRichTextEditor implements ControlValueAccessor {
   private onChange: (value: RichText) => void = () => {};
   private onTouched: () => void = () => {};
 
+  /**
+   * An untranslated tab is empty, never the default locale's text: ADR-009's
+   * fallback governs rendering, and applying it here would have the author
+   * "translate" a copy of text already stored under another locale.
+   */
   protected valueFor(locale: LocaleCode): string {
     return this.value()[locale] ?? '';
   }

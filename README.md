@@ -64,9 +64,11 @@ sign-out.
 ## Checks
 
 ```bash
-pnpm lint typecheck test build
-pnpm --filter @speakukrainian/api test:e2e   # needs emulators running
+pnpm lint typecheck test build   # `lint` runs the Prettier check first
+pnpm test:e2e                    # API integration tests; needs the emulators running
 ```
+
+This is the same gate CI runs. `pnpm format` fixes what the Prettier check reports.
 
 ## How development works
 

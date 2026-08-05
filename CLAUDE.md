@@ -28,8 +28,14 @@ pnpm install
 pnpm emulators:up          # Firestore + Auth + fake GCS in Docker
 pnpm dev                   # all apps in watch mode
 pnpm lint typecheck test build
-pnpm --filter @speakukrainian/api test:e2e   # needs emulators up
+pnpm test:e2e              # API integration tests; needs the emulators up
 ```
+
+`pnpm lint` runs `pnpm format:check` before the per-package linters, so
+`pnpm lint typecheck test build` is the whole gate — the same commands CI runs, in the same
+order. `pnpm format` fixes what the Prettier check reports. Do not add a check to CI without
+putting it behind one of those four scripts; a check CI runs and the gate does not is how red
+work gets reported green.
 
 Ports: API `8080`, admin `4200`, public site `4300`, Firestore `8081`, Auth `9099`,
 emulator UI `4001`, storage `4443`.

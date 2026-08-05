@@ -1,13 +1,18 @@
 packages:
-  - "apps/*"
-  - "packages/*"
-  - "scripts"
+  - 'apps/*'
+  - 'packages/*'
+  - 'scripts'
 
 # Native/postinstall builds we explicitly trust.
 allowBuilds:
   '@firebase/util': true
   '@parcel/watcher': true
   '@scarf/scarf': false
+  # Its postinstall is a fallback installer: when no native binding loads it
+  # shells out to `npm install --no-save @swc/wasm`. The binding ships as a
+  # platform package and the lockfile carries one per CI target, so the script
+  # has nothing to do and letting it run would put npm inside a pnpm install.
+  '@swc/core': false
   esbuild: true
   lmdb: true
   msgpackr-extract: true

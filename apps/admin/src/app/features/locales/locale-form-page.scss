@@ -1,0 +1,29 @@
+.locale-form {
+  display: block;
+  padding: 24px;
+
+  &__card {
+    width: min(560px, 100%);
+    overflow: hidden;
+  }
+
+  &__form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  &__note {
+    margin: 4px 0 0;
+    font-size: 12px;
+    opacity: 0.7;
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+}

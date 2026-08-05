@@ -99,6 +99,41 @@ modules that provide them — under ESM, the module ↔ service import cycle lea
 its temporal dead zone and the app crashes at boot with `Cannot access 'X' before
 initialization`. Both costs are paid once, in conventions.
 
+### ADR-009 — A missing translation falls back to the default locale
+
+`resolveLocalized(value, locale, defaultLocale)` in `packages/shared/src/common.ts` returns the
+requested locale's text, else the default locale's, else `''`. A value that is present but blank
+counts as missing: the localized editor writes a key for any tab the author opens, so
+`{ en: 'Hello', uk: '' }` is what half-translated content actually looks like.
+
+_Why:_ CLAUDE.md rule 2 requires a decision here, and the alternatives are worse. Rendering
+`undefined` is a defect; rendering an empty hole gives a learner a page with a missing heading and
+no way to guess what it said. A half-translated site that reads in English is usable, and the gap
+is visible to the admin rather than to the reader as a blank.
+
+_Scope:_ this governs **rendering**, not **authoring**. An editor never falls back:
+`LocalizedRichTextEditor` shows an empty tab for a locale it holds no text for, because showing the
+English text under the Ukrainian tab would have the author "translate" a copy of text that is
+already stored under another locale and save it as the Ukrainian translation.
+
+_Cost:_ the public site cannot tell "translated" from "falling back" without comparing the two, so a
+translation-coverage view is its own feature. Disabling or deleting a locale therefore never touches
+stored content — the text stays in Firestore and reappears if the locale comes back.
+
+### ADR-010 — Public read routes return a projection, never the stored document
+
+A route marked `@Public()` answers with a schema of its own — `publicLocaleSchema` is the first —
+that omits `audit`. Admin routes keep returning the full document.
+
+_Why:_ `audit.createdBy` / `updatedBy` are the Firebase uids of the staff who authored the content.
+A uid is not a credential, but handing every anonymous reader a list of the people who run the site
+buys nothing: no client reads `audit`. Deciding it on the first public route means sections, pages
+and schedule slots have a shape to copy rather than inventing one each.
+
+_Cost:_ a second schema per publicly-read collection, and the projection has to be applied at the
+route. It stays in `packages/shared` and is derived from the stored schema with `.omit()`, so the
+two cannot drift (rule 1).
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
