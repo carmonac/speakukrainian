@@ -106,6 +106,23 @@ describe('MediaPickerService', () => {
     expect(notifications.errors).toEqual([]);
   });
 
+  it('stays quiet for a 400 the interceptor already toasted', async () => {
+    // The interceptor toasts the API's message for every status that is not
+    // 401/403/5xx, not just 413 and 415, so a 400 must not double-toast either.
+    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const uploaded = picker.uploadFile('audio', file);
+
+    httpMock
+      .expectOne(audioUrl)
+      .flush(
+        { statusCode: 400, message: 'Too many files' },
+        { status: 400, statusText: 'Bad Request' },
+      );
+
+    await expect(uploaded).resolves.toBeNull();
+    expect(notifications.errors).toEqual([]);
+  });
+
   it('reports a generic failure when the API gives no usable reason', async () => {
     const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
     const uploaded = picker.uploadFile('audio', file);
@@ -113,6 +130,18 @@ describe('MediaPickerService', () => {
     httpMock
       .expectOne(audioUrl)
       .flush({ message: 'boom' }, { status: 500, statusText: 'Internal Server Error' });
+
+    await expect(uploaded).resolves.toBeNull();
+    expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);
+  });
+
+  it('names the file on a 403, where the interceptor only says "no permission"', async () => {
+    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const uploaded = picker.uploadFile('audio', file);
+
+    httpMock
+      .expectOne(audioUrl)
+      .flush({ message: 'Requires one of: editor' }, { status: 403, statusText: 'Forbidden' });
 
     await expect(uploaded).resolves.toBeNull();
     expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);

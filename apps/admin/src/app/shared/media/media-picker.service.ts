@@ -11,6 +11,7 @@ import {
   type MediaKind,
 } from '@speakukrainian/shared';
 import { ApiService } from '../../core/http/api.service';
+import { showsApiMessage } from '../../core/http/error.interceptor';
 import { NotificationService } from '../../core/notifications/notification.service';
 
 /**
@@ -62,8 +63,10 @@ export class MediaPickerService {
     try {
       return await firstValueFrom(this.api.upload<AssetRef>(`/media/${kind}`, file));
     } catch (error) {
-      // A 413 or 415 carries the API's own explanation, which the error
-      // interceptor has already shown; a generic toast on top would bury it.
+      // A rejection the API explained itself — 413 naming the limit, 415 listing
+      // the allowed types — has already been toasted verbatim by the error
+      // interceptor, and a generic toast on top would bury it. 403 and 5xx get
+      // generic wording there, so naming the file adds something.
       if (!isAlreadyExplained(error)) {
         this.notifications.error(`Could not upload ${file.name}.`);
       }
@@ -78,7 +81,7 @@ export class MediaPickerService {
 }
 
 function isAlreadyExplained(error: unknown): boolean {
-  return error instanceof HttpErrorResponse && (error.status === 413 || error.status === 415);
+  return error instanceof HttpErrorResponse && showsApiMessage(error);
 }
 
 /** Opens the OS file picker and resolves with the chosen file, or null if cancelled. */
