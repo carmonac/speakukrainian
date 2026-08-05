@@ -11,10 +11,17 @@ import { NotificationService } from '../notifications/notification.service';
  * Exported because a caller that wants to add context of its own ("Could not
  * upload clip.mp3.") has to know which it is: adding to a generic 5xx toast
  * helps, stacking on top of the API's already-specific explanation buries it.
- * The interceptor consumes the same predicate, so the two cannot disagree.
+ *
+ * Status 0 is false: the request never got a response, so there is no API
+ * message and the toast falls back to Angular's own transport wording
+ * ("Failed to fetch"), which names neither the cause nor the request — exactly
+ * the case a caller has something to add to.
+ *
+ * The branch chain below is the other half of this rule; the spec drives every
+ * status through both and fails if they disagree.
  */
 export function showsApiMessage(error: HttpErrorResponse): boolean {
-  return error.status !== 401 && error.status !== 403 && error.status < 500;
+  return error.status !== 0 && error.status !== 401 && error.status !== 403 && error.status < 500;
 }
 
 /**
@@ -28,16 +35,17 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
   return next(req).pipe(
     catchError((error: unknown) => {
       if (error instanceof HttpErrorResponse) {
-        // 401 first: it is the one status that navigates instead of toasting.
-        // What is left once `showsApiMessage` is false is 403 and 5xx.
         if (error.status === 401) {
           void router.navigate(['/login'], { state: { returnUrl: router.url } });
-        } else if (showsApiMessage(error)) {
-          notifications.error(extractMessage(error));
         } else if (error.status === 403) {
           notifications.error('You do not have permission to do that.');
-        } else {
+        } else if (error.status >= 500) {
           notifications.error('Something went wrong on the server. Please try again.');
+        } else {
+          // A transport failure (status 0) lands here as well as every 4xx that
+          // is not 401/403: `extractMessage` has no body to read and falls back
+          // to Angular's own wording, which is all there is to say.
+          notifications.error(extractMessage(error));
         }
       }
       return throwError(() => error);

@@ -65,8 +65,9 @@ export class MediaPickerService {
     } catch (error) {
       // A rejection the API explained itself — 413 naming the limit, 415 listing
       // the allowed types — has already been toasted verbatim by the error
-      // interceptor, and a generic toast on top would bury it. 403 and 5xx get
-      // generic wording there, so naming the file adds something.
+      // interceptor, and a generic toast on top would bury it. 403, 5xx and a
+      // connection that never got a response get wording there that identifies
+      // neither the file nor the reason, so naming the file adds something.
       if (!isAlreadyExplained(error)) {
         this.notifications.error(`Could not upload ${file.name}.`);
       }

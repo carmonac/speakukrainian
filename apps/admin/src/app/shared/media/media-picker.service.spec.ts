@@ -135,6 +135,21 @@ describe('MediaPickerService', () => {
     expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);
   });
 
+  it('names the file when the connection drops, where no API message exists', async () => {
+    // The interceptor can only show the transport error ("Failed to fetch"),
+    // which says nothing about which of several uploads died — so the picker
+    // must not treat a status 0 as already explained.
+    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const uploaded = picker.uploadFile('audio', file);
+
+    httpMock
+      .expectOne(audioUrl)
+      .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+
+    await expect(uploaded).resolves.toBeNull();
+    expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);
+  });
+
   it('names the file on a 403, where the interceptor only says "no permission"', async () => {
     const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
     const uploaded = picker.uploadFile('audio', file);

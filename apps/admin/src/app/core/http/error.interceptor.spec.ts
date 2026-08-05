@@ -52,6 +52,17 @@ describe('errorInterceptor', () => {
     return settled;
   }
 
+  /** A request that never reached the API: no status, no body, no API message. */
+  function failWithoutResponse(): Promise<HttpErrorResponse> {
+    const settled = new Promise<HttpErrorResponse>((resolve) => {
+      http.get('/anything').subscribe({ error: (error: HttpErrorResponse) => resolve(error) });
+    });
+    httpMock
+      .expectOne('/anything')
+      .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+    return settled;
+  }
+
   beforeEach(() => {
     notifications = new RecordingNotifications();
     router = new RecordingRouter();
@@ -109,6 +120,19 @@ describe('errorInterceptor', () => {
     expect(notifications.errors).toEqual(['code is required, name too long']);
   });
 
+  it('falls back to the transport error when the request got no response', async () => {
+    const error = await failWithoutResponse();
+
+    expect(error.status).toBe(0);
+    // A dropped connection is not a server error and carries nothing the API
+    // said, so the toast is Angular's own wording — which names neither the
+    // cause nor the request. Naming the request is left to the caller, which
+    // only does it while `showsApiMessage` is false.
+    expect(notifications.errors).toEqual([error.message]);
+    expect(showsApiMessage(error)).toBe(false);
+    expect(router.navigations).toEqual([]);
+  });
+
   it('re-throws so a caller can still react to the failure itself', async () => {
     const error = await failWith(415, { message: 'nope' });
 
@@ -116,15 +140,29 @@ describe('errorInterceptor', () => {
     expect(error.status).toBe(415);
   });
 
-  it('agrees with showsApiMessage about which toast the caller will see', () => {
-    // The picker suppresses its own toast on `showsApiMessage`; if the
-    // predicate and the branch above it ever disagreed, a rejection would be
-    // either double-toasted or silent.
-    for (const status of [400, 404, 413, 415, 422]) {
-      expect(showsApiMessage(new HttpErrorResponse({ status }))).toBe(true);
+  it('shows the API message exactly for the statuses showsApiMessage claims', async () => {
+    // The picker suppresses its own toast on `showsApiMessage`, so the
+    // predicate has to match what this interceptor actually toasts, not merely
+    // restate its own terms: the two are compared here by driving the same
+    // failure through both. Disagreement means a rejection is double-toasted or
+    // silent. Status 0 is in the matrix because it is the one status where "no
+    // 401/403/5xx" and "the API said something" come apart.
+    const fromTheApi = 'the API explained this itself';
+    const predicate: number[] = [];
+    const toasted: number[] = [];
+
+    for (const status of [0, 301, 400, 401, 403, 404, 409, 413, 415, 422, 429, 500, 503]) {
+      notifications.errors.length = 0;
+      const error =
+        status === 0
+          ? await failWithoutResponse()
+          : await failWith(status, { message: fromTheApi });
+
+      if (showsApiMessage(error)) predicate.push(status);
+      if (notifications.errors.includes(fromTheApi)) toasted.push(status);
     }
-    for (const status of [401, 403, 500, 503]) {
-      expect(showsApiMessage(new HttpErrorResponse({ status }))).toBe(false);
-    }
+
+    expect(toasted).toEqual(predicate);
+    expect(predicate).not.toEqual([]);
   });
 });
