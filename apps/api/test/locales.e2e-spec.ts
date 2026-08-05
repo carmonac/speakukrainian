@@ -31,10 +31,17 @@ describe('locales (e2e)', () => {
     [admin, student] = await Promise.all([signInAs(auth, 'admin'), signInAs(auth, 'student')]);
   });
 
+  // Guarded on what setup actually reached: when `beforeAll` fails, an
+  // unguarded teardown throws over the top of it and hides why.
   afterAll(async () => {
-    await dropTestLocale();
-    await Promise.all([auth.deleteUser(admin.uid), auth.deleteUser(student.uid)]);
-    await app.close();
+    if (firestore) {
+      await dropTestLocale();
+    }
+    const created = [admin, student].filter((user) => user !== undefined);
+    await Promise.all(created.map((user) => auth.deleteUser(user.uid)));
+    if (app) {
+      await app.close();
+    }
   });
 
   it('seeds the site locales on boot and serves them to anonymous callers', async () => {

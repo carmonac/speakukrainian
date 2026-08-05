@@ -30,7 +30,10 @@ export default defineConfig({
       Object.entries(emulatorEnv).map(([name, fallback]) => [name, process.env[name] ?? fallback]),
     ),
     testTimeout: 30_000,
-    hookTimeout: 30_000,
+    // The setup budget is larger than a test's: it boots the app, seeds through
+    // Firestore and mints two tokens, and the first RPC to the JVM-backed
+    // emulator has been seen to stall for tens of seconds.
+    hookTimeout: 60_000,
     fileParallelism: false,
   },
 });
