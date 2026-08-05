@@ -18,13 +18,14 @@ import { FIREBASE_AUTH } from '../src/auth/auth.tokens.js';
  * ECONNRESET. `app.close()` releases the listener.
  *
  * The host is pinned to the address supertest dials rather than left to
- * default to the `::` wildcard. A wildcard listener does not reserve
- * `127.0.0.1:<port>`: any other process may still bind that exact pair, and
- * because the more specific bind wins the demux, every request supertest sends
- * then reaches *that* process — which answers 404 to routes it has never heard
- * of, while this app sits healthy and listening. Binding the pair outright
- * makes the kernel skip ports already taken on it and refuse a later
- * competitor with EADDRINUSE instead of silently rerouting the suite.
+ * default to the `::` wildcard. On BSD kernels — macOS, so developer machines,
+ * not the Linux CI runner, where the wildcard already refuses this — a wildcard
+ * listener does not reserve `127.0.0.1:<port>`: another process may still bind
+ * that exact pair, and because the more specific bind wins the demux, every
+ * request supertest sends reaches *that* process, which answers 404 to routes it
+ * has never heard of while this app sits healthy and listening. Binding the pair
+ * outright refuses such a competitor with EADDRINUSE instead of silently
+ * rerouting the suite. It does not change which ports `listen(0)` picks.
  */
 export async function createTestApp(): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
