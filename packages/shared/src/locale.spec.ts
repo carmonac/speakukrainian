@@ -90,8 +90,9 @@ describe('editableLocaleFields', () => {
     // and then dropped by `localeSchema.parse()` in the repository — the same
     // silent-write class of bug the split into editable fields fixed.
     const stored = Object.keys(localeSchema.shape);
+    const unstorable = Object.keys(editableLocaleFields).filter((field) => !stored.includes(field));
 
-    expect(Object.keys(editableLocaleFields).filter((field) => !stored.includes(field))).toEqual([]);
+    expect(unstorable).toEqual([]);
   });
 });
 
@@ -104,7 +105,9 @@ describe('localeSchema', () => {
   };
 
   it('defaults a stored document that predates the flags', () => {
-    expect(localeSchema.parse({ id: 'uk', code: 'uk', name: 'U', nativeName: 'У', audit })).toEqual({
+    const parsed = localeSchema.parse({ id: 'uk', code: 'uk', name: 'U', nativeName: 'У', audit });
+
+    expect(parsed).toEqual({
       id: 'uk',
       code: 'uk',
       name: 'U',
