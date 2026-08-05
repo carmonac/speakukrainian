@@ -8,6 +8,9 @@ allowBuilds:
   '@firebase/util': true
   '@parcel/watcher': true
   '@scarf/scarf': false
+  # Its native binary ships as a platform-specific package; the postinstall
+  # script only reports telemetry opt-out instructions.
+  '@swc/core': false
   esbuild: true
   lmdb: true
   msgpackr-extract: true

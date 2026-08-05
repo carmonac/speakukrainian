@@ -7,8 +7,8 @@
     "build": "nest build",
     "dev": "nest start --watch",
     "start": "node dist/main.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src --max-warnings 0",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.e2e.json",
+    "lint": "eslint src test --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
@@ -39,6 +39,7 @@
     "@nestjs/cli": "^11.0.24",
     "@nestjs/schematics": "^11.0.9",
     "@nestjs/testing": "^11.1.28",
+    "@swc/core": "^1.15.47",
     "@types/express": "^5.0.3",
     "@types/jsdom": "^27.0.0",
     "@types/multer": "^2.0.0",
@@ -46,6 +47,7 @@
     "@types/supertest": "^6.0.3",
     "supertest": "^7.1.4",
     "typescript": "~6.0.0",
+    "unplugin-swc": "^1.5.10",
     "vitest": "^3.2.4"
   }
 }
