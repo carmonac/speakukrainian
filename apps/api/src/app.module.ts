@@ -7,6 +7,7 @@ import { StorageModule } from './infra/storage/storage.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { UsersModule } from './users/users.module.js';
 import { LocalesModule } from './locales/locales.module.js';
+import { MediaModule } from './media/media.module.js';
 import { FirebaseAuthGuard } from './auth/firebase-auth.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { HttpExceptionFilter } from './common/http-exception.filter.js';
@@ -31,6 +32,7 @@ import { HealthController } from './health/health.controller.js';
     AuthModule,
     UsersModule,
     LocalesModule,
+    MediaModule,
   ],
   controllers: [HealthController],
   providers: [

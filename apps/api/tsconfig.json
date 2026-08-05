@@ -9,7 +9,10 @@
     "experimentalDecorators": true,
     "isolatedModules": false,
     "strictPropertyInitialization": false,
-    "types": ["node"]
+    // `types` suppresses automatic @types inclusion, and `@types/multer`
+    // declares `Express.Multer.File` inside a `declare global` — without it
+    // listed here the uploaded-file type does not resolve.
+    "types": ["node", "multer"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "test"]

@@ -1,0 +1,189 @@
+import type { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { Storage } from '@google-cloud/storage';
+import type { Auth } from 'firebase-admin/auth';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { MAX_IMAGE_UPLOAD_BYTES, assetRefSchema, type AssetRef } from '@speakukrainian/shared';
+import type { Env } from '../src/config/configuration.js';
+import { CLOUD_STORAGE } from '../src/infra/storage/storage.tokens.js';
+import { StorageService } from '../src/infra/storage/storage.service.js';
+import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
+
+// A real PNG signature followed by a few bytes: nothing sniffs the contents,
+// but a fixture that is not a PNG would mislead whoever reads this next.
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+const MP3 = Buffer.from('494433030000000000004142434445', 'hex');
+
+interface ErrorBody {
+  statusCode: number;
+  message: string;
+}
+
+describe('media (e2e)', () => {
+  let app: INestApplication;
+  let auth: Auth;
+  let storage: StorageService;
+  let client: Storage;
+  let bucketName: string;
+  let editor: TestUser;
+  let student: TestUser;
+
+  // Everything written by this suite, removed in teardown so repeated local
+  // runs do not fill `docker/storage/data/`.
+  const uploadedPaths: string[] = [];
+
+  const server = (): ReturnType<INestApplication['getHttpServer']> => app.getHttpServer();
+
+  const currentMonthPrefix = (kind: 'images' | 'audio'): string => {
+    const now = new Date();
+    return `${kind}/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}/`;
+  };
+
+  const countObjects = async (prefix: string): Promise<number> => {
+    const [files] = await client.bucket(bucketName).getFiles({ prefix });
+    return files.length;
+  };
+
+  const upload = async (
+    kind: 'image' | 'audio',
+    body: Buffer,
+    filename: string,
+    contentType: string,
+  ): Promise<AssetRef> => {
+    const response = await request(server())
+      .post(`/api/media/${kind}`)
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', body, { filename, contentType })
+      .expect(201);
+
+    const asset = assetRefSchema.parse(response.body);
+    uploadedPaths.push(asset.path);
+    return asset;
+  };
+
+  beforeAll(async () => {
+    app = await createTestApp();
+    auth = authOf(app);
+    storage = app.get(StorageService);
+    client = app.get<Storage>(CLOUD_STORAGE);
+    bucketName = app
+      .get<ConfigService<Env, true>>(ConfigService)
+      .get('STORAGE_BUCKET', { infer: true });
+    [editor, student] = await Promise.all([signInAs(auth, 'editor'), signInAs(auth, 'student')]);
+  });
+
+  afterAll(async () => {
+    if (storage) {
+      await Promise.all(uploadedPaths.map((path) => storage.delete(path)));
+    }
+    const created = [editor, student].filter((user) => user !== undefined);
+    await Promise.all(created.map((user) => auth.deleteUser(user.uid)));
+    if (app) {
+      await app.close();
+    }
+  });
+
+  it('stores an image and serves it back from the returned url', async () => {
+    const asset = await upload('image', PNG, 'diagram.png', 'image/png');
+
+    expect(asset.path).toMatch(/^images\/\d{4}\/\d{2}\/[0-9a-f-]{36}\.png$/);
+    expect(asset.contentType).toBe('image/png');
+    expect(asset.sizeBytes).toBe(PNG.length);
+    await expect(storage.exists(asset.path)).resolves.toBe(true);
+
+    // The url has to be fetchable as-is: this is what the editor puts in
+    // `<img src>`, and it is what breaks if `publicUrl` is "corrected" to the
+    // bucket-path form fake-gcs-server does not serve.
+    const served = await fetch(asset.url);
+    expect(served.status).toBe(200);
+    expect(served.headers.get('content-type')).toContain('image/png');
+    expect(Buffer.from(await served.arrayBuffer()).equals(PNG)).toBe(true);
+  });
+
+  it('stores audio under its own prefix and serves it with its content type', async () => {
+    const asset = await upload('audio', MP3, 'intro.mp3', 'audio/mpeg');
+
+    expect(asset.path).toMatch(/^audio\/\d{4}\/\d{2}\/[0-9a-f-]{36}\.mp3$/);
+    await expect(storage.exists(asset.path)).resolves.toBe(true);
+
+    const served = await fetch(asset.url);
+    expect(served.status).toBe(200);
+    expect(served.headers.get('content-type')).toContain('audio/mpeg');
+    expect(Buffer.from(await served.arrayBuffer()).equals(MP3)).toBe(true);
+  });
+
+  it('keeps both objects when the same filename is uploaded twice', async () => {
+    const first = await upload('audio', MP3, 'intro.mp3', 'audio/mpeg');
+    const second = await upload(
+      'audio',
+      Buffer.from('a different clip'),
+      'intro.mp3',
+      'audio/mpeg',
+    );
+
+    expect(first.path).not.toBe(second.path);
+    await expect(storage.exists(first.path)).resolves.toBe(true);
+    await expect(storage.exists(second.path)).resolves.toBe(true);
+    // The second upload must not have overwritten the first one's bytes.
+    const servedFirst = await fetch(first.url);
+    expect(Buffer.from(await servedFirst.arrayBuffer()).equals(MP3)).toBe(true);
+  });
+
+  it('rejects a part whose declared content type is not on the allow-list', async () => {
+    const response = await request(server())
+      .post('/api/media/audio')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', Buffer.from('this is text'), {
+        filename: 'not-audio.mp3',
+        contentType: 'text/plain',
+      })
+      .expect(415);
+
+    const body = response.body as ErrorBody;
+    expect(body.statusCode).toBe(415);
+    expect(body.message).toContain('text/plain');
+  });
+
+  it('rejects an oversize upload with 413 and writes nothing', async () => {
+    const prefix = currentMonthPrefix('images');
+    const before = await countObjects(prefix);
+
+    const response = await request(server())
+      .post('/api/media/image')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', Buffer.alloc(MAX_IMAGE_UPLOAD_BYTES + 1), {
+        filename: 'huge.png',
+        contentType: 'image/png',
+      })
+      .expect(413);
+
+    // Pinned: multer's LIMIT_FILE_SIZE takes Nest's HttpException path, so the
+    // response carries the normal error envelope rather than a bare 413.
+    expect((response.body as ErrorBody).statusCode).toBe(413);
+    await expect(countObjects(prefix)).resolves.toBe(before);
+  });
+
+  it('answers 400 when the request carries no file part', async () => {
+    await request(server())
+      .post('/api/media/image')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .field('file', 'not-a-file')
+      .expect(400);
+  });
+
+  it('refuses an upload without a token', async () => {
+    await request(server())
+      .post('/api/media/image')
+      .attach('file', PNG, { filename: 'diagram.png', contentType: 'image/png' })
+      .expect(401);
+  });
+
+  it('refuses an upload from a student', async () => {
+    await request(server())
+      .post('/api/media/image')
+      .set('Authorization', `Bearer ${student.idToken}`)
+      .attach('file', PNG, { filename: 'diagram.png', contentType: 'image/png' })
+      .expect(403);
+  });
+});
