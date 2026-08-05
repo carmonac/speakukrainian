@@ -8,8 +8,12 @@ import { FIRESTORE } from '../src/infra/firestore/firestore.tokens.js';
 import { LocalesService } from '../src/locales/locales.service.js';
 import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
 
-/** Zulu: a valid BCP-47 code that is not one of the seeds. */
+// Valid BCP-47 codes that are not among the seeds. One per test that creates a
+// locale, so a failure mid-test cannot fail the next one on a leftover 409.
 const TEST_CODE = 'zu';
+const SWITCH_CODE = 'sw';
+const FILTER_CODE = 'yo';
+const CREATED_CODES = [TEST_CODE, SWITCH_CODE, FILTER_CODE];
 
 describe('locales (e2e)', () => {
   let app: INestApplication;
@@ -19,15 +23,37 @@ describe('locales (e2e)', () => {
   let student: TestUser;
 
   const server = (): ReturnType<INestApplication['getHttpServer']> => app.getHttpServer();
-  const dropTestLocale = (): Promise<unknown> =>
-    firestore.collection(COLLECTIONS.locales).doc(TEST_CODE).delete();
+  const dropTestLocales = (): Promise<unknown> =>
+    Promise.all(
+      CREATED_CODES.map((code) => firestore.collection(COLLECTIONS.locales).doc(code).delete()),
+    );
+  const listLocales = async (query = ''): Promise<PublicLocale[]> => {
+    const response = await request(server()).get(`/api/locales${query}`).expect(200);
+    return response.body as PublicLocale[];
+  };
+
+  /**
+   * A run that fails while a test locale holds the default flag leaves the
+   * collection with zero defaults once the leftover document is dropped, and
+   * nothing recovers from that on its own: seeding only writes locales that
+   * are missing, so it never restores the flag on one that is already stored.
+   * Healing it here keeps one failed run from failing every run after it.
+   */
+  const restoreDefault = async (): Promise<void> => {
+    const locales = app.get(LocalesService);
+    const stored = await locales.list({});
+    if (!stored.some((locale) => locale.isDefault)) {
+      await locales.setDefault(SEED_LOCALES[0], 'e2e-setup');
+    }
+  };
 
   beforeAll(async () => {
     app = await createTestApp();
     auth = authOf(app);
     firestore = app.get<Firestore>(FIRESTORE);
     // A run that failed half way through would otherwise poison the next one.
-    await dropTestLocale();
+    await dropTestLocales();
+    await restoreDefault();
     [admin, student] = await Promise.all([signInAs(auth, 'admin'), signInAs(auth, 'student')]);
   });
 
@@ -35,7 +61,7 @@ describe('locales (e2e)', () => {
   // unguarded teardown throws over the top of it and hides why.
   afterAll(async () => {
     if (firestore) {
-      await dropTestLocale();
+      await dropTestLocales();
     }
     const created = [admin, student].filter((user) => user !== undefined);
     await Promise.all(created.map((user) => auth.deleteUser(user.uid)));
@@ -127,6 +153,83 @@ describe('locales (e2e)', () => {
     expect((afterDelete.body as PublicLocale[]).map((locale) => locale.code)).not.toContain(
       TEST_CODE,
     );
+  });
+
+  it('moves the default to another locale in one request', async () => {
+    const previousDefault = (await listLocales()).find((locale) => locale.isDefault);
+    if (!previousDefault) {
+      throw new Error('there is no default locale to move: the seed did not run');
+    }
+
+    await request(server())
+      .post('/api/locales')
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .send({ code: SWITCH_CODE, name: 'Swahili', nativeName: 'Kiswahili' })
+      .expect(201);
+
+    const promoted = await request(server())
+      .put(`/api/locales/${SWITCH_CODE}/default`)
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .expect(200);
+    expect((promoted.body as Locale).isDefault).toBe(true);
+
+    // The transaction has to clear the previous flag as it sets the new one:
+    // two defaults at rest is the invariant this route exists to protect, and
+    // a test double cannot prove Firestore keeps it.
+    const afterSwitch = await listLocales();
+    expect(afterSwitch.filter((locale) => locale.isDefault).map((locale) => locale.code)).toEqual([
+      SWITCH_CODE,
+    ]);
+
+    await request(server())
+      .put(`/api/locales/${previousDefault.code}/default`)
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .expect(200);
+
+    const restored = await listLocales();
+    expect(restored.filter((locale) => locale.isDefault).map((locale) => locale.code)).toEqual([
+      previousDefault.code,
+    ]);
+
+    await request(server())
+      .delete(`/api/locales/${SWITCH_CODE}`)
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .expect(204);
+  });
+
+  it('drops a disabled locale from ?enabled=true and refuses to make it the default', async () => {
+    await request(server())
+      .post('/api/locales')
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .send({ code: FILTER_CODE, name: 'Yoruba', nativeName: 'Èdè Yorùbá' })
+      .expect(201);
+
+    expect((await listLocales('?enabled=true')).map((locale) => locale.code)).toContain(
+      FILTER_CODE,
+    );
+
+    await request(server())
+      .patch(`/api/locales/${FILTER_CODE}`)
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .send({ enabled: false })
+      .expect(200);
+
+    const enabled = await listLocales('?enabled=true');
+    expect(enabled.map((locale) => locale.code)).not.toContain(FILTER_CODE);
+    expect(enabled.every((locale) => locale.enabled)).toBe(true);
+    // The admin's own list is unfiltered, so the locale is still editable.
+    expect((await listLocales()).map((locale) => locale.code)).toContain(FILTER_CODE);
+
+    // A locale no reader can see must not become the fallback for every reader.
+    await request(server())
+      .put(`/api/locales/${FILTER_CODE}/default`)
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .expect(409);
+
+    await request(server())
+      .delete(`/api/locales/${FILTER_CODE}`)
+      .set('Authorization', `Bearer ${admin.idToken}`)
+      .expect(204);
   });
 
   it('refuses to delete the default locale', async () => {
