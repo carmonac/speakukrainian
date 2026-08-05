@@ -29,7 +29,7 @@ If the change touches data access, bring up the emulators and run the integratio
 
 ```bash
 docker compose up -d --wait
-pnpm --filter @speakukrainian/api test:e2e
+pnpm test:e2e
 ```
 
 Any failure is an automatic FAIL. Capture the actual output — do not paraphrase it.

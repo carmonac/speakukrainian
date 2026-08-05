@@ -45,7 +45,7 @@ If the issue touches the API's data access, also run the integration tests again
 
 ```bash
 docker compose up -d --wait
-pnpm --filter @speakukrainian/api test:e2e
+pnpm test:e2e
 ```
 
 All of it must pass. Do not hand off red work with a note explaining the failure — fix it. If you genuinely cannot, say so explicitly and stop; do not report success.

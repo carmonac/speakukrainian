@@ -23,16 +23,20 @@ services:
     volumes:
       - ./docker/firebase:/workspace
     healthcheck:
-      # One probe per emulator this service starts: a check that only proved
-      # Firestore was up would let callers race a half-started Auth emulator.
+      # One probe per emulator callers actually use: a check that only proved
+      # Firestore was up would let them race a half-started Auth emulator. The
+      # emulator UI is deliberately not probed — it is a dev convenience, and a
+      # UI that failed to start should not hold up the integration tests.
       # These are GETs, not `wget --spider` HEADs — the Firestore emulator
       # answers HEAD / with a 404 and the container never went healthy.
+      # The project id in the Auth URL is not load-bearing: the emulator answers
+      # the config read for any project. It is the id this service runs under
+      # only so the line reads honestly.
       test:
         - CMD-SHELL
         - >-
           wget -q -O /dev/null http://127.0.0.1:8081/
           && wget -q -O /dev/null http://127.0.0.1:9099/emulator/v1/projects/speakukrainian-local/config
-          && wget -q -O /dev/null http://127.0.0.1:4001/
       interval: 5s
       timeout: 5s
       retries: 30
