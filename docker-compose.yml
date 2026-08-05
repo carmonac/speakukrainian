@@ -23,7 +23,16 @@ services:
     volumes:
       - ./docker/firebase:/workspace
     healthcheck:
-      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:8081/']
+      # One probe per emulator this service starts: a check that only proved
+      # Firestore was up would let callers race a half-started Auth emulator.
+      # These are GETs, not `wget --spider` HEADs — the Firestore emulator
+      # answers HEAD / with a 404 and the container never went healthy.
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q -O /dev/null http://127.0.0.1:8081/
+          && wget -q -O /dev/null http://127.0.0.1:9099/emulator/v1/projects/speakukrainian-local/config
+          && wget -q -O /dev/null http://127.0.0.1:4001/
       interval: 5s
       timeout: 5s
       retries: 30
