@@ -59,8 +59,10 @@ describe('fromPlainLocalized', () => {
     expect(fromPlainLocalized(undefined)).toEqual({});
   });
 
-  // The seam is only safe if it is lossless both ways: opening a stored section
-  // and pressing Save with no edit at all has to store what was already there.
+  // Anything this form has written round-trips byte for byte, which is what
+  // makes opening a stored section and pressing Save with no edit safe. That
+  // holds for every character the write side keeps — the exception is
+  // whitespace, pinned by the two cases below.
   it.each([
     ['a tag-shaped title', 'Modal verbs <can>'],
     ['a bare ampersand', 'Tom & Jerry'],
@@ -69,6 +71,24 @@ describe('fromPlainLocalized', () => {
     ['an unbalanced angle bracket', 'Use < for less than'],
   ])('round-trips %s unchanged', (_name, text) => {
     expect(toPlainLocalized(fromPlainLocalized({ en: text }))).toEqual({ en: text });
+  });
+
+  it('collapses whitespace no author could have typed here in the first place', () => {
+    // Only content written by something other than this form — a seed script,
+    // a direct API call — can carry it, because the write side collapses too.
+    expect(toPlainLocalized(fromPlainLocalized({ en: 'Present  Simple\ttab\nnewline' }))).toEqual({
+      en: 'Present Simple tab newline',
+    });
+  });
+
+  it('is idempotent, so a second save stores what the first one did', () => {
+    // The property the seam actually offers, and the one #6 and #9 can rely on:
+    // one pass normalizes, every pass after that is a no-op. The ampersand is
+    // there so an escape that ran twice would drift instead of settling.
+    const once = toPlainLocalized(fromPlainLocalized({ en: 'Tom &  Jerry\ttab' }));
+
+    expect(once).toEqual({ en: 'Tom & Jerry tab' });
+    expect(toPlainLocalized(fromPlainLocalized(once))).toEqual(once);
   });
 });
 

@@ -1,19 +1,27 @@
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import type { LocaleCode, LocalizedText, RichText } from '@speakukrainian/shared';
 
-/**
- * The two halves of the seam between `LocalizedRichTextEditor`, which is the
- * only text control the product allows (rule 3), and a `localizedTextSchema`
- * field, which stores plain text. A section's `title` and an image's `alt`
- * render into a menu, a breadcrumb and the browser tab, where markup cannot go,
- * and the API sanitizes only `description` (ADR-003, `SectionsService`) — so
- * the conversion happens here, and it has to happen in both directions.
- *
- * Both halves map every key, including one whose text is empty:
- * `{ en: 'Hello', uk: '' }` is what half-translated content looks like
- * (ADR-009), so a tab the author opened and left blank is kept rather than
- * pruned.
- */
+// The two halves of the seam between `LocalizedRichTextEditor`, which is the
+// only text control the product allows (rule 3), and a `localizedTextSchema`
+// field, which stores plain text. A section's `title` and an image's `alt`
+// render into a menu, a breadcrumb and the browser tab, where markup cannot go,
+// and the API sanitizes only `description` (ADR-003, `SectionsService`) — so
+// the conversion happens here, and it has to happen in both directions.
+//
+// The contract is idempotence, not losslessness. `toPlainLocalized` collapses
+// runs of whitespace, because the editor lays its markup out with newlines and
+// indentation that are not the author's text; nothing on the way back in
+// restores them, and nothing should — putting them back would mean emitting
+// `&nbsp;` and `<br>` into ProseMirror for a value that ends up in a `<title>`.
+// So `"Present  Simple\ttab"` stored by some other writer comes back as
+// `"Present Simple tab"`, and from then on the value is stable: everything this
+// form has ever written is already collapsed, so opening it and saving with no
+// edit stores exactly what was there.
+//
+// Both halves map every key, including one whose text is empty:
+// `{ en: 'Hello', uk: '' }` is what half-translated content looks like
+// (ADR-009), so a tab the author opened and left blank is kept rather than
+// pruned.
 
 /** Editor HTML → the plain text that gets stored. */
 export function toPlainLocalized(value: RichText | null | undefined): LocalizedText {
