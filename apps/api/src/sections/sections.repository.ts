@@ -18,6 +18,7 @@ import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
 import {
   buildPath,
   deepestAfterMove,
+  isSamePlacement,
   placeUnder,
   rewriteDescendant,
   type Placement,
@@ -227,8 +228,9 @@ export class SectionsRepository extends BaseRepository<Section> {
 
   /**
    * Re-parents and repositions in one transaction. A move that keeps the same
-   * parent is an ordinary reorder and takes the same path: the placement it
-   * computes is the one the node already has, so only `sortOrder` changes.
+   * parent is an ordinary reorder and takes the same code path: the placement
+   * it computes is the one the node already has, so only `sortOrder` changes
+   * and the subtree below is left alone.
    */
   async move(id: string, input: MoveSectionInput, actorId: string): Promise<SectionWriteResult> {
     return this.firestore.runTransaction(async (tx) => {
@@ -262,15 +264,26 @@ export class SectionsRepository extends BaseRepository<Section> {
         return { ok: false, reason: 'slug-taken', slug: existing.slug };
       }
 
-      const found = await this.descendantsInTransaction(tx, id);
-      if (!found.ok) {
-        return found;
-      }
-
       const placement = placeUnder(parent, existing.slug);
-      const deepest = deepestAfterMove(existing, found.sections, placement.depth);
-      if (deepest > MAX_SECTION_DEPTH) {
-        return { ok: false, reason: 'depth-exceeded', depth: deepest };
+      // A reorder under the same parent lands the node exactly where it already
+      // is, so no descendant path changes. Reading and rewriting the subtree
+      // then only stamps a fresh audit on pages nobody edited, and would refuse
+      // a subtree of more than MAX_DESCENDANT_REWRITES nodes that the reorder
+      // never needed to touch.
+      const reparented = !isSamePlacement(existing, placement);
+
+      let descendants: Section[] = [];
+      if (reparented) {
+        const found = await this.descendantsInTransaction(tx, id);
+        if (!found.ok) {
+          return found;
+        }
+        descendants = found.sections;
+
+        const deepest = deepestAfterMove(existing, descendants, placement.depth);
+        if (deepest > MAX_SECTION_DEPTH) {
+          return { ok: false, reason: 'depth-exceeded', depth: deepest };
+        }
       }
 
       const parsed = sectionSchema.safeParse({
@@ -284,12 +297,14 @@ export class SectionsRepository extends BaseRepository<Section> {
       }
 
       tx.set(ref, toDocumentData(parsed.data));
-      this.writeDescendants(
-        tx,
-        found.sections,
-        { id, oldPath: existing.path, next: placement },
-        actorId,
-      );
+      if (reparented) {
+        this.writeDescendants(
+          tx,
+          descendants,
+          { id, oldPath: existing.path, next: placement },
+          actorId,
+        );
+      }
       return { ok: true, section: parsed.data };
     });
   }
@@ -357,7 +372,14 @@ export class SectionsRepository extends BaseRepository<Section> {
     }
   }
 
-  /** Appending at the end is what makes a new section land at the bottom of the tree. */
+  /**
+   * Appending at the end is what makes a new section land at the bottom of the
+   * tree. The descending order needs its own composite index — a descending
+   * `orderBy` is a distinct index from the ascending one, and the emulator
+   * serves the query either way, so a missing entry only surfaces in
+   * production. `sections (parentId ASC, sortOrder DESC)` in
+   * `docker/firebase/firestore.indexes.json` is that entry.
+   */
   private async nextSortOrder(tx: Transaction, parentId: string | null): Promise<number> {
     const last = await tx.get(
       this.collection.where('parentId', '==', parentId).orderBy('sortOrder', 'desc').limit(1),
