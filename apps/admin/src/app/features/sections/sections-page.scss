@@ -75,19 +75,36 @@
     border-radius: 8px;
     color: var(--mat-sys-on-surface-variant, #49454f);
     opacity: 0;
+    // There is nothing to drop until a drag starts, and `opacity: 0` alone
+    // leaves the box hit-testable — which is how hovering blank space used to
+    // raise the hint.
+    pointer-events: none;
 
-    // Only worth showing while there is something to drop, and only where the
-    // drop would be accepted — `cdk-drop-list-receiving` is CDK's own answer to
-    // the enter predicate, so an illegal target never lights up.
     .sections-tree.is-dragging & {
-      opacity: 0.5;
+      pointer-events: auto;
+    }
+
+    // Only a target the enter predicate accepted is shown at all:
+    // `cdk-drop-list-receiving` is CDK's own answer to that predicate, so an
+    // illegal target stays invisible and the dragged row's own subtree never
+    // offers itself.
+    &.cdk-drop-list-receiving {
+      opacity: 0.6;
       border-color: var(--mat-sys-outline-variant, #cac4d0);
     }
 
-    &.cdk-drop-list-receiving {
+    // The one the pointer is inside: CDK starts "dragging" a receiving list the
+    // moment the item enters it, and stops it receiving at the same instant.
+    &.cdk-drop-list-dragging {
       opacity: 1;
       border-color: var(--mat-sys-primary, #6750a4);
       background: var(--mat-sys-primary-container, #eaddff);
+    }
+
+    // The dragged row is parked here while the pointer is over the column, and
+    // a whole row inside a 40px box would tear the target's layout apart.
+    .cdk-drag-placeholder {
+      display: none;
     }
   }
 
@@ -118,6 +135,15 @@
     display: flex;
     align-items: center;
   }
+
+  // Narrow on purpose: what the pointer is over has to stay readable, and the
+  // nest columns sit at the far end of a row as wide as the tree.
+  &__preview {
+    max-width: 320px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
 }
 
 .cdk-drag-preview {
@@ -132,6 +158,8 @@
   list-style: none;
 }
 
-.cdk-drag-placeholder {
+.cdk-drag-placeholder,
+// The slot CDK holds open in the tree while the row is over a nest column.
+.cdk-drag-anchor {
   opacity: 0.3;
 }

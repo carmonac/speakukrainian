@@ -18,121 +18,153 @@
     <p class="sections__drag-hint">{{ dragHint }}</p>
   }
 
-  <div cdkDropListGroup>
-    <ul
-      class="sections-tree"
-      cdkDropList
-      cdkDropListLockAxis="y"
-      [class.is-dragging]="dragging() !== null"
-      [cdkDropListSortPredicate]="sortPredicate"
-      (cdkDropListDropped)="reorder($event)"
-    >
-      @for (row of rows(); track row.section.id) {
-        <li
-          class="sections-tree__row"
-          cdkDrag
-          [cdkDragData]="row"
-          [cdkDragDisabled]="busy()"
-          (cdkDragStarted)="dragging.set(row.section.id)"
-          (cdkDragEnded)="dragging.set(null)"
-          [class.is-saved]="row.section.id === savedId()"
-          [class.is-moving]="travelsWithDrag(row)"
-          [style.padding-inline-start.px]="row.depth * 24"
-        >
-          <!-- The gesture starts on the handle and never on the title, or the
-               browser's own link drag fights the CDK one. -->
-          <span class="sections-tree__handle" cdkDragHandle aria-hidden="true">
+  <!--
+    Three things here are load-bearing, and each has a framework reason.
+
+    No `cdkDropListLockAxis`: CDK feeds the *constrained* pointer position to
+    its search for a sibling drop list, so locking the axis pins x at the drag
+    handle and no nest column is ever a candidate — the re-parent gesture stops
+    existing. `sortPredicate` is what keeps a vertical drag a reorder.
+
+    The nest columns are wired by id rather than by a `cdkDropListGroup`
+    wrapper: a `cdkDropList` provides `CDK_DROP_LIST_GROUP: undefined` to its
+    own subtree, so a drop list nested inside this one silently never joins the
+    group and the tree ends up with no siblings to hand the drag to.
+
+    `cdkDropListHasAnchor` holds the dragged row's slot open while it sits in a
+    nest column. Without it the tree loses a row's height the instant the drag
+    enters a column, everything below slides up, the column moves out from
+    under the pointer, and the drag falls straight back out of it.
+  -->
+  <ul
+    class="sections-tree"
+    cdkDropList
+    cdkDropListHasAnchor
+    [class.is-dragging]="dragging() !== null"
+    [cdkDropListConnectedTo]="nestListIds()"
+    [cdkDropListSortPredicate]="sortPredicate"
+    (cdkDropListDropped)="reorder($event)"
+  >
+    @for (row of rows(); track row.section.id) {
+      <li
+        class="sections-tree__row"
+        cdkDrag
+        [cdkDragData]="row"
+        [cdkDragDisabled]="busy()"
+        (cdkDragStarted)="dragging.set(row.section.id)"
+        (cdkDragEnded)="dragging.set(null)"
+        [class.is-saved]="row.section.id === savedId()"
+        [class.is-moving]="travelsWithDrag(row)"
+        [style.padding-inline-start.px]="row.depth * 24"
+      >
+        <!-- The gesture starts on the handle and never on the title, or the
+             browser's own link drag fights the CDK one. -->
+        <span class="sections-tree__handle" cdkDragHandle aria-hidden="true">
+          <mat-icon>drag_indicator</mat-icon>
+        </span>
+
+        <!-- A chip rather than CDK's default clone of the row: the row is as
+             wide as the tree and the gesture starts at its left edge, so a
+             clone would cover every nest column to the right of the pointer,
+             including the highlighted one being dropped on. -->
+        <ng-template cdkDragPreview>
+          <span class="sections-tree__preview">
             <mat-icon>drag_indicator</mat-icon>
+            {{ title(row) }}
           </span>
+        </ng-template>
 
-          @if (row.hasChildren) {
-            <button
-              matIconButton
-              type="button"
-              class="sections-tree__toggle"
-              [attr.aria-label]="(row.expanded ? 'Collapse ' : 'Expand ') + title(row)"
-              [attr.aria-expanded]="row.expanded"
-              (click)="toggle(row.section.id)"
-            >
-              <mat-icon>{{ row.expanded ? 'expand_more' : 'chevron_right' }}</mat-icon>
-            </button>
-          } @else {
-            <span class="sections-tree__toggle-spacer"></span>
-          }
-
-          <a class="sections-tree__title" [routerLink]="['/sections', row.section.id]">{{ title(row) }}</a>
-          <code class="sections-tree__path">{{ row.section.path }}</code>
-          <span class="sections-tree__status">{{ row.section.status }}</span>
-          @if (row.hasChildren) {
-            <span class="sections-tree__count"
-              >{{ row.childCount }} {{ row.childCount === 1 ? 'subsection' : 'subsections' }}</span
-            >
-          }
-
-          <!-- Its own drop list rather than the whole row: a row that swallowed
-               the pointer would leave nowhere to drop for a plain reorder. -->
-          <span
-            class="sections-tree__nest"
-            cdkDropList
-            [cdkDropListData]="row"
-            [cdkDropListEnterPredicate]="nestPredicate(row)"
-            (cdkDropListDropped)="nest(row, $event)"
-            [matTooltip]="nestHint"
+        @if (row.hasChildren) {
+          <button
+            matIconButton
+            type="button"
+            class="sections-tree__toggle"
+            [attr.aria-label]="(row.expanded ? 'Collapse ' : 'Expand ') + title(row)"
+            [attr.aria-expanded]="row.expanded"
+            (click)="toggle(row.section.id)"
           >
-            <mat-icon>subdirectory_arrow_right</mat-icon>
-          </span>
+            <mat-icon>{{ row.expanded ? 'expand_more' : 'chevron_right' }}</mat-icon>
+          </button>
+        } @else {
+          <span class="sections-tree__toggle-spacer"></span>
+        }
 
-          <span class="sections-tree__actions">
+        <a class="sections-tree__title" [routerLink]="['/sections', row.section.id]">{{ title(row) }}</a>
+        <code class="sections-tree__path">{{ row.section.path }}</code>
+        <span class="sections-tree__status">{{ row.section.status }}</span>
+        @if (row.hasChildren) {
+          <span class="sections-tree__count"
+            >{{ row.childCount }} {{ row.childCount === 1 ? 'subsection' : 'subsections' }}</span
+          >
+        }
+
+        <!-- Its own drop list rather than the whole row: a row that swallowed
+             the pointer would leave nowhere to drop for a plain reorder. The
+             hint is disabled while nothing is being dragged, so hovering the
+             blank space where the column will be says nothing. -->
+        <span
+          class="sections-tree__nest"
+          cdkDropList
+          [id]="nestListId(row)"
+          [cdkDropListData]="row"
+          [cdkDropListEnterPredicate]="nestPredicate(row)"
+          (cdkDropListDropped)="nest(row, $event)"
+          [matTooltip]="nestHint"
+          [matTooltipDisabled]="dragging() === null"
+        >
+          <mat-icon>subdirectory_arrow_right</mat-icon>
+        </span>
+
+        <span class="sections-tree__actions">
+          <a
+            matIconButton
+            class="sections-tree__move"
+            [routerLink]="['/sections', row.section.id, 'move']"
+            [attr.aria-label]="'Move ' + title(row)"
+          >
+            <mat-icon>drive_file_move</mat-icon>
+          </a>
+
+          @if (row.canAddChild) {
             <a
               matIconButton
-              class="sections-tree__move"
-              [routerLink]="['/sections', row.section.id, 'move']"
-              [attr.aria-label]="'Move ' + title(row)"
+              class="sections-tree__add"
+              [routerLink]="['/sections', 'new']"
+              [queryParams]="{ parentId: row.section.id }"
+              [attr.aria-label]="'Add subsection under ' + title(row)"
             >
-              <mat-icon>drive_file_move</mat-icon>
+              <mat-icon>add</mat-icon>
             </a>
-
-            @if (row.canAddChild) {
-              <a
-                matIconButton
-                class="sections-tree__add"
-                [routerLink]="['/sections', 'new']"
-                [queryParams]="{ parentId: row.section.id }"
-                [attr.aria-label]="'Add subsection under ' + title(row)"
-              >
-                <mat-icon>add</mat-icon>
-              </a>
-            } @else {
-              <span class="sections-tree__add-hint" [matTooltip]="maxDepthMessage">
-                <button
-                  matIconButton
-                  type="button"
-                  class="sections-tree__add"
-                  disabled
-                  [attr.aria-label]="'Add subsection under ' + title(row)"
-                >
-                  <mat-icon>add</mat-icon>
-                </button>
-              </span>
-            }
-
-            <span class="sections-tree__delete-hint" [matTooltip]="row.hasChildren ? deleteWithChildrenMessage : ''">
+          } @else {
+            <span class="sections-tree__add-hint" [matTooltip]="maxDepthMessage">
               <button
                 matIconButton
                 type="button"
-                class="sections-tree__delete"
-                [disabled]="row.hasChildren || busy()"
-                [attr.aria-label]="'Delete ' + title(row)"
-                (click)="confirmDelete(row)"
+                class="sections-tree__add"
+                disabled
+                [attr.aria-label]="'Add subsection under ' + title(row)"
               >
-                <mat-icon>delete</mat-icon>
+                <mat-icon>add</mat-icon>
               </button>
             </span>
+          }
+
+          <span class="sections-tree__delete-hint" [matTooltip]="row.hasChildren ? deleteWithChildrenMessage : ''">
+            <button
+              matIconButton
+              type="button"
+              class="sections-tree__delete"
+              [disabled]="row.hasChildren || busy()"
+              [attr.aria-label]="'Delete ' + title(row)"
+              (click)="confirmDelete(row)"
+            >
+              <mat-icon>delete</mat-icon>
+            </button>
           </span>
-        </li>
-      }
-    </ul>
-  </div>
+        </span>
+      </li>
+    }
+  </ul>
 
   @if (!loading() && rows().length === 0) {
     <p class="sections__empty">No sections yet.</p>

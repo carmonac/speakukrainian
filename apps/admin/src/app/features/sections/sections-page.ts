@@ -24,8 +24,8 @@ import {
   findNode,
   flattenTree,
   isNoOpMove,
+  isSiblingSlot,
   sectionTitle,
-  siblingDropRange,
   siblingPositionAt,
   type SectionRow,
 } from './sections.model';
@@ -62,6 +62,17 @@ export class SectionsPage implements OnInit {
   /** The row being dragged, which is what tells its descendants to dim. */
   protected readonly dragging = signal<string | null>(null);
 
+  /**
+   * The nest columns the tree hands a drag to, named and connected by id.
+   *
+   * Not a `cdkDropListGroup`: a `cdkDropList` provides `CDK_DROP_LIST_GROUP:
+   * undefined` to its own subtree, so a nest column — which lives inside a row
+   * of this very list — resolves no group, joins nothing, and leaves the tree
+   * with no sibling to hand the drag to. That failure is silent, which is why
+   * `sections-page.spec.ts` pins the connection.
+   */
+  protected readonly nestListIds = computed(() => this.rows().map((row) => this.nestListId(row)));
+
   protected readonly maxDepthMessage = MAX_DEPTH_MESSAGE;
   protected readonly deleteWithChildrenMessage = DELETE_WITH_CHILDREN_MESSAGE;
   protected readonly nestHint = NEST_HINT;
@@ -94,6 +105,11 @@ export class SectionsPage implements OnInit {
     this.collapsed.set(next);
   }
 
+  /** The drop list id of a row's nest column, and the name the tree connects to. */
+  protected nestListId(row: SectionRow): string {
+    return `nest-${row.section.id}`;
+  }
+
   /** True for a row that travels with the drag: CDK moves only the dragged element. */
   protected travelsWithDrag(row: SectionRow): boolean {
     const id = this.dragging();
@@ -106,14 +122,12 @@ export class SectionsPage implements OnInit {
   // pointer sequence would assert nothing. They are driven directly instead.
 
   /**
-   * Where the drag placeholder may go: inside the dragged row's own sibling
-   * band and nowhere else, so a plain vertical drag is always a reorder and
+   * Where the drag placeholder may go: a slot among the dragged row's own
+   * siblings and nowhere else, so a plain vertical drag is always a reorder and
    * never an accidental re-parent.
    */
-  readonly sortPredicate = (index: number, drag: CdkDrag<SectionRow>): boolean => {
-    const { start, end } = siblingDropRange(this.rows(), drag.data.section.id);
-    return index >= start && index <= end;
-  };
+  readonly sortPredicate = (index: number, drag: CdkDrag<SectionRow>): boolean =>
+    isSiblingSlot(this.rows(), drag.data.section.id, index);
 
   /**
    * Whether the dragged section may be dropped into `target`'s nest column.

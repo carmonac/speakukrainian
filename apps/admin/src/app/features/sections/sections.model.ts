@@ -160,6 +160,42 @@ export function siblingDropRange(rows: readonly SectionRow[], movingId: string):
 }
 
 /**
+ * Whether the drag placeholder may rest at flat index `index` — CDK's index
+ * being "the slot the moving row would occupy once it is taken out of the list
+ * and put back", so `index` counts against the rows *without* the moving one.
+ *
+ * Two conditions. It has to be inside the sibling band, which is what makes a
+ * vertical drag a reorder and never an accidental re-parent. And the row that
+ * would follow it has to be one of its own siblings, one of its own descendants
+ * — they sit still during the drag and travel with it on the drop — or the row
+ * that ends the band. A slot in the middle of *another* sibling's expanded
+ * subtree is refused: dropping there lands the row after that whole subtree, so
+ * offering it would draw the placeholder somewhere the row will not appear.
+ */
+export function isSiblingSlot(
+  rows: readonly SectionRow[],
+  movingId: string,
+  index: number,
+): boolean {
+  const at = rows.findIndex((row) => row.section.id === movingId);
+  if (at === -1) {
+    return false;
+  }
+
+  const { start, end } = siblingDropRange(rows, movingId);
+  if (index < start || index > end) {
+    return false;
+  }
+
+  const following = rows.filter((_, i) => i !== at)[index];
+  return (
+    following === undefined ||
+    following.depth <= rows[at]!.depth ||
+    following.section.ancestorIds.includes(movingId)
+  );
+}
+
+/**
  * The position among its siblings that dropping the moving row at flat index
  * `currentIndex` asks for — which is what a move body's `sortOrder` is.
  *
