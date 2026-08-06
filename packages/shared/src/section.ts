@@ -3,6 +3,7 @@ import {
   assetRefSchema,
   auditSchema,
   localizedTextSchema,
+  paginationQuerySchema,
   publishStatusSchema,
   richTextSchema,
   slugSchema,
@@ -25,16 +26,26 @@ export const linkTargetSchema = z.object({
 export type LinkTarget = z.infer<typeof linkTargetSchema>;
 
 /**
+ * A Firestore document id. Constrained so a hand-crafted path segment cannot
+ * reach `collection.doc()` as `..` or a nested path.
+ */
+export const sectionIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id');
+
+/**
  * Sections form a tree via `parentId`. A root section (`parentId: null`) is what
  * the product calls a "section"; a section with a parent is a "subsection".
  * Nesting deeper than {@link MAX_SECTION_DEPTH} is rejected.
  */
 export const sectionSchema = z
   .object({
-    id: z.string().min(1),
-    parentId: z.string().min(1).nullable(),
+    id: sectionIdSchema,
+    parentId: sectionIdSchema.nullable(),
     /** Root-to-node id chain excluding self — lets us fetch a whole subtree in one query. */
-    ancestorIds: z.array(z.string().min(1)).default([]),
+    ancestorIds: z.array(sectionIdSchema).default([]),
     /** 0 for a root section, 1 for a subsection, and so on. Derived from `ancestorIds`. */
     depth: z.number().int().min(0).max(4),
     kind: sectionKindSchema,
@@ -72,7 +83,7 @@ export type Section = z.infer<typeof sectionSchema>;
 export const MAX_SECTION_DEPTH = 4;
 
 export const createSectionSchema = z.object({
-  parentId: z.string().min(1).nullable().default(null),
+  parentId: sectionIdSchema.nullable().default(null),
   kind: sectionKindSchema.default('content'),
   slug: slugSchema,
   title: localizedTextSchema,
@@ -91,7 +102,7 @@ export type UpdateSectionInput = z.infer<typeof updateSectionSchema>;
 
 /** Moving a section re-parents it and repositions it among its new siblings. */
 export const moveSectionSchema = z.object({
-  parentId: z.string().min(1).nullable(),
+  parentId: sectionIdSchema.nullable(),
   sortOrder: z.number().int(),
 });
 export type MoveSectionInput = z.infer<typeof moveSectionSchema>;
@@ -100,3 +111,17 @@ export type MoveSectionInput = z.infer<typeof moveSectionSchema>;
 export interface SectionTreeNode extends Section {
   children: SectionTreeNode[];
 }
+
+/**
+ * Query for `GET /api/sections`. A query string cannot carry `null`, so the
+ * literal `root` is the sentinel for "sections with no parent"; an absent
+ * `parentId` means every section. Firestore auto-ids are 20 characters, so
+ * `root` can never collide with a real id.
+ */
+export const SECTION_ROOT_PARENT = 'root';
+
+export const listSectionsQuerySchema = paginationQuerySchema.extend({
+  parentId: z.union([z.literal(SECTION_ROOT_PARENT), sectionIdSchema]).optional(),
+  status: publishStatusSchema.optional(),
+});
+export type ListSectionsQuery = z.infer<typeof listSectionsQuerySchema>;

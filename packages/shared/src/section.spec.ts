@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createSectionSchema, sectionSchema } from './section.js';
+import {
+  SECTION_ROOT_PARENT,
+  createSectionSchema,
+  listSectionsQuerySchema,
+  sectionIdSchema,
+  sectionSchema,
+} from './section.js';
 
 const audit = {
   createdAt: '2026-01-01T00:00:00Z',
@@ -84,5 +90,44 @@ describe('createSectionSchema', () => {
       showInMenu: false,
       status: 'draft',
     });
+  });
+});
+
+describe('sectionIdSchema', () => {
+  it('accepts a Firestore auto-id', () => {
+    expect(sectionIdSchema.parse('AbC012defGHI345jklMN')).toBe('AbC012defGHI345jklMN');
+  });
+
+  it.each(['..', 'a/b', '', 'a'.repeat(129), 'has space', 'dot.dot'])(
+    'rejects %j as a document id',
+    (candidate) => {
+      // These reach `collection.doc()` straight from a URL segment: `..` and
+      // `a/b` would address a different document entirely.
+      expect(sectionIdSchema.safeParse(candidate).success).toBe(false);
+    },
+  );
+});
+
+describe('listSectionsQuerySchema', () => {
+  it('defaults the page size and leaves both filters absent', () => {
+    expect(listSectionsQuerySchema.parse({})).toEqual({ limit: 25 });
+  });
+
+  it('coerces the limit out of its query-string form', () => {
+    expect(listSectionsQuerySchema.parse({ limit: '10' }).limit).toBe(10);
+  });
+
+  it('accepts the root sentinel as a parent filter', () => {
+    expect(listSectionsQuerySchema.parse({ parentId: SECTION_ROOT_PARENT }).parentId).toBe('root');
+  });
+
+  it('accepts a real parent id', () => {
+    expect(listSectionsQuerySchema.parse({ parentId: 'AbC012defGHI345jklMN' }).parentId).toBe(
+      'AbC012defGHI345jklMN',
+    );
+  });
+
+  it('rejects a status that is not a publish status', () => {
+    expect(listSectionsQuerySchema.safeParse({ status: 'nonsense' }).success).toBe(false);
   });
 });
