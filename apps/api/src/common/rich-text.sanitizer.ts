@@ -22,6 +22,11 @@ const purify = createDOMPurify(new JSDOM('').window);
  * `ALLOWED_URI_REGEXP` is deliberately not set: DOMPurify's default already
  * blocks `javascript:` and the other script-bearing schemes, and narrowing it
  * further would break the absolute Cloud Storage URLs that media uploads return.
+ *
+ * `source` is allowed even though `audio.extension.ts` renders `audio[src]` and
+ * never a `<source>` today: an `<audio>` whose only child is stripped becomes a
+ * silently empty player, and losing a pronunciation clip without a trace is the
+ * worst failure this file can have.
  */
 const SANITIZE_CONFIG = {
   ALLOWED_TAGS: [
@@ -44,6 +49,7 @@ const SANITIZE_CONFIG = {
     'a',
     'img',
     'audio',
+    'source',
     'figure',
     'figcaption',
     'table',
@@ -60,6 +66,7 @@ const SANITIZE_CONFIG = {
     'title',
     'src',
     'alt',
+    'type',
     'width',
     'height',
     'controls',

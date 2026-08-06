@@ -27,6 +27,18 @@ describe('RichTextSanitizer', () => {
     expect(clean).toContain('data-asset-path="audio/2026/01/a.mp3"');
   });
 
+  it('keeps a source child of an audio node rather than emptying the player', () => {
+    // Nothing renders this today, but an `<audio>` stripped of its only child
+    // plays nothing and reports no error — a clip lost without a trace.
+    const html = '<audio controls><source src="https://cdn.test/a.mp3" type="audio/mpeg"></audio>';
+
+    const clean = sanitizer.sanitize(html);
+
+    expect(clean).toContain('<source');
+    expect(clean).toContain('src="https://cdn.test/a.mp3"');
+    expect(clean).toContain('type="audio/mpeg"');
+  });
+
   it.each([
     ['an image', '<img src="https://cdn.test/x.png" alt="A diagram">'],
     [
