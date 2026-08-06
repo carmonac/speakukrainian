@@ -214,6 +214,18 @@ function fillSlug(harness: RouterTestingHarness, value: string): void {
   harness.detectChanges();
 }
 
+function slugFormField(harness: RouterTestingHarness): HTMLElement {
+  const field = slugField(harness).closest('mat-form-field');
+  if (!(field instanceof HTMLElement)) {
+    throw new Error('Expected the slug input to sit in a mat-form-field');
+  }
+  return field;
+}
+
+function slugError(harness: RouterTestingHarness): string | null {
+  return root(harness).querySelector('.section-form__slug-error')?.textContent?.trim() ?? null;
+}
+
 function fillSortOrder(harness: RouterTestingHarness, value: string): void {
   const input = root(harness).querySelector<HTMLInputElement>('input[formControlName="sortOrder"]');
   if (!input) {
@@ -513,6 +525,43 @@ describe('SectionFormPage', () => {
 
     expect(bodyOf(calls, 'update')['title']).toEqual(awkward.title);
     expect(bodyOf(calls, 'update')['image']).toEqual(awkward.image);
+  });
+
+  it('shows a slug error while the author is still in the field', async () => {
+    // Clicking the disabled Save does not blur the input, so an error gated on
+    // `touched` would never arrive and the button would look simply broken.
+    const { calls } = setup({ sections: [STORED] });
+    const harness = await open('/sections/sec-1');
+
+    fillSlug(harness, 'Present Simple!');
+
+    expect(slugError(harness)).toBe('Use lowercase words joined by hyphens.');
+    expect(slugFormField(harness).classList).toContain('mat-form-field-invalid');
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await submit(harness);
+
+    expect(calls.some((call) => call.method === 'update')).toBe(false);
+  });
+
+  it('does not paint a blank create form red, and keeps its hints', async () => {
+    // The slug is empty and required from the first frame, so a matcher that
+    // only asked `invalid` would open the form in an error state and swallow
+    // every hint on it.
+    setup();
+    const harness = await open('/sections/new');
+
+    expect(root(harness).querySelectorAll('.mat-form-field-invalid')).toHaveLength(0);
+    expect(slugError(harness)).toBeNull();
+    expect(sortOrderError(harness)).toBeNull();
+    // Both hints, because a `mat-error` that is always declared is what would
+    // replace them if the matcher ever said "error" on an untouched field.
+    expect(
+      Array.from(root(harness).querySelectorAll('mat-hint'), (hint) => hint.textContent?.trim()),
+    ).toEqual([
+      'Lowercase words joined by hyphens.',
+      'Left empty, the section is appended after its last sibling.',
+    ]);
   });
 
   it('refuses a fractional sort order at the field instead of at the API', async () => {

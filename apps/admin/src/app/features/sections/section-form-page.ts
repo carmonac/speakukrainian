@@ -5,7 +5,7 @@ import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
-import type { ErrorStateMatcher } from '@angular/material/core';
+import { ErrorStateMatcher } from '@angular/material/core';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -36,6 +36,22 @@ import { sectionTitle } from './sections.model';
 import { SectionsApi } from './sections.api';
 import { slugValidator, sortOrderValidator } from './section-validators';
 import { slugify } from './slug';
+
+/**
+ * When a field on this form shows its error — one answer for all of them, so a
+ * field added later inherits the policy instead of inventing a third variant.
+ *
+ * Material's default matcher waits for a blur or a submit, and this form offers
+ * neither: Save is disabled while the form is invalid, so `ngSubmit` never
+ * fires, and clicking a disabled button does not move focus, so an author who
+ * types `1.5` or a slug with spaces and reaches for Save would be left with a
+ * dead button and no reason for it. `dirty || touched` is what keeps a pristine
+ * `/sections/new` from opening painted red with its hints replaced by errors.
+ */
+const showOnceEdited: ErrorStateMatcher = {
+  isErrorState: (control) =>
+    control !== null && control.invalid && (control.dirty || control.touched),
+};
 
 /** The form's raw value, which the two payload builders read. */
 interface SectionFormValue {
@@ -69,6 +85,7 @@ interface SectionFormValue {
   ],
   templateUrl: './section-form-page.html',
   styleUrl: './section-form-page.scss',
+  providers: [{ provide: ErrorStateMatcher, useValue: showOnceEdited }],
 })
 export class SectionFormPage implements OnInit, HasUnsavedChanges {
   private readonly api = inject(SectionsApi);
@@ -92,17 +109,6 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
   protected readonly saving = signal(false);
   protected readonly slugConflict = signal<string | null>(null);
   protected readonly plainTitleHint = PLAIN_TITLE_HINT;
-
-  /**
-   * Material's default matcher waits for a blur or a submit, and sort order can
-   * reach neither: Save is disabled while the form is invalid, so there is no
-   * submit, and an author who types `1.5` and reaches for Save would be shown a
-   * dead button and no reason for it. A number input only ever hands over a
-   * complete number, so there is no half-typed value to nag about.
-   */
-  protected readonly showWhileTyping: ErrorStateMatcher = {
-    isErrorState: (control) => control?.invalid ?? false,
-  };
 
   protected readonly form = this.fb.group({
     title: this.fb.nonNullable.control<RichText>({}, localizedRequired(this.defaultCode)),
@@ -172,6 +178,8 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
     } else {
       // A stored section always carries a sort order, so an emptied field is a
       // lost edit rather than the create route's "append at the end".
+      // `addValidators` does not re-run validation on its own; the `patchValue`
+      // below is what applies it, so it has to stay after this line.
       this.form.controls.sortOrder.addValidators(Validators.required);
       this.form.patchValue({
         // `title` and `imageAlt` are stored plain and edited as HTML, so they
