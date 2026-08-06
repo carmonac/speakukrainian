@@ -19,6 +19,15 @@
       </p>
 
       <form [formGroup]="form" (ngSubmit)="submit()" class="section-form__form">
+        <mat-form-field appearance="outline">
+          <mat-label>Kind</mat-label>
+          <mat-select formControlName="kind" class="section-form__kind">
+            <mat-option value="content">Content</mat-option>
+            <mat-option value="link">Link</mat-option>
+          </mat-select>
+          <mat-hint>A link section has no page of its own — it points somewhere else.</mat-hint>
+        </mat-form-field>
+
         <fieldset class="section-form__group">
           <legend>Title</legend>
           <app-localized-rich-text-editor formControlName="title" [locales]="locales()" [inlineOnly]="true" />
@@ -73,6 +82,57 @@
             <img class="section-form__image-preview" [src]="picked.url" [alt]="imageAltPreview()" />
             <p class="section-form__hint">Alt text, per locale. It is stored as plain text.</p>
             <app-localized-rich-text-editor formControlName="imageAlt" [locales]="locales()" [inlineOnly]="true" />
+          }
+        </fieldset>
+
+        @if (kindValue() === 'link') {
+          <fieldset class="section-form__group" formGroupName="link">
+            <legend>Link target</legend>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Target</mat-label>
+              <mat-select formControlName="type" class="section-form__link-type">
+                <mat-option value="internal">Somewhere on this site</mat-option>
+                <mat-option value="external">Another site</mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Link</mat-label>
+              <input
+                matInput
+                formControlName="href"
+                autocomplete="off"
+                [placeholder]="linkTypeValue() === 'internal' ? '/grammar-points' : 'https://example.com'"
+              />
+              <!-- Which message, never whether: `showOnceEdited` owns when an
+                   error is displayed, and Material projects a `mat-error` only
+                   then. -->
+              @if (linkError(); as rejected) {
+                <mat-error class="section-form__link-server-error">{{ rejected }}</mat-error>
+              } @else {
+                <mat-error class="section-form__link-error">{{
+                  form.controls.link.controls.href.hasError('required')
+                    ? 'Give the link a target.'
+                    : linkTypeValue() === 'internal'
+                      ? 'A link on this site is a path like "/grammar-points".'
+                      : 'A link to another site is a full https:// address.'
+                }}</mat-error>
+              }
+            </mat-form-field>
+
+            <mat-checkbox formControlName="openInNewTab" class="section-form__new-tab">
+              Open in a new tab
+            </mat-checkbox>
+          </fieldset>
+        }
+
+        <fieldset class="section-form__group">
+          <legend>Menu</legend>
+          <mat-checkbox formControlName="showInMenu" class="section-form__show-in-menu"> Show in menu </mat-checkbox>
+          @if (showInMenuValue()) {
+            <p class="section-form__hint">{{ menuLabelHint }}</p>
+            <app-localized-rich-text-editor formControlName="menuLabel" [locales]="locales()" [inlineOnly]="true" />
           }
         </fieldset>
 

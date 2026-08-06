@@ -75,6 +75,26 @@ describe('sectionSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it.each(['ftp://legacy.test', '//evil.com', 'not a url', 'grammar', ''])(
+    'still reads a stored section whose href is %j',
+    (href) => {
+      // The write path refuses these (see `createSectionSchema` below), but a
+      // document that already carries one — the API accepted bare strings before
+      // the rule existed — has to stay readable: the repository parses every
+      // document it reads through this schema, so refusing here would 500 the
+      // public menu, the admin tree and the section's own edit screen at once,
+      // and the only remaining way to clear it would be deleting the section.
+      const result = sectionSchema.safeParse({
+        ...baseSection,
+        kind: 'link',
+        link: { type: 'external', href },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.link?.href).toBe(href);
+    },
+  );
+
   it('rejects a slug that is not kebab-case', () => {
     expect(sectionSchema.safeParse({ ...baseSection, slug: 'Grammar Points' }).success).toBe(false);
   });
@@ -121,6 +141,80 @@ describe('createSectionSchema', () => {
 
     expect(result.success).toBe(false);
   });
+
+  it.each(['/grammar', '/', '/a/b/c', '/grammar?q=1#top'])(
+    'accepts %j as an internal link target',
+    (href) => {
+      const result = createSectionSchema.safeParse({
+        slug: 'listening',
+        title: { en: 'Listening' },
+        kind: 'link',
+        link: { type: 'internal', href },
+      });
+
+      expect(result.success).toBe(true);
+    },
+  );
+
+  it.each([
+    'grammar',
+    '',
+    'https://x.test',
+    'javascript:alert(1)',
+    '//evil.com',
+    '/\\evil.com',
+    '/\\\\evil.com',
+    '/\\/evil.com',
+    '/\t/evil.com',
+    '/\n/evil.com',
+    '/\r/evil.com',
+    '/\\\\',
+  ])('rejects %j as an internal link target, pathed to the href', (href) => {
+    // Every one of these leaves the site: a browser resolves `//evil.com`,
+    // `/\evil.com`, `/\/evil.com` and the tab/LF/CR spellings all to
+    // `http://evil.com/`, because the URL parser folds `\` to `/` and strips
+    // those three characters before parsing. They start with `/`, so a prefix
+    // rule waves them through — which is why the rule resolves the href
+    // instead. `/\\` is the case the parser refuses outright (empty host).
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening' },
+      kind: 'link',
+      link: { type: 'internal', href },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+  });
+
+  it.each(['https://example.com/x', 'http://a.test'])(
+    'accepts %j as an external link target',
+    (href) => {
+      const result = createSectionSchema.safeParse({
+        slug: 'listening',
+        title: { en: 'Listening' },
+        kind: 'link',
+        link: { type: 'external', href },
+      });
+
+      expect(result.success).toBe(true);
+    },
+  );
+
+  it.each(['/internal', 'javascript:alert(1)', 'ftp://x.test', 'not a url', ''])(
+    'rejects %j as an external link target, pathed to the href',
+    (href) => {
+      const result = createSectionSchema.safeParse({
+        slug: 'listening',
+        title: { en: 'Listening' },
+        kind: 'link',
+        link: { type: 'external', href },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+    },
+  );
 });
 
 describe('updateSectionSchema', () => {
@@ -179,6 +273,17 @@ describe('updateSectionSchema', () => {
   it('still refuses null for a field that has no clearing meaning', () => {
     expect(updateSectionSchema.safeParse({ title: null }).success).toBe(false);
     expect(updateSectionSchema.safeParse({ slug: null }).success).toBe(false);
+  });
+
+  it('still applies the href shape rule after .partial()', () => {
+    // `.partial()` is the route a PATCH body takes, and a rule that only held on
+    // the create schema would let an edit store a target the reader cannot follow.
+    const result = updateSectionSchema.safeParse({
+      link: { type: 'external', href: 'nope' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
   });
 
   it('rejects an invalid value for a field it does carry', () => {

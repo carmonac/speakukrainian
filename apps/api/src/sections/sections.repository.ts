@@ -135,7 +135,12 @@ export class SectionsRepository extends BaseRepository<Section> {
     return this.paginate(scoped.orderBy('sortOrder'), query.limit, query.cursor);
   }
 
-  /** Reads one document past the cap so a truncated tree is detectable. */
+  /**
+   * Reads one document past the cap so a truncated tree is detectable. It backs
+   * the public menu as well as the admin tree: the menu's ordering depends on
+   * ancestors it does not itself show, so it cannot be served by a query that
+   * filters them out.
+   */
   async listAllForTree(): Promise<SectionListResult> {
     const snapshot = await this.collection
       .orderBy('sortOrder')
@@ -184,10 +189,15 @@ export class SectionsRepository extends BaseRepository<Section> {
         delete merged.image;
       }
 
-      // A patch body has no way to say "remove this optional object", so
-      // switching a link section back to content would otherwise be impossible
-      // — and `sectionSchema` refuses a content section that still has a link.
-      if (merged.kind === 'content') {
+      // Dropping the stored link is the only way a patch can say "this is a
+      // content section now" — a PATCH body has no way to remove an optional
+      // object, and `sectionSchema` refuses a content section that still has a
+      // link. A patch that *sends* a link for a content section is a different
+      // thing: a contradiction, which the refinement below refuses with the
+      // issue pathed to `link`. Dropping it silently would answer 200 to a
+      // write that did not happen. The `undefined`-stripping loop above has
+      // already run, so this really does mean "the request carried none".
+      if (merged.kind === 'content' && patch.link === undefined) {
         delete merged.link;
       }
 

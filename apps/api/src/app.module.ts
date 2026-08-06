@@ -10,6 +10,7 @@ import { UsersModule } from './users/users.module.js';
 import { LocalesModule } from './locales/locales.module.js';
 import { MediaModule } from './media/media.module.js';
 import { SectionsModule } from './sections/sections.module.js';
+import { MenuModule } from './menu/menu.module.js';
 import { FirebaseAuthGuard } from './auth/firebase-auth.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { HttpExceptionFilter } from './common/http-exception.filter.js';
@@ -37,6 +38,7 @@ import { HealthController } from './health/health.controller.js';
     LocalesModule,
     MediaModule,
     SectionsModule,
+    MenuModule,
   ],
   controllers: [HealthController],
   providers: [

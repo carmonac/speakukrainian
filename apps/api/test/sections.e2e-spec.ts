@@ -36,6 +36,12 @@ interface ErrorBody {
   message: string;
 }
 
+/** What both `ZodValidationPipe` and `SectionsService.fail` put on the body. */
+interface IssueBody {
+  message: string;
+  errors?: { path: string; message: string }[];
+}
+
 /** The nesting shape both `GET /tree` and a hand walk of `parentId` reduce to. */
 interface Nesting {
   id: string;
@@ -403,6 +409,109 @@ describe('sections (e2e)', () => {
     expect(stripped).toContain('data-asset-path="audio/2026/01/a.mp3"');
     expect(stripped).toContain('controls');
     expect(stripped).toContain('preload="metadata"');
+  });
+
+  it('refuses a link section with no target, pathed at the link field', async () => {
+    const response = await post({
+      slug: 'e2e-link-no-target',
+      title: { en: 'No target' },
+      kind: 'link',
+    }).expect(422);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('link');
+  });
+
+  it('refuses a malformed href rather than storing a target nobody can follow', async () => {
+    await post({
+      slug: 'e2e-link-bad-internal',
+      title: { en: 'Bad' },
+      kind: 'link',
+      // A protocol-relative URL leaves the site while passing for a path.
+      link: { type: 'internal', href: '//evil.test' },
+    }).expect(400);
+
+    await post({
+      slug: 'e2e-link-bad-external',
+      title: { en: 'Bad' },
+      kind: 'link',
+      link: { type: 'external', href: 'javascript:alert(1)' },
+    }).expect(400);
+
+    // A browser resolves this to `http://evil.test/` exactly as `//evil.test`:
+    // the URL parser folds `\` to `/`. It reaches the pipe as the authoring path
+    // sends it, so the refusal has to happen here and not only in the schema
+    // spec.
+    await post({
+      slug: 'e2e-link-backslash-internal',
+      title: { en: 'Bad' },
+      kind: 'link',
+      link: { type: 'internal', href: '/\\evil.test' },
+    }).expect(400);
+  });
+
+  it('still reads and repairs a stored href it would refuse on the way in', async () => {
+    const link = await create({
+      slug: 'e2e-link-legacy',
+      title: { en: 'Legacy' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://legacy.test', openInNewTab: false },
+    });
+    // Exactly what `POST /api/sections` accepted while `href` was only
+    // `z.string().min(1)`, written straight to the document to skip today's pipe.
+    await firestore
+      .collection(COLLECTIONS.sections)
+      .doc(link.id)
+      .update({ 'link.href': 'ftp://legacy.test' });
+
+    // A document the input rule rejects has to stay readable, or the only screen
+    // that could repair it is the one it takes down: `read` and `readTree` both
+    // assert 200, and the tree is the admin's only listing.
+    expect((await read(link.id)).link?.href).toBe('ftp://legacy.test');
+    expect((await readTree()).length).toBeGreaterThan(0);
+
+    await patch(link.id, {
+      link: { type: 'external', href: 'https://legacy.test', openInNewTab: false },
+    }).expect(200);
+    expect((await read(link.id)).link?.href).toBe('https://legacy.test');
+
+    // Repairable, but not re-breakable: the rule still holds on the way in.
+    await patch(link.id, { link: { type: 'external', href: 'ftp://legacy.test' } }).expect(400);
+
+    // An empty href is the same class and used to be the exception, because the
+    // stored shape kept a `min(1)` the input rule already covers.
+    await firestore.collection(COLLECTIONS.sections).doc(link.id).update({ 'link.href': '' });
+    expect((await read(link.id)).link?.href).toBe('');
+    expect((await readTree()).length).toBeGreaterThan(0);
+    await patch(link.id, { link: { type: 'external', href: '' } }).expect(400);
+  });
+
+  it('refuses a content section that carries a link instead of dropping the body', async () => {
+    const content = await create({ slug: 'e2e-link-contradiction', title: { en: 'Content' } });
+
+    const response = await patch(content.id, {
+      link: { type: 'external', href: 'https://example.com' },
+    }).expect(422);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('link');
+    // The refusal has to be a refusal: a 200 that silently discarded the link
+    // would be a save reporting success for a write that did not happen.
+    expect((await read(content.id)).link).toBeUndefined();
+  });
+
+  it('leaves no link on the document when a link section becomes a content section', async () => {
+    const link = await create({
+      slug: 'e2e-link-to-content',
+      title: { en: 'Link' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://example.com', openInNewTab: true },
+    });
+
+    await patch(link.id, { kind: 'content' }).expect(200);
+
+    // Read the raw document: the criterion is about what Firestore holds, and
+    // an API response omitting the key proves nothing about the stored data.
+    const doc = await firestore.collection(COLLECTIONS.sections).doc(link.id).get();
+    expect(Object.keys(doc.data() ?? {})).not.toContain('link');
   });
 
   it('refuses to delete a section that still has children', async () => {

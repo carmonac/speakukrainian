@@ -89,11 +89,12 @@ interface Harnessed {
   calls: { method: string; args: unknown[] }[];
   dialogs: number;
   successes: string[];
+  errors: string[];
 }
 
 function setup(options: Options = {}): Harnessed {
   const stored = new Map((options.sections ?? []).map((entry) => [entry.id, entry]));
-  const recorded: Harnessed = { calls: [], dialogs: 0, successes: [] };
+  const recorded: Harnessed = { calls: [], dialogs: 0, successes: [], errors: [] };
   const saved = options.saved ?? section('new-1', { slug: 'created', path: '/created' });
 
   const write =
@@ -162,7 +163,7 @@ function setup(options: Options = {}): Harnessed {
         useValue: {
           success: (message: string) => recorded.successes.push(message),
           info: () => {},
-          error: () => {},
+          error: (message: string) => recorded.errors.push(message),
         } as unknown as NotificationService,
       },
       {
@@ -346,6 +347,84 @@ function bodyOf(
   return (method === 'update' ? call.args[1] : call.args[0]) as Record<string, unknown>;
 }
 
+/**
+ * Drives a `mat-select` the way a pointer would: opening the overlay and
+ * clicking an option, so the control's `valueChanges` — and every signal the
+ * template reads through it — really runs. Setting the control by hand would
+ * pass against a template keyed on a plain property.
+ */
+async function selectOption(
+  harness: RouterTestingHarness,
+  selectClass: string,
+  optionText: string,
+): Promise<void> {
+  const trigger = root(harness).querySelector<HTMLElement>(
+    `.${selectClass} .mat-mdc-select-trigger`,
+  );
+  if (!trigger) {
+    throw new Error(`Expected a mat-select with class ${selectClass}`);
+  }
+  trigger.click();
+  harness.detectChanges();
+  await harness.fixture.whenStable();
+
+  const options = Array.from(document.querySelectorAll<HTMLElement>('mat-option'));
+  const option = options.find((entry) => entry.textContent?.trim() === optionText);
+  if (!option) {
+    throw new Error(
+      `Expected an option "${optionText}", found ${options.map((o) => o.textContent?.trim()).join(', ')}`,
+    );
+  }
+  option.click();
+  harness.detectChanges();
+  await harness.fixture.whenStable();
+  harness.detectChanges();
+}
+
+function clickCheckbox(harness: RouterTestingHarness, checkboxClass: string): void {
+  const input = root(harness).querySelector<HTMLInputElement>(`.${checkboxClass} input`);
+  if (!input) {
+    throw new Error(`Expected a checkbox with class ${checkboxClass}`);
+  }
+  input.click();
+  harness.detectChanges();
+}
+
+function hrefField(harness: RouterTestingHarness): HTMLInputElement {
+  const input = root(harness).querySelector<HTMLInputElement>('input[formControlName="href"]');
+  if (!input) {
+    throw new Error('Expected the form to render an href field');
+  }
+  return input;
+}
+
+function fillHref(harness: RouterTestingHarness, value: string): void {
+  const input = hrefField(harness);
+  input.value = value;
+  input.dispatchEvent(new Event('input'));
+  harness.detectChanges();
+}
+
+function linkError(harness: RouterTestingHarness): string | null {
+  return root(harness).querySelector('.section-form__link-error')?.textContent?.trim() ?? null;
+}
+
+/**
+ * The shape both `ZodValidationPipe` (400) and `SectionsService.fail` (422)
+ * produce, so the form can key on the issue path rather than on the status.
+ */
+function validationError(status: number, path: string, message: string): HttpErrorResponse {
+  return new HttpErrorResponse({
+    status,
+    statusText: status === 400 ? 'Bad Request' : 'Unprocessable Entity',
+    error: {
+      statusCode: status,
+      message: status === 400 ? 'Validation failed' : 'The section is not valid',
+      errors: [{ path, message, code: 'custom' }],
+    },
+  });
+}
+
 function conflictError(message: string): HttpErrorResponse {
   return new HttpErrorResponse({
     status: 409,
@@ -377,7 +456,9 @@ describe('SectionFormPage', () => {
     expect(root(harness).querySelector<HTMLImageElement>('.section-form__image-preview')?.src).toBe(
       HERO.url,
     );
-    expect(root(harness).querySelector('mat-select')?.textContent?.trim()).toBe('Published');
+    expect(
+      root(harness).querySelector('mat-select[formControlName="status"]')?.textContent?.trim(),
+    ).toBe('Published');
     expect(root(harness).querySelector('.section-form__path')?.textContent).toContain(
       '/grammar-points/present-simple',
     );
@@ -586,11 +667,12 @@ describe('SectionFormPage', () => {
     expect(root(harness).querySelectorAll('.mat-form-field-invalid')).toHaveLength(0);
     expect(slugError(harness)).toBeNull();
     expect(sortOrderError(harness)).toBeNull();
-    // Both hints, because a `mat-error` that is always declared is what would
+    // Every hint, because a `mat-error` that is always declared is what would
     // replace them if the matcher ever said "error" on an untouched field.
     expect(
       Array.from(root(harness).querySelectorAll('mat-hint'), (hint) => hint.textContent?.trim()),
     ).toEqual([
+      'A link section has no page of its own — it points somewhere else.',
       'Lowercase words joined by hyphens.',
       'Left empty, the section is appended after its last sibling.',
     ]);
@@ -659,11 +741,14 @@ describe('SectionFormPage', () => {
     fillSlug(harness, 'present-simple-renamed');
     await submit(harness);
 
-    // `showInMenu`, `kind`, `menuLabel` and `link` belong to another screen; a
-    // patch that carried them would silently undo it.
+    // `kind` and `showInMenu` are this form's now — but `link` is still absent,
+    // because the stored section is a content section and sending a target for
+    // one is a 422, and so is `menuLabel`, which this section has never had.
     expect(Object.keys(bodyOf(calls, 'update')).sort()).toEqual([
       'description',
       'image',
+      'kind',
+      'showInMenu',
       'slug',
       'sortOrder',
       'status',
@@ -698,6 +783,241 @@ describe('SectionFormPage', () => {
     fillSlug(harness, 'listening-practice');
 
     expect(root(harness).querySelector('.section-form__slug-conflict')).toBeNull();
+  });
+
+  it('reveals the link target only when the kind is link', async () => {
+    setup();
+    const harness = await open('/sections/new');
+
+    expect(root(harness).querySelector('input[formControlName="href"]')).toBeNull();
+
+    await typeInto(harness, 'title', EN, '<p>Listening</p>');
+    // The hidden group holds an empty, required href. Left enabled it would
+    // disable Save on every content section with nothing on screen to say why.
+    expect(saveButton(harness).disabled).toBe(false);
+
+    await selectOption(harness, 'section-form__kind', 'Link');
+
+    expect(root(harness).querySelector('input[formControlName="href"]')).not.toBeNull();
+  });
+
+  it('refuses a link section with no target at the field instead of at the API', async () => {
+    const recorded = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Docs</p>');
+    await selectOption(harness, 'section-form__kind', 'Link');
+
+    expect(linkError(harness)).toBe('Give the link a target.');
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await submit(harness);
+
+    expect(recorded.calls.some((call) => call.method === 'create')).toBe(false);
+    // "at the field rather than as a toast" is the half a message on screen
+    // cannot prove on its own.
+    expect(recorded.errors).toEqual([]);
+  });
+
+  it('refuses an internal href that is not a site path', async () => {
+    const { calls } = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Docs</p>');
+    await selectOption(harness, 'section-form__kind', 'Link');
+    fillHref(harness, 'https://example.com');
+
+    expect(linkError(harness)).toBe('A link on this site is a path like "/grammar-points".');
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await submit(harness);
+    expect(calls.some((call) => call.method === 'create')).toBe(false);
+  });
+
+  it('re-decides the href when the target type changes', async () => {
+    // The rule depends on a sibling control, and Angular does not re-run a
+    // control's validators when its sibling moves.
+    setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Docs</p>');
+    await selectOption(harness, 'section-form__kind', 'Link');
+    fillHref(harness, 'https://example.com');
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await selectOption(harness, 'section-form__link-type', 'Another site');
+
+    expect(linkError(harness)).toBeNull();
+    expect(saveButton(harness).disabled).toBe(false);
+
+    await selectOption(harness, 'section-form__link-type', 'Somewhere on this site');
+
+    expect(linkError(harness)).toBe('A link on this site is a path like "/grammar-points".');
+  });
+
+  it('sends the link target and carries openInNewTab', async () => {
+    const { calls } = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Docs</p>');
+    await selectOption(harness, 'section-form__kind', 'Link');
+    await selectOption(harness, 'section-form__link-type', 'Another site');
+    fillHref(harness, 'https://example.com/x');
+    clickCheckbox(harness, 'section-form__new-tab');
+
+    await submit(harness);
+
+    const body = bodyOf(calls, 'create');
+    expect(body['kind']).toBe('link');
+    expect(body['link']).toEqual({
+      type: 'external',
+      href: 'https://example.com/x',
+      openInNewTab: true,
+    });
+  });
+
+  it('drops the link when the kind goes back to content', async () => {
+    // `getRawValue()` answers for disabled controls too, so a payload built
+    // without branching on `kind` would ship the stored target and be refused.
+    const stored = section('link-1', {
+      kind: 'link',
+      link: { type: 'external', href: 'https://example.com', openInNewTab: true },
+      sortOrder: 2,
+    });
+    const { calls } = setup({ sections: [stored] });
+    const harness = await open('/sections/link-1');
+
+    expect(hrefField(harness).value).toBe('https://example.com');
+
+    await selectOption(harness, 'section-form__kind', 'Content');
+    await submit(harness);
+
+    const body = bodyOf(calls, 'update');
+    expect(body['kind']).toBe('content');
+    expect(Object.keys(body)).not.toContain('link');
+  });
+
+  it('binds a rejected link target to the href field', async () => {
+    const message = 'A `link` section requires a `link` target';
+    const recorded = setup({ saveFails: validationError(422, 'link', message) });
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Docs</p>');
+    await selectOption(harness, 'section-form__kind', 'Link');
+    fillHref(harness, '/docs');
+    await submit(harness);
+
+    expect(
+      root(harness).querySelector('.section-form__link-server-error')?.textContent?.trim(),
+    ).toBe(message);
+    // A failed save stays on the form so the target can be fixed in place.
+    expect(TestBed.inject(Router).url).toBe('/sections/new');
+    expect(recorded.calls.some((call) => call.method === 'create')).toBe(true);
+  });
+
+  it('binds a 400 pathed at link.href to the same field', async () => {
+    const message = 'An internal link is a site-relative path starting with "/"';
+    setup({ saveFails: validationError(400, 'link.href', message) });
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Docs</p>');
+    await selectOption(harness, 'section-form__kind', 'Link');
+    fillHref(harness, '/docs');
+    await submit(harness);
+
+    expect(
+      root(harness).querySelector('.section-form__link-server-error')?.textContent?.trim(),
+    ).toBe(message);
+  });
+
+  it('clears the rejection as soon as the target is edited', async () => {
+    setup({ saveFails: validationError(422, 'link', 'Refused') });
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Docs</p>');
+    await selectOption(harness, 'section-form__kind', 'Link');
+    fillHref(harness, '/docs');
+    await submit(harness);
+    expect(root(harness).querySelector('.section-form__link-server-error')).not.toBeNull();
+
+    fillHref(harness, '/documents');
+
+    expect(root(harness).querySelector('.section-form__link-server-error')).toBeNull();
+  });
+
+  it('keeps the menu label hidden until Show in menu is ticked', async () => {
+    setup();
+    const harness = await open('/sections/new');
+
+    expect(root(harness).querySelector('[formControlName="menuLabel"]')).toBeNull();
+
+    clickCheckbox(harness, 'section-form__show-in-menu');
+
+    expect(root(harness).querySelector('[formControlName="menuLabel"]')).not.toBeNull();
+    expect(root(harness).textContent).toContain(
+      'Leave the label empty and the menu uses the title',
+    );
+  });
+
+  it('saves the menu visibility and the localized label as plain text', async () => {
+    const { calls } = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Grammar points</p>');
+    clickCheckbox(harness, 'section-form__show-in-menu');
+    await typeInto(harness, 'menuLabel', UK, '<p><strong>Грам</strong></p>');
+
+    await submit(harness);
+
+    const body = bodyOf(calls, 'create');
+    expect(body['showInMenu']).toBe(true);
+    expect(body['menuLabel']).toEqual({ uk: 'Грам' });
+  });
+
+  it('leaves menuLabel out of a save for a section that has never had one', async () => {
+    // An omitted key means "leave it alone", so an empty map here would write
+    // `menuLabel: {}` onto every label-less section on every single save.
+    const { calls } = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Grammar points</p>');
+    clickCheckbox(harness, 'section-form__show-in-menu');
+
+    await submit(harness);
+
+    expect(Object.keys(bodyOf(calls, 'create'))).not.toContain('menuLabel');
+  });
+
+  it('still sends an emptied menuLabel for a section that had one', async () => {
+    // The other half of leaving the key out: omitting it unconditionally would
+    // make a stored label impossible to remove.
+    const stored = section('menu-2', {
+      showInMenu: true,
+      menuLabel: { en: 'Grammar' },
+      sortOrder: 1,
+    });
+    const { calls } = setup({ sections: [stored] });
+    const harness = await open('/sections/menu-2');
+
+    await typeInto(harness, 'menuLabel', EN, '<p></p>');
+    await submit(harness);
+
+    expect(bodyOf(calls, 'update')['menuLabel']).toEqual({ en: '' });
+  });
+
+  it('opens a stored section with its menu settings already filled in', async () => {
+    const stored = section('menu-1', {
+      showInMenu: true,
+      menuLabel: { en: 'Grammar', uk: 'Грам' },
+      sortOrder: 1,
+    });
+    setup({ sections: [stored] });
+    const harness = await open('/sections/menu-1');
+
+    expect(
+      root(harness).querySelector<HTMLInputElement>('.section-form__show-in-menu input')?.checked,
+    ).toBe(true);
+    expect(await renderedIn(harness, 'menuLabel', EN)).toBe('Grammar');
   });
 
   it('sends a deep link to a missing section back to the tree', async () => {

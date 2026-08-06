@@ -116,6 +116,12 @@ _Why:_ CLAUDE.md rule 2 requires a decision here, and the alternatives are worse
 no way to guess what it said. A half-translated site that reads in English is usable, and the gap
 is visible to the admin rather than to the reader as a blank.
 
+_Within one field only:_ what happens when _no_ field has text in any locale is the consumer's
+decision, because the answer differs: the admin's `sectionTitle` widens to any locale that has
+text and then to `(untitled)`, since a row still has to be clickable, and the public menu widens
+the same way and then leaves the entry out (ADR-011), since a nameless link is not something to
+show a reader.
+
 _Scope:_ this governs **rendering**, not **authoring**. An editor never falls back:
 `LocalizedRichTextEditor` shows an empty tab for a locale it holds no text for, because showing the
 English text under the Ukrainian tab would have the author "translate" a copy of text that is
@@ -138,6 +144,80 @@ and schedule slots have a shape to copy rather than inventing one each.
 _Cost:_ a second schema per publicly-read collection, and the projection has to be applied at the
 route. It stays in `packages/shared` and is derived from the stored schema with `.omit()`, so the
 two cannot drift (rule 1).
+
+### ADR-011 — The public menu promotes a visible child of a hidden ancestor
+
+`GET /api/menu` returns only published sections with `showInMenu: true`, nested by the nearest
+ancestor that is itself in that set; a section whose parent is missing from it becomes a child of
+the nearest ancestor that is present, or a top-level entry. Its `href` is unchanged.
+
+_Why:_ the alternative is that unticking one section silently deletes a whole branch of the
+navigation, which looks like data loss to the admin who did it. Promotion keeps every page the
+admin asked for in the menu reachable, and "hidden" covers unpublished as well as unticked with no
+second rule.
+
+_Ordering:_ the menu is built by walking the whole section tree in order and keeping the sections
+that are in it, so a promoted child lands in the slot its hidden ancestor occupied and siblings
+never interleave. It cannot be built from a query that filters the hidden sections out:
+`sortOrder` is assigned per parent, so two sections' numbers are only comparable when they share
+one, and a promoted child's number was handed out under a parent that is not there.
+
+_Labels:_ an entry's label is the menu label, then the title, each resolved by ADR-009, then any
+locale either field has text in; a section with text in no locale at all is left out rather than
+served as a nameless link. So is a `link` section whose stored href fails the rule the write path
+applies (ADR-012) — publishing it is a separate question from reading it, and this route is
+anonymous. Both drops go through the same promotion as a hidden ancestor, so the visible children
+of a dropped section keep their place.
+
+_Cost:_ a promoted entry's `href` still contains the hidden ancestor's slug, so the URL reveals a
+section that has no menu entry of its own — acceptable, since the path is where the page really
+lives. And the public menu reads every section rather than only the ones it shows, which is one
+bounded read of a collection the admin tree already reads whole. Three consequences follow from
+that read, all accepted for now:
+
+- the menu depends on **every** section document parsing, not only the ones it shows, so one
+  unparseable document anywhere in the collection 500s the anonymous navigation. No API path can
+  write one — `sectionSchema.parse` runs on every create, update and move — but the blast radius
+  is wider than it was while Firestore filtered the query.
+- a collection over `MAX_TREE_SECTIONS` answers the public menu with the same 422 the admin tree
+  gets, which takes the navigation down entirely rather than degrading and quotes an internal cap
+  to anonymous readers. Serving the public route a truncated tree while the admin keeps refusing
+  is the cheap improvement if it ever matters.
+- `GET /api/menu` is two Firestore reads per request, one of them up to 1001 documents, on the
+  route the SSR site will call on every page view. A short-TTL memo of the built menu per locale
+  is the whole fix. **There is no issue filed for it** — it is unfiled follow-up work, and the
+  first consumer is Phase 2.
+
+### ADR-012 — Validation of a stored document is looser than validation of a request
+
+A rule **tightened after documents already exist**, on a value the document is not addressed or
+routed by — the href rule on `linkTargetSchema` is the first — lives on the input schemas
+(`createSectionSchema`, `updateSectionSchema`, and the admin validators that parse through the
+same schema), not on the schema the repository reads documents with (`storedLinkTargetSchema` is
+what `sectionSchema` names instead).
+
+That condition is the whole rule, and shape rules on the stored schema are the norm without it:
+`slug` stays kebab-case and `path` still has to start with `/` on `sectionSchema`, because a
+document whose path is not a path cannot be served, linked or repaired into place — there is no
+useful lenient reading of it, so failing loudly is the useful outcome. Structural rules a document
+cannot be useful without, like a section's `depth` matching its ancestor chain, stay for the same
+reason.
+
+_Obligation:_ reading leniently is not permission to publish. A projection that hands a stored
+value to a client re-checks it against the input schema and drops what fails — `buildMenu` leaves
+a section whose stored href the write path would refuse out of the menu. Otherwise the leniency
+that keeps a bad document repairable also serves `javascript:alert(1)` to every anonymous reader.
+
+_Why:_ a repository parses on read so a malformed document fails loudly instead of flowing into a
+response. But when a rule is _tightened_, documents that predate it already exist, and refusing to
+read them takes down every route that touches the collection: one section with an href written
+before the rule 500s the public menu, the admin tree and that section's own edit screen at once —
+so the only screen that could repair it is one of the casualties, and deleting the section is the
+only way out.
+
+_Cost:_ a value the write path refuses can still be read back and re-saved by an edit to some
+other field, so tightening a rule does not clean up existing data on its own. A migration is what
+does that; the rule only stops new ones arriving.
 
 ## Data model
 

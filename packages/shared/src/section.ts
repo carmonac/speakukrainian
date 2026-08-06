@@ -16,14 +16,96 @@ import {
 export const sectionKindSchema = z.enum(['content', 'link']);
 export type SectionKind = z.infer<typeof sectionKindSchema>;
 
-export const linkTargetSchema = z.object({
+/**
+ * The stored shape of a link target, and deliberately *not* where the href
+ * shape rule lives — {@link linkTargetSchema} is (ADR-012). A document written
+ * before that rule existed can carry an href it would refuse, and refusing to
+ * *read* such a document takes the public menu, the admin tree and the section
+ * itself down at once, leaving an editor unable to open the very screen that
+ * would repair it. So the rule guards the values arriving from a request, and
+ * reading stays lenient.
+ *
+ * Only `sectionSchema` should reach for this one. Anything that *publishes* an
+ * href — the menu projection is the first — checks it against
+ * {@link linkTargetSchema} first, because a lenient read keeps a bad value
+ * repairable, not fit to serve.
+ */
+export const storedLinkTargetSchema = z.object({
   /** `internal` resolves against the site's own router; `external` is an absolute URL. */
   type: z.enum(['internal', 'external']),
-  /** For `internal`: a site-relative path starting with `/`. For `external`: an absolute URL. */
-  href: z.string().min(1),
+  /**
+   * For `internal`: a site-relative path starting with `/`. For `external`: an
+   * absolute URL. Neither is stated here — an empty href included, which is a
+   * shape rule like any other and lives on {@link linkTargetSchema} with the
+   * rest of them, so that a stored one is dropped from the menu rather than
+   * taking every read of the collection down with it.
+   */
+  href: z.string(),
   openInNewTab: z.boolean().default(false),
 });
-export type LinkTarget = z.infer<typeof linkTargetSchema>;
+export type LinkTarget = z.infer<typeof storedLinkTargetSchema>;
+
+/**
+ * An origin an href can never legitimately resolve to: `.invalid` is reserved by
+ * RFC 2606 and can never be registered.
+ */
+const INTERNAL_HREF_BASE = 'https://internal.invalid';
+
+/**
+ * Whether an internal href still points at this site once a browser has resolved
+ * it.
+ *
+ * This is an origin comparison rather than a prefix test because a prefix test
+ * cannot express the rule. The WHATWG URL parser folds `\` to `/` for special
+ * schemes and strips tab, LF and CR before parsing, so `/\evil.com`,
+ * `/\/evil.com` and `/<TAB>/evil.com` all resolve to `http://evil.com/` in a
+ * browser — exactly what `//evil.com` does, and a prefix rule has to enumerate
+ * spellings it cannot know all of. Resolving against a sentinel origin asks the
+ * same parser the browser will use, so every spelling it folds is covered,
+ * including the ones nobody has written down yet.
+ *
+ * The leading `/` is still required on top of that: `grammar` resolves onto the
+ * sentinel origin too, but as a *relative* reference it lands somewhere
+ * different on every page it is rendered from.
+ */
+function isInternalHref(href: string): boolean {
+  if (!href.startsWith('/')) {
+    return false;
+  }
+  try {
+    return new URL(href, INTERNAL_HREF_BASE).origin === INTERNAL_HREF_BASE;
+  } catch {
+    // The parser refuses some hrefs outright rather than folding them (`/\\`
+    // asks for an empty host). Unfollowable is not internal.
+    return false;
+  }
+}
+
+/**
+ * A link target with the href shape rule, which lives here and nowhere else:
+ * the controller pipes reach it through `createSectionSchema` and
+ * `updateSectionSchema`, the admin's own field validator parses through it
+ * directly (rule 1), and the menu projection re-checks a stored target against
+ * it before publishing the href.
+ *
+ * It has the plain name because it is what almost every caller wants;
+ * {@link storedLinkTargetSchema} is the exception and says so.
+ *
+ * The internal branch is {@link isInternalHref}. The external branch is a
+ * `z.url` restricted to `http`/`https`, which refuses `javascript:`, `ftp:` and
+ * bare strings.
+ */
+export const linkTargetSchema = storedLinkTargetSchema.refine(
+  (target) =>
+    target.type === 'internal'
+      ? isInternalHref(target.href)
+      : z.url({ protocol: /^https?$/ }).safeParse(target.href).success,
+  {
+    message:
+      'An internal link is a site-relative path that stays on this site; an external link is an absolute http(s) URL',
+    path: ['href'],
+  },
+);
 
 /**
  * A Firestore document id. Constrained so a hand-crafted path segment cannot
@@ -54,7 +136,10 @@ export const editableSectionFields = {
   showInMenu: z.boolean(),
   /** Overrides `title` in the menu when set — for shorter or different menu wording. */
   menuLabel: localizedTextSchema.optional(),
-  /** Present only when `kind === 'link'`. */
+  /**
+   * Present only when `kind === 'link'`. Every input schema is built from this
+   * table, so the href shape rule applies to every request carrying a target.
+   */
   link: linkTargetSchema.optional(),
   sortOrder: z.number().int(),
   status: publishStatusSchema,
@@ -85,7 +170,13 @@ export const sectionSchema = z
     showInMenu: editableSectionFields.showInMenu.default(false),
     menuLabel: editableSectionFields.menuLabel,
 
-    link: editableSectionFields.link,
+    /**
+     * The stored target is read through the lenient
+     * {@link storedLinkTargetSchema}, not through `editableSectionFields.link`:
+     * this schema is what the repository parses documents *with*, and a stored
+     * href the input rule refuses has to stay readable so it can be repaired.
+     */
+    link: storedLinkTargetSchema.optional(),
 
     sortOrder: editableSectionFields.sortOrder.default(0),
     status: editableSectionFields.status.default('draft'),

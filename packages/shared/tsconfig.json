@@ -1,6 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // `WebWorker` is here for the globals every runtime this package loads in
+    // already has — `URL` is the one it uses — without `DOM`, which would also
+    // declare `window` and `document` in a package that must never touch them.
+    "lib": ["ES2023", "WebWorker"],
     "outDir": "./dist",
     "rootDir": "./src",
     "module": "ESNext",

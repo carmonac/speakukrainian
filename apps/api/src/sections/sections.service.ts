@@ -18,6 +18,7 @@ import { RichTextSanitizer } from '../common/rich-text.sanitizer.js';
 import {
   MAX_TREE_SECTIONS,
   SectionsRepository,
+  type SectionListResult,
   type SectionWriteFailure,
   type SectionWriteResult,
 } from './sections.repository.js';
@@ -57,13 +58,24 @@ export class SectionsService {
    * collection is an error rather than a partial answer.
    */
   async tree(): Promise<SectionTreeNode[]> {
-    const result = await this.repository.listAllForTree();
+    return buildTree(await this.allSections());
+  }
+
+  /**
+   * Every section, ordered by `sortOrder`. The admin tree and the public menu
+   * are both projections of this one read: the menu needs the sections it does
+   * *not* show as well, because a promoted child's place among its new siblings
+   * comes from the ordering of the hidden ancestor it was promoted out of, and
+   * `sortOrder` is only comparable between siblings (ADR-011).
+   */
+  async allSections(): Promise<Section[]> {
+    const result: SectionListResult = await this.repository.listAllForTree();
     if (!result.ok) {
       throw new UnprocessableEntityException(
         `The section tree is limited to ${MAX_TREE_SECTIONS} sections and the collection holds more.`,
       );
     }
-    return buildTree(result.sections);
+    return result.sections;
   }
 
   async update(id: string, input: UpdateSectionInput, actorId: string): Promise<Section> {

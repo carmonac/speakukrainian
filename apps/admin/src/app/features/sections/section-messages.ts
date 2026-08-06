@@ -22,3 +22,9 @@ export const UNTITLED_SECTION = '(untitled)';
 
 /** Used only if a 409 arrives without a body to quote. */
 export const SLUG_TAKEN_FALLBACK = 'Another section under this parent already uses this slug.';
+
+export const MENU_LABEL_HINT =
+  'Leave the label empty and the menu uses the title. Formatting is not kept.';
+
+/** Used only if a 400 or 422 about the link target arrives without a message to quote. */
+export const LINK_REJECTED_FALLBACK = 'The API refused this link target.';

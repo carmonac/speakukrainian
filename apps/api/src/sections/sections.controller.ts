@@ -33,8 +33,8 @@ import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { SectionsService } from './sections.service.js';
 
 /**
- * Every route is staff-only: the public site reads sections through its own
- * projected endpoints, which land with the menu work. `:id` is validated with
+ * Every route is staff-only: the public site reads section data through its own
+ * projections, of which `GET /api/menu` is the first. `:id` is validated with
  * `sectionIdSchema` so a hand-crafted path segment never reaches
  * `collection.doc()`.
  */
