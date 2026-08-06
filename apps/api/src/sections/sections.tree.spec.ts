@@ -6,6 +6,7 @@ import {
   deepestAfterMove,
   isSamePlacement,
   placeUnder,
+  renumberSiblings,
   rewriteDescendant,
 } from './sections.tree.js';
 
@@ -114,6 +115,71 @@ describe('isSamePlacement', () => {
     expect(
       isSamePlacement({ ...child, ancestorIds: ['someone-else'] }, placeUnder(root, child.slug)),
     ).toBe(false);
+  });
+});
+
+describe('renumberSiblings', () => {
+  /** Three children with the gappy numbers a re-parent leaves behind. */
+  const others = [
+    { id: 'a', sortOrder: 0 },
+    { id: 'b', sortOrder: 3 },
+    { id: 'c', sortOrder: 7 },
+  ];
+
+  it('inserts at the requested position and numbers the result from zero', () => {
+    expect(renumberSiblings(others, 'moving', 1)).toEqual([
+      { id: 'a', sortOrder: 0 },
+      { id: 'moving', sortOrder: 1 },
+      { id: 'b', sortOrder: 2 },
+      { id: 'c', sortOrder: 3 },
+    ]);
+  });
+
+  it('keeps the others in the order they arrived in', () => {
+    expect(renumberSiblings(others, 'moving', 3).map((entry) => entry.id)).toEqual([
+      'a',
+      'b',
+      'c',
+      'moving',
+    ]);
+  });
+
+  it('clamps a negative position to first and an over-large one to last', () => {
+    // The two spellings a caller who only knows its neighbours' numbers used
+    // to send: "one below the first" and "one above the last".
+    expect(renumberSiblings(others, 'moving', -1).map((entry) => entry.id)).toEqual([
+      'moving',
+      'a',
+      'b',
+      'c',
+    ]);
+    expect(renumberSiblings(others, 'moving', 99).map((entry) => entry.id)).toEqual([
+      'a',
+      'b',
+      'c',
+      'moving',
+    ]);
+  });
+
+  it('inserts a node that is not already among the others — the re-parent case', () => {
+    expect(renumberSiblings(others, 'from-elsewhere', 0)).toEqual([
+      { id: 'from-elsewhere', sortOrder: 0 },
+      { id: 'a', sortOrder: 1 },
+      { id: 'b', sortOrder: 2 },
+      { id: 'c', sortOrder: 3 },
+    ]);
+  });
+
+  it('gives the moved node zero in an empty destination', () => {
+    expect(renumberSiblings([], 'moving', 4)).toEqual([{ id: 'moving', sortOrder: 0 }]);
+  });
+
+  it('leaves the input alone', () => {
+    const input = [{ id: 'a', sortOrder: 3 }];
+
+    renumberSiblings(input, 'moving', 0);
+
+    expect(input).toEqual([{ id: 'a', sortOrder: 3 }]);
   });
 });
 

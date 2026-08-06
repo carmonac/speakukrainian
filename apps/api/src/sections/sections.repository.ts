@@ -20,17 +20,26 @@ import {
   deepestAfterMove,
   isSamePlacement,
   placeUnder,
+  renumberSiblings,
   rewriteDescendant,
   type Placement,
 } from './sections.tree.js';
 
 /**
- * Firestore commits at most 500 writes, and the node itself takes one of them.
- * A subtree larger than this is refused rather than split across commits: see
- * ADR-002 — half a rewritten subtree is a set of broken public URLs with no way
- * back, and the depth limit already makes such a subtree a modelling accident.
+ * Firestore commits at most this many writes in one transaction. A write that
+ * would exceed it is refused rather than split across commits: see ADR-002 —
+ * half a rewritten subtree is a set of broken public URLs with no way back.
  */
-export const MAX_DESCENDANT_REWRITES = 499;
+export const MAX_TRANSACTION_WRITES = 500;
+
+/**
+ * The node itself takes one of the transaction's writes, so this is what is
+ * left for its subtree. Derived rather than written out, because a move now
+ * spends the same budget on the node, its descendants and the destination's
+ * renumbered siblings together, and two constants that could drift apart would
+ * let a move be accepted that the commit then refuses.
+ */
+export const MAX_DESCENDANT_REWRITES = MAX_TRANSACTION_WRITES - 1;
 
 /** The tree is assembled in memory, so the read behind it has to be bounded. */
 export const MAX_TREE_SECTIONS = 1000;
@@ -50,6 +59,7 @@ export type SectionWriteFailure =
   | { reason: 'depth-exceeded'; depth: number }
   | { reason: 'move-into-descendant' }
   | { reason: 'subtree-too-large'; limit: number }
+  | { reason: 'move-too-large'; limit: number }
   | { reason: 'invalid'; issues: z.core.$ZodIssue[] };
 
 export type SectionWriteRejection = { ok: false } & SectionWriteFailure;
@@ -278,10 +288,18 @@ export class SectionsRepository extends BaseRepository<Section> {
         }
       }
 
+      // The destination's whole child list, because the renumbering below
+      // rewrites it. It also subsumes the narrow sibling-slug query this used
+      // to make: a clash is by definition one of these children.
+      const destination = await this.destinationChildren(tx, input.parentId);
+      if (!destination.ok) {
+        return destination;
+      }
+      const children = destination.sections;
+
       // Two children of one parent sharing a slug would produce two identical
       // paths, and the public site resolves a URL by exactly one path lookup.
-      const siblings = await tx.get(this.siblingSlugQuery(input.parentId, existing.slug));
-      if (siblings.docs.some((sibling) => sibling.id !== id)) {
+      if (children.some((child) => child.id !== id && child.slug === existing.slug)) {
         return { ok: false, reason: 'slug-taken', slug: existing.slug };
       }
 
@@ -307,10 +325,28 @@ export class SectionsRepository extends BaseRepository<Section> {
         }
       }
 
+      // `input.sortOrder` is a position, not a number to store: the whole
+      // destination child list comes back contiguously numbered from 0, so the
+      // position the caller asked for is the number that lands on the node.
+      const ordered = renumberSiblings(
+        children.filter((child) => child.id !== id),
+        id,
+        input.sortOrder,
+      );
+      const stored = new Map(children.map((child) => [child.id, child.sortOrder]));
+      const moved = ordered.find((entry) => entry.id === id)!;
+      const changed = ordered.filter(
+        (entry) => entry.id !== id && stored.get(entry.id) !== entry.sortOrder,
+      );
+
+      if (1 + descendants.length + changed.length > MAX_TRANSACTION_WRITES) {
+        return { ok: false, reason: 'move-too-large', limit: MAX_TRANSACTION_WRITES };
+      }
+
       const parsed = sectionSchema.safeParse({
         ...existing,
         ...placement,
-        sortOrder: input.sortOrder,
+        sortOrder: moved.sortOrder,
         audit: this.touchAudit(existing.audit, actorId),
       });
       if (!parsed.success) {
@@ -325,6 +361,14 @@ export class SectionsRepository extends BaseRepository<Section> {
           { id, oldPath: existing.path, next: placement },
           actorId,
         );
+      }
+      // `update` of the one field, and no audit stamp: `sortOrder` is a plain
+      // int that cannot invalidate a document, and stamping `updatedBy` on
+      // every sibling of every reorder would make the audit trail claim an
+      // editor opened sections they never touched — the same argument the
+      // reorder short-circuit above makes about descendants.
+      for (const sibling of changed) {
+        tx.update(this.collection.doc(sibling.id), { sortOrder: sibling.sortOrder });
       }
       return { ok: true, section: parsed.data };
     });
@@ -366,6 +410,32 @@ export class SectionsRepository extends BaseRepository<Section> {
     );
     if (snapshot.size > MAX_DESCENDANT_REWRITES) {
       return { ok: false, reason: 'subtree-too-large', limit: MAX_DESCENDANT_REWRITES };
+    }
+    return {
+      ok: true,
+      sections: snapshot.docs.map((doc) => this.fromDocument(doc.id, doc.data())),
+    };
+  }
+
+  /**
+   * The destination's children, in `sortOrder`, for a move to renumber. Reading
+   * the whole list is what makes the renumbering correct, so a list too long to
+   * rewrite in one commit is refused rather than truncated: renumbering only
+   * the children that were read would hand them numbers the unread ones still
+   * hold. `sections (parentId ASC, sortOrder ASC)` is the composite index.
+   */
+  private async destinationChildren(
+    tx: Transaction,
+    parentId: string | null,
+  ): Promise<DescendantsResult> {
+    const snapshot = await tx.get(
+      this.collection
+        .where('parentId', '==', parentId)
+        .orderBy('sortOrder')
+        .limit(MAX_TRANSACTION_WRITES + 1),
+    );
+    if (snapshot.size > MAX_TRANSACTION_WRITES) {
+      return { ok: false, reason: 'move-too-large', limit: MAX_TRANSACTION_WRITES };
     }
     return {
       ok: true,

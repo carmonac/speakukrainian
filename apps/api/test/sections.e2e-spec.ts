@@ -620,6 +620,92 @@ describe('sections (e2e)', () => {
     expect((await read(second.id)).parentId).toBe(root.id);
   });
 
+  it('renumbers the destination children contiguously from the position asked for', async () => {
+    const root = await create({ slug: 'e2e-renum-root', title: { en: 'Root' } });
+    const a = await create({ parentId: root.id, slug: 'e2e-renum-a', title: { en: 'A' } });
+    const b = await create({ parentId: root.id, slug: 'e2e-renum-b', title: { en: 'B' } });
+    const c = await create({ parentId: root.id, slug: 'e2e-renum-c', title: { en: 'C' } });
+
+    // `sortOrder` in a move body is a position among the destination's
+    // children, so 0 is "first" whatever numbers they happen to hold.
+    await moveTo(c.id, { parentId: root.id, sortOrder: 0 }).expect(200);
+
+    // Read back from Firestore rather than trusting the move's own response.
+    const children = await listAll(`?parentId=${root.id}`);
+    expect(children.map((section) => section.id)).toEqual([c.id, a.id, b.id]);
+    expect(children.map((section) => section.sortOrder)).toEqual([0, 1, 2]);
+  });
+
+  it('leaves a renumbered sibling audit alone', async () => {
+    const root = await create({ slug: 'e2e-audit-root', title: { en: 'Root' } });
+    const first = await create({ parentId: root.id, slug: 'e2e-audit-a', title: { en: 'A' } });
+    const second = await create({ parentId: root.id, slug: 'e2e-audit-b', title: { en: 'B' } });
+
+    const before = await read(first.id);
+
+    await moveTo(second.id, { parentId: root.id, sortOrder: 0 }).expect(200);
+
+    // Its number really did change, and nothing else about it did: an audit
+    // stamp here would claim an editor opened a section they never touched.
+    const after = await read(first.id);
+    expect(after.sortOrder).toBe(1);
+    expect(before.sortOrder).toBe(0);
+    expect(after.audit).toEqual(before.audit);
+  });
+
+  it('renumbers the destination on a re-parent and leaves the source numbers alone', async () => {
+    const from = await create({ slug: 'e2e-renum-from', title: { en: 'From' } });
+    const to = await create({ slug: 'e2e-renum-to', title: { en: 'To' } });
+    const s1 = await create({ parentId: from.id, slug: 'e2e-renum-s1', title: { en: 'S1' } });
+    const s2 = await create({ parentId: from.id, slug: 'e2e-renum-s2', title: { en: 'S2' } });
+    const s3 = await create({ parentId: from.id, slug: 'e2e-renum-s3', title: { en: 'S3' } });
+    const d1 = await create({ parentId: to.id, slug: 'e2e-renum-d1', title: { en: 'D1' } });
+
+    await moveTo(s2.id, { parentId: to.id, sortOrder: 0 }).expect(200);
+
+    const destination = await listAll(`?parentId=${to.id}`);
+    expect(destination.map((section) => section.id)).toEqual([s2.id, d1.id]);
+    expect(destination.map((section) => section.sortOrder)).toEqual([0, 1]);
+
+    // The source keeps its numbers, gap and all: `sortOrder` is only ever
+    // compared between children of one parent, so a gap orders nothing wrongly
+    // and renumbering here would double the write budget of every re-parent.
+    const source = await listAll(`?parentId=${from.id}`);
+    expect(source.map((section) => section.id)).toEqual([s1.id, s3.id]);
+    expect(source.map((section) => section.sortOrder)).toEqual([0, 2]);
+  });
+
+  it('refuses a move that would push a descendant past the nesting limit', async () => {
+    let parentId: string | null = null;
+    let deepest: Section | null = null;
+    for (let depth = 0; depth < MAX_SECTION_DEPTH; depth += 1) {
+      deepest = await create({
+        parentId,
+        slug: `e2e-push-${depth}`,
+        title: { en: `Depth ${depth}` },
+      });
+      parentId = deepest.id;
+    }
+    expect(deepest?.depth).toBe(MAX_SECTION_DEPTH - 1);
+
+    const top = await create({ slug: 'e2e-push-top', title: { en: 'Top' } });
+    const mid = await create({ parentId: top.id, slug: 'e2e-push-mid', title: { en: 'Mid' } });
+    await create({ parentId: mid.id, slug: 'e2e-push-low', title: { en: 'Low' } });
+
+    // `top` itself would fit, at depth 4; its grandchild would land at depth 6,
+    // which is the number the refusal has to name — a check that looked only at
+    // the moved node would allow this.
+    const response = await moveTo(top.id, {
+      parentId: deepest?.id ?? null,
+      sortOrder: 0,
+    }).expect(422);
+    expect((response.body as ErrorBody).message).toContain('depth 6');
+
+    expect((await read(top.id)).parentId).toBeNull();
+    expect((await read(top.id)).path).toBe('/e2e-push-top');
+    expect((await read(mid.id)).path).toBe('/e2e-push-top/e2e-push-mid');
+  });
+
   it('does not rewrite the subtree when a move only reorders', async () => {
     const root = await create({ slug: 'e2e-quiet-root', title: { en: 'Root' } });
     const first = await create({ parentId: root.id, slug: 'e2e-quiet-a', title: { en: 'A' } });

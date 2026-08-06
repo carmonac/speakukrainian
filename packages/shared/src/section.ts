@@ -225,7 +225,18 @@ export const updateSectionSchema = z
   .extend({ image: assetRefSchema.nullable().optional() });
 export type UpdateSectionInput = z.infer<typeof updateSectionSchema>;
 
-/** Moving a section re-parents it and repositions it among its new siblings. */
+/**
+ * Moving a section re-parents it and repositions it among its new siblings.
+ *
+ * `sortOrder` here is a **position**, 0-based, among the destination's children
+ * with the moved section taken out of them, clamped to `[0, n]` — not a raw
+ * number to store. The server renumbers that whole child list to contiguous
+ * integers from 0 in the same transaction, so the position asked for is the
+ * number that ends up stored and a caller never has to know its neighbours'
+ * numbers. The source parent's remaining children keep the numbers they have;
+ * the gap left behind changes no ordering, since `sortOrder` is only ever
+ * compared between children of one parent.
+ */
 export const moveSectionSchema = z.object({
   parentId: sectionIdSchema.nullable(),
   sortOrder: z.number().int(),

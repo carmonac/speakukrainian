@@ -50,6 +50,18 @@ public URLs with no way back, and the depth limit makes a subtree that big a dat
 accident. If one ever becomes real the answer is a background re-path job behind a "moving"
 flag, not a multi-batch write.
 
+The same transaction also renumbers the destination's children: `sortOrder` in a move body is
+a position, and the destination's whole child list comes back contiguous from 0, so the
+position a client asks for is the number that gets stored and no client has to know its
+neighbours' numbers. The commit therefore spends `1 + descendants + changed siblings` of
+`MAX_TRANSACTION_WRITES` (500), and a move that would exceed it is refused with 422 for the
+same reason an oversized subtree is — an order half rewritten is two children holding the same
+number with no way to tell which was meant. The **source** parent is deliberately not
+renumbered: a re-parent leaves a gap behind, `sortOrder` is only ever compared between children
+of one parent, so a gap orders nothing wrongly and `nextSortOrder` still appends after the
+highest. Renumbering it too would double the write budget of every re-parent for no observable
+difference.
+
 ### ADR-003 — Rich text is stored as sanitized HTML
 
 Not Markdown, not a portable-text JSON tree.

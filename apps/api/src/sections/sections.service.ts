@@ -131,6 +131,10 @@ export class SectionsService {
         throw new UnprocessableEntityException(
           `This subtree has more than ${failure.limit} subsections and cannot be rewritten in one transaction.`,
         );
+      case 'move-too-large':
+        throw new UnprocessableEntityException(
+          `Moving this section would rewrite more than ${failure.limit} documents in one transaction.`,
+        );
       case 'invalid':
         // The `errors` key matches what `ZodValidationPipe` produces, so a
         // client renders both kinds of validation failure the same way.

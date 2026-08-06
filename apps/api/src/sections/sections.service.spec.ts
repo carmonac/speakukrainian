@@ -180,6 +180,7 @@ describe('SectionsService failure mapping', () => {
     [{ reason: 'depth-exceeded', depth: 5 }, UnprocessableEntityException, 422],
     [{ reason: 'move-into-descendant' }, UnprocessableEntityException, 422],
     [{ reason: 'subtree-too-large', limit: 499 }, UnprocessableEntityException, 422],
+    [{ reason: 'move-too-large', limit: 500 }, UnprocessableEntityException, 422],
     [{ reason: 'invalid', issues: [] }, UnprocessableEntityException, 422],
   ];
 
