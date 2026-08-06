@@ -171,7 +171,18 @@ export class SectionsRepository extends BaseRepository<Section> {
           delete patch[key];
         }
       }
+      // `null` means "clear this field" (see `updateSectionSchema`); an omitted
+      // field is left alone. `tx.set` rewrites the whole document, so dropping
+      // the key is what removes it — no `FieldValue.delete()` is needed here.
+      const clearImage = patch.image === null;
+      if (clearImage) {
+        delete patch.image;
+      }
+
       const merged = { ...existing, ...patch };
+      if (clearImage) {
+        delete merged.image;
+      }
 
       // A patch body has no way to say "remove this optional object", so
       // switching a link section back to content would otherwise be impossible
