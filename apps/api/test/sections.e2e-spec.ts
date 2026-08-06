@@ -36,6 +36,12 @@ interface ErrorBody {
   message: string;
 }
 
+/** What both `ZodValidationPipe` and `SectionsService.fail` put on the body. */
+interface IssueBody {
+  message: string;
+  errors?: { path: string; message: string }[];
+}
+
 /** The nesting shape both `GET /tree` and a hand walk of `parentId` reduce to. */
 interface Nesting {
   id: string;
@@ -403,6 +409,62 @@ describe('sections (e2e)', () => {
     expect(stripped).toContain('data-asset-path="audio/2026/01/a.mp3"');
     expect(stripped).toContain('controls');
     expect(stripped).toContain('preload="metadata"');
+  });
+
+  it('refuses a link section with no target, pathed at the link field', async () => {
+    const response = await post({
+      slug: 'e2e-link-no-target',
+      title: { en: 'No target' },
+      kind: 'link',
+    }).expect(422);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('link');
+  });
+
+  it('refuses a malformed href rather than storing a target nobody can follow', async () => {
+    await post({
+      slug: 'e2e-link-bad-internal',
+      title: { en: 'Bad' },
+      kind: 'link',
+      // A protocol-relative URL leaves the site while passing for a path.
+      link: { type: 'internal', href: '//evil.test' },
+    }).expect(400);
+
+    await post({
+      slug: 'e2e-link-bad-external',
+      title: { en: 'Bad' },
+      kind: 'link',
+      link: { type: 'external', href: 'javascript:alert(1)' },
+    }).expect(400);
+  });
+
+  it('refuses a content section that carries a link instead of dropping the body', async () => {
+    const content = await create({ slug: 'e2e-link-contradiction', title: { en: 'Content' } });
+
+    const response = await patch(content.id, {
+      link: { type: 'external', href: 'https://example.com' },
+    }).expect(422);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('link');
+    // The refusal has to be a refusal: a 200 that silently discarded the link
+    // would be a save reporting success for a write that did not happen.
+    expect((await read(content.id)).link).toBeUndefined();
+  });
+
+  it('leaves no link on the document when a link section becomes a content section', async () => {
+    const link = await create({
+      slug: 'e2e-link-to-content',
+      title: { en: 'Link' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://example.com', openInNewTab: true },
+    });
+
+    await patch(link.id, { kind: 'content' }).expect(200);
+
+    // Read the raw document: the criterion is about what Firestore holds, and
+    // an API response omitting the key proves nothing about the stored data.
+    const doc = await firestore.collection(COLLECTIONS.sections).doc(link.id).get();
+    expect(Object.keys(doc.data() ?? {})).not.toContain('link');
   });
 
   it('refuses to delete a section that still has children', async () => {
