@@ -219,6 +219,23 @@ describe('buildMenu hrefs', () => {
     expect(JSON.stringify(menu)).not.toContain('evil.com');
   });
 
+  it('leaves a section whose stored href is empty out of the menu, and serves the rest', () => {
+    // Nothing writes an empty href today, but the stored shape allows one so
+    // that it cannot 500 every read of the collection (ADR-012). What is left is
+    // the projection's job: an entry with nowhere to go is dropped like any
+    // other refused target.
+    const menu = buildMenu(
+      [
+        section('a', { kind: 'link', link: { type: 'internal', href: '', openInNewTab: false } }),
+        section('b'),
+      ],
+      'en',
+      'en',
+    );
+
+    expect(menu.map((entry) => entry.id)).toEqual(['b']);
+  });
+
   it('keeps the visible children of a section whose stored href is refused, in its slot', () => {
     // The refused section is dropped the way a draft one is, so ADR-011's
     // promotion applies and the branch under it is not lost with it.

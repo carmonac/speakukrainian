@@ -33,8 +33,14 @@ export type SectionKind = z.infer<typeof sectionKindSchema>;
 export const storedLinkTargetSchema = z.object({
   /** `internal` resolves against the site's own router; `external` is an absolute URL. */
   type: z.enum(['internal', 'external']),
-  /** For `internal`: a site-relative path starting with `/`. For `external`: an absolute URL. */
-  href: z.string().min(1),
+  /**
+   * For `internal`: a site-relative path starting with `/`. For `external`: an
+   * absolute URL. Neither is stated here — an empty href included, which is a
+   * shape rule like any other and lives on {@link linkTargetSchema} with the
+   * rest of them, so that a stored one is dropped from the menu rather than
+   * taking every read of the collection down with it.
+   */
+  href: z.string(),
   openInNewTab: z.boolean().default(false),
 });
 export type LinkTarget = z.infer<typeof storedLinkTargetSchema>;

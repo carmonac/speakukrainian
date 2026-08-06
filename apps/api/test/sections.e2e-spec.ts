@@ -476,6 +476,13 @@ describe('sections (e2e)', () => {
 
     // Repairable, but not re-breakable: the rule still holds on the way in.
     await patch(link.id, { link: { type: 'external', href: 'ftp://legacy.test' } }).expect(400);
+
+    // An empty href is the same class and used to be the exception, because the
+    // stored shape kept a `min(1)` the input rule already covers.
+    await firestore.collection(COLLECTIONS.sections).doc(link.id).update({ 'link.href': '' });
+    expect((await read(link.id)).link?.href).toBe('');
+    expect((await readTree()).length).toBeGreaterThan(0);
+    await patch(link.id, { link: { type: 'external', href: '' } }).expect(400);
   });
 
   it('refuses a content section that carries a link instead of dropping the body', async () => {

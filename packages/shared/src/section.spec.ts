@@ -75,7 +75,7 @@ describe('sectionSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it.each(['ftp://legacy.test', '//evil.com', 'not a url', 'grammar'])(
+  it.each(['ftp://legacy.test', '//evil.com', 'not a url', 'grammar', ''])(
     'still reads a stored section whose href is %j',
     (href) => {
       // The write path refuses these (see `createSectionSchema` below), but a
@@ -158,6 +158,7 @@ describe('createSectionSchema', () => {
 
   it.each([
     'grammar',
+    '',
     'https://x.test',
     'javascript:alert(1)',
     '//evil.com',
@@ -200,7 +201,7 @@ describe('createSectionSchema', () => {
     },
   );
 
-  it.each(['/internal', 'javascript:alert(1)', 'ftp://x.test', 'not a url'])(
+  it.each(['/internal', 'javascript:alert(1)', 'ftp://x.test', 'not a url', ''])(
     'rejects %j as an external link target, pathed to the href',
     (href) => {
       const result = createSectionSchema.safeParse({

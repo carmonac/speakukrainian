@@ -289,6 +289,19 @@ describe('menu (e2e)', () => {
     expect(rootEntry?.children.map((entry) => entry.href)).toEqual([
       '/e2e-menu-legacy-root/e2e-menu-legacy/e2e-menu-legacy-child',
     ]);
+
+    // An empty href is the same class of stored value and has to behave the same
+    // way: readable, dropped, and not a 500 for every anonymous reader.
+    await firestore
+      .collection(COLLECTIONS.sections)
+      .doc(legacy.id)
+      .update({ 'link.href': '', 'link.type': 'internal' });
+
+    const afterEmpty = flatten(await readMenu()).find((entry) => entry.id === root.id);
+
+    expect(afterEmpty?.children.map((entry) => entry.href)).toEqual([
+      '/e2e-menu-legacy-root/e2e-menu-legacy/e2e-menu-legacy-child',
+    ]);
   });
 
   it('never publishes a stored internal href that a browser would resolve off-site', async () => {
