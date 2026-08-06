@@ -341,9 +341,13 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
         await this.router.navigate(['/sections'], { state: { savedId: saved.id } });
       }
     } catch (error) {
+      // Both of these bind a server rejection to the field it names; neither
+      // suppresses the interceptor's toast, which has already fired for every
+      // 4xx that is not 401/403. The toast says the save failed, the bound
+      // message says which field to change, and a failure neither one claims
+      // still gets the toast. That is the pair #5 settled for the slug conflict.
       this.applySlugConflict(error);
       this.applyLinkRejection(error);
-      // Anything else has already been toasted by the error interceptor.
     } finally {
       this.saving.set(false);
     }
@@ -447,7 +451,10 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
    * Binds a refused link target to the href field. Keyed on the issue's `path`
    * rather than on the status: a missing target is a 422 raised by
    * `SectionsService.fail`, a malformed href is a 400 from `ZodValidationPipe`,
-   * and both carry the same `errors` shape.
+   * and both carry the same `errors` shape. Like the slug conflict, it binds in
+   * addition to the interceptor's toast rather than instead of it, and carries
+   * the same sentence: AC4's "on the field, not as a toast" is about a target
+   * the form itself refuses, which never reaches the server at all.
    *
    * It clears itself the way the slug conflict does — the `link` group's
    * `valueChanges` subscription drops the message, and the next validation run
