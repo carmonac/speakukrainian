@@ -188,6 +188,46 @@ describe('sections (e2e)', () => {
     expect(rewritten.ancestorIds).toEqual([root.id, child.id]);
   });
 
+  it('leaves the fields a patch does not carry exactly as they were', async () => {
+    const published = await create({
+      slug: 'e2e-keep-published',
+      title: { en: 'Published' },
+      status: 'published',
+      showInMenu: true,
+      menuLabel: { en: 'Pub' },
+    });
+    expect(published.status).toBe('published');
+    expect(published.showInMenu).toBe(true);
+
+    await patch(published.id, { title: { en: 'Published renamed' } }).expect(200);
+
+    // A title fix must not take the section off the public site or out of the
+    // menu: the request named neither field.
+    const renamed = await read(published.id);
+    expect(renamed.title).toEqual({ en: 'Published renamed' });
+    expect(renamed.status).toBe('published');
+    expect(renamed.showInMenu).toBe(true);
+    expect(renamed.menuLabel).toEqual({ en: 'Pub' });
+
+    const link = await create({
+      slug: 'e2e-keep-link',
+      title: { en: 'Link' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://example.com' },
+    });
+
+    await patch(link.id, { slug: 'e2e-keep-link-renamed' }).expect(200);
+
+    const patched = await read(link.id);
+    expect(patched.kind).toBe('link');
+    expect(patched.link).toEqual({
+      type: 'external',
+      href: 'https://example.com',
+      openInNewTab: false,
+    });
+    expect(patched.path).toBe('/e2e-keep-link-renamed');
+  });
+
   it('leaves every document at its original path when a rewrite fails mid-way', async () => {
     const root = await create({ slug: 'e2e-atomic-root', title: { en: 'Root' } });
     const child = await create({
@@ -445,6 +485,31 @@ describe('sections (e2e)', () => {
     expect((await listAll(`?parentId=${root.id}`)).map((s) => s.id)).toEqual([second.id, first.id]);
     expect((await read(second.id)).path).toBe('/e2e-order-root/e2e-order-b');
     expect((await read(second.id)).parentId).toBe(root.id);
+  });
+
+  it('does not rewrite the subtree when a move only reorders', async () => {
+    const root = await create({ slug: 'e2e-quiet-root', title: { en: 'Root' } });
+    const first = await create({ parentId: root.id, slug: 'e2e-quiet-a', title: { en: 'A' } });
+    const second = await create({ parentId: root.id, slug: 'e2e-quiet-b', title: { en: 'B' } });
+    const grandchild = await create({
+      parentId: first.id,
+      slug: 'e2e-quiet-ga',
+      title: { en: 'GA' },
+    });
+
+    const before = await read(grandchild.id);
+
+    await moveTo(first.id, { parentId: root.id, sortOrder: second.sortOrder + 1 }).expect(200);
+
+    // No descendant path changed, so an audit stamp on the grandchild would
+    // claim an editor touched a page they never opened.
+    const after = await read(grandchild.id);
+    expect(after.audit).toEqual(before.audit);
+    expect(after.path).toBe(before.path);
+    expect(after.ancestorIds).toEqual(before.ancestorIds);
+
+    // The reorder itself still happened.
+    expect((await listAll(`?parentId=${root.id}`)).map((s) => s.id)).toEqual([second.id, first.id]);
   });
 
   it('refuses a move onto a slug the destination already uses', async () => {

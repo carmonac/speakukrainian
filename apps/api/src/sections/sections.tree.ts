@@ -30,6 +30,22 @@ export function placeUnder(parent: Section | null, slug: string): Placement {
   };
 }
 
+/**
+ * Whether a placement leaves a section's derived fields exactly as they are —
+ * which is what a reorder under the same parent computes. Every field is
+ * compared rather than just `path`, so a stored document whose derived fields
+ * disagree with each other is still repaired by the rewrite.
+ */
+export function isSamePlacement(section: Section, placement: Placement): boolean {
+  return (
+    section.parentId === placement.parentId &&
+    section.path === placement.path &&
+    section.depth === placement.depth &&
+    section.ancestorIds.length === placement.ancestorIds.length &&
+    section.ancestorIds.every((id, index) => id === placement.ancestorIds[index])
+  );
+}
+
 /** The node whose subtree is being rewritten, before and after the change. */
 export interface MovedNode {
   id: string;

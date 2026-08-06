@@ -4,6 +4,7 @@ import {
   buildPath,
   buildTree,
   deepestAfterMove,
+  isSamePlacement,
   placeUnder,
   rewriteDescendant,
 } from './sections.tree.js';
@@ -77,6 +78,42 @@ describe('placeUnder', () => {
       depth: 2,
       path: '/grammar-points/tenses/present-simple',
     });
+  });
+});
+
+describe('isSamePlacement', () => {
+  const child = section({
+    id: 'child-id',
+    slug: 'tenses',
+    path: '/grammar-points/tenses',
+    parentId: 'root-id',
+    ancestorIds: ['root-id'],
+    depth: 1,
+  });
+
+  it('holds for a reorder under the same parent, which moves nothing', () => {
+    expect(isSamePlacement(child, placeUnder(root, child.slug))).toBe(true);
+  });
+
+  it('holds for a root that stays a root', () => {
+    expect(isSamePlacement(root, placeUnder(null, root.slug))).toBe(true);
+  });
+
+  it('fails when the section is re-parented', () => {
+    const other = section({ id: 'other-root', slug: 'listening', path: '/listening' });
+
+    expect(isSamePlacement(child, placeUnder(other, child.slug))).toBe(false);
+  });
+
+  it('fails when a stored derived field disagrees with the placement', () => {
+    // A document whose `depth` and `ancestorIds` drifted apart still gets
+    // rewritten, rather than being skipped as "already in place".
+    const drifted = { ...child, depth: 2 };
+
+    expect(isSamePlacement(drifted, placeUnder(root, child.slug))).toBe(false);
+    expect(
+      isSamePlacement({ ...child, ancestorIds: ['someone-else'] }, placeUnder(root, child.slug)),
+    ).toBe(false);
   });
 });
 
