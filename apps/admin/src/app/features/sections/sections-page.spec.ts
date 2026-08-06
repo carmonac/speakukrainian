@@ -2,6 +2,7 @@ import { Component, signal, type WritableSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { HttpErrorResponse } from '@angular/common/http';
 import { By } from '@angular/platform-browser';
+import type { CdkDrag, CdkDragDrop } from '@angular/cdk/drag-drop';
 import { MatDialog } from '@angular/material/dialog';
 import { MatTooltip } from '@angular/material/tooltip';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
@@ -13,6 +14,7 @@ import { MAX_SECTION_DEPTH, type LocaleCode, type SectionTreeNode } from '@speak
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { DELETE_WITH_CHILDREN_MESSAGE, MAX_DEPTH_MESSAGE } from './section-messages';
+import { flattenTree, type SectionRow } from './sections.model';
 import { SectionsApi } from './sections.api';
 import { SectionsPage } from './sections-page';
 
@@ -54,6 +56,7 @@ interface Harnessed {
   trees: WritableSignal<SectionTreeNode[][]>;
   calls: { method: string; args: unknown[] }[];
   removeFails: WritableSignal<HttpErrorResponse | null>;
+  moveFails: WritableSignal<HttpErrorResponse | null>;
 }
 
 function setup(
@@ -63,6 +66,7 @@ function setup(
   const served = signal(trees);
   const calls: { method: string; args: unknown[] }[] = [];
   const removeFails = signal<HttpErrorResponse | null>(null);
+  const moveFails = signal<HttpErrorResponse | null>(null);
   let treeReads = 0;
 
   const api = {
@@ -78,6 +82,11 @@ function setup(
       const failure = removeFails();
       return failure === null ? of(undefined) : throwError(() => failure);
     },
+    move: (id: string, input: unknown) => {
+      calls.push({ method: 'move', args: [id, input] });
+      const failure = moveFails();
+      return failure === null ? of(node(id)) : throwError(() => failure);
+    },
   } as unknown as SectionsApi;
 
   TestBed.configureTestingModule({
@@ -87,6 +96,7 @@ function setup(
         { path: 'sections', component: SectionsPage },
         { path: 'sections/new', component: FormStub },
         { path: 'sections/:id', component: FormStub },
+        { path: 'sections/:id/move', component: FormStub },
       ]),
       { provide: SectionsApi, useValue: api },
       {
@@ -110,7 +120,7 @@ function setup(
     ],
   });
 
-  return { trees: served, calls, removeFails };
+  return { trees: served, calls, removeFails, moveFails };
 }
 
 async function open(): Promise<RouterTestingHarness> {
@@ -160,11 +170,19 @@ const seeded = (): SectionTreeNode[] => [
   node('grammar', { title: { en: 'Grammar' } }, [
     node(
       'tenses',
-      { depth: 1, parentId: 'grammar', title: { en: 'Tenses' }, path: '/grammar/tenses' },
+      {
+        depth: 1,
+        parentId: 'grammar',
+        ancestorIds: ['grammar'],
+        title: { en: 'Tenses' },
+        path: '/grammar/tenses',
+      },
       [
         node('present', {
           depth: 2,
           parentId: 'tenses',
+          ancestorIds: ['grammar', 'tenses'],
+          slug: 'present-simple',
           title: { en: 'Present simple' },
           path: '/grammar/tenses/present-simple',
         }),
@@ -369,5 +387,184 @@ describe('SectionsPage', () => {
     expect(root(harness).querySelector('.sections__empty')?.textContent?.trim()).toBe(
       'No sections yet.',
     );
+  });
+});
+
+/**
+ * jsdom gives every element a zero-sized rect, so CDK's sorting maths — which
+ * works off rects, pointer events and CSS transforms — decides nothing there,
+ * and a synthesised pointer sequence would assert nothing real. These drive the
+ * component's own drop decisions instead, with the two fields of a drop event
+ * that they read. What the CDK wiring itself does with a real pointer is on the
+ * manual check list in the plan.
+ */
+function paths(harness: RouterTestingHarness): string[] {
+  return rows(harness).map(
+    (row) => row.querySelector('.sections-tree__path')?.textContent?.trim() ?? '',
+  );
+}
+
+function page(harness: RouterTestingHarness): SectionsPage {
+  return harness.routeDebugElement?.componentInstance as SectionsPage;
+}
+
+/** The row the component would render for `id`, from the same tree it was given. */
+function rowOf(tree: SectionTreeNode[], id: string): SectionRow {
+  const found = flattenTree(tree, new Set()).find((row) => row.section.id === id);
+  if (found === undefined) {
+    throw new Error(`The fixture has no section "${id}"`);
+  }
+  return found;
+}
+
+/**
+ * The two fields the drop handlers read. The generic follows the list the drop
+ * happened in: the tree carries the rows, a nest column carries its own row.
+ */
+function dropped<T>(row: SectionRow, currentIndex: number): CdkDragDrop<T> {
+  return { item: { data: row }, currentIndex } as unknown as CdkDragDrop<T>;
+}
+
+function dragging(row: SectionRow): CdkDrag<SectionRow> {
+  return { data: row } as unknown as CdkDrag<SectionRow>;
+}
+
+describe('SectionsPage drag and drop', () => {
+  beforeEach(() => {
+    history.replaceState({}, '');
+  });
+
+  it('offers every row a keyboard-reachable Move link naming the section', async () => {
+    setup([seeded()]);
+    const harness = await open();
+
+    const move = requireIn<HTMLAnchorElement>(rows(harness)[1]!, 'a.sections-tree__move');
+    expect(move.pathname).toBe('/sections/tenses/move');
+    expect(move.getAttribute('aria-label')).toBe('Move Tenses');
+    // An anchor, so Tab reaches it and Enter activates it with no extra work.
+    expect(move.tabIndex).toBeGreaterThanOrEqual(0);
+  });
+
+  it('reorders siblings from a drop and repaints without re-reading the tree', async () => {
+    const tree = seeded();
+    const { calls } = setup([tree]);
+    const harness = await open();
+
+    page(harness).reorder(dropped(rowOf(tree, 'listening'), 0));
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(calls).toEqual([
+      { method: 'tree', args: [] },
+      { method: 'move', args: ['listening', { parentId: null, sortOrder: 0 }] },
+    ]);
+    expect(titles(harness)).toEqual(['Listening', 'Grammar', 'Tenses', 'Present simple']);
+  });
+
+  it('counts siblings and not rows when an expanded subtree sits between them', async () => {
+    // Dropping at the very bottom of the band is position 1 among the two
+    // roots, even though three rows sit above it.
+    const tree = seeded();
+    const { calls } = setup([tree]);
+    const harness = await open();
+
+    page(harness).reorder(dropped(rowOf(tree, 'grammar'), 3));
+    await harness.fixture.whenStable();
+
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['grammar', { parentId: null, sortOrder: 1 }] },
+    ]);
+  });
+
+  it('sends no request when the drop lands where the section already is', async () => {
+    const tree = seeded();
+    const { calls } = setup([tree]);
+    const harness = await open();
+
+    page(harness).reorder(dropped(rowOf(tree, 'grammar'), 0));
+    await harness.fixture.whenStable();
+
+    expect(calls.map((call) => call.method)).toEqual(['tree']);
+  });
+
+  it('re-parents a whole subtree from a nest drop and shows its new paths', async () => {
+    const tree = seeded();
+    const { calls } = setup([tree]);
+    const harness = await open();
+
+    page(harness).nest(rowOf(tree, 'listening'), dropped(rowOf(tree, 'tenses'), 0));
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    // Appended as the target's last child, which is what `create` does too.
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['tenses', { parentId: 'listening', sortOrder: 0 }] },
+    ]);
+    expect(titles(harness)).toEqual(['Grammar', 'Listening', 'Tenses', 'Present simple']);
+    expect(paths(harness)).toEqual([
+      '/grammar',
+      '/listening',
+      '/listening/tenses',
+      '/listening/tenses/present-simple',
+    ]);
+  });
+
+  it('unfolds a collapsed target so the moved row is visible where it landed', async () => {
+    const tree = seeded();
+    setup([tree]);
+    const harness = await open();
+
+    requireIn<HTMLButtonElement>(rows(harness)[1]!, '.sections-tree__toggle').click();
+    harness.detectChanges();
+    expect(titles(harness)).toEqual(['Grammar', 'Tenses', 'Listening']);
+
+    page(harness).nest(rowOf(tree, 'tenses'), dropped(rowOf(tree, 'listening'), 0));
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(titles(harness)).toEqual(['Grammar', 'Tenses', 'Present simple', 'Listening']);
+  });
+
+  it('rolls the tree back to exactly what it was when the move is refused', async () => {
+    const tree = seeded();
+    const { calls, moveFails } = setup([tree]);
+    const harness = await open();
+    const before = { titles: titles(harness), paths: paths(harness) };
+
+    moveFails.set(new HttpErrorResponse({ status: 422, statusText: 'Unprocessable Entity' }));
+    page(harness).nest(rowOf(tree, 'listening'), dropped(rowOf(tree, 'tenses'), 0));
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect({ titles: titles(harness), paths: paths(harness) }).toEqual(before);
+    // Nothing changed on the server, so there is nothing to re-read.
+    expect(calls.map((call) => call.method)).toEqual(['tree', 'move']);
+  });
+
+  it('refuses a nest target inside the dragged section own subtree', async () => {
+    const tree = seeded();
+    setup([tree]);
+    const harness = await open();
+
+    // "Tenses" is deep enough to hold either subtree, so the only thing that
+    // refuses "Grammar" here is that "Tenses" is inside it.
+    const predicate = page(harness).nestPredicate(rowOf(tree, 'tenses'));
+    expect(predicate(dragging(rowOf(tree, 'grammar')))).toBe(false);
+    expect(predicate(dragging(rowOf(tree, 'listening')))).toBe(true);
+  });
+
+  it('keeps the drag placeholder inside the dragged row sibling band', async () => {
+    const tree = seeded();
+    setup([tree]);
+    const harness = await open();
+    const sortPredicate = page(harness).sortPredicate;
+
+    // Rows: Grammar(0) Tenses(1) Present(2) Listening(0). "Present simple" is
+    // an only child, so its band is the single row it occupies.
+    expect(sortPredicate(2, dragging(rowOf(tree, 'present')))).toBe(true);
+    expect(sortPredicate(1, dragging(rowOf(tree, 'present')))).toBe(false);
+    expect(sortPredicate(3, dragging(rowOf(tree, 'present')))).toBe(false);
+    // A root may go anywhere among the roots and their subtrees.
+    expect(sortPredicate(3, dragging(rowOf(tree, 'grammar')))).toBe(true);
   });
 });

@@ -18,9 +18,15 @@
     }
   }
 
-  &__empty {
+  &__empty,
+  &__drag-hint {
     margin-top: 16px;
     color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__drag-hint {
+    margin-bottom: 8px;
+    font-size: 0.75rem;
   }
 }
 
@@ -33,10 +39,55 @@
     display: flex;
     align-items: center;
     gap: 12px;
+    background: var(--mat-sys-surface, #fff);
     border-bottom: 1px solid var(--mat-sys-outline-variant, #cac4d0);
 
     &.is-saved {
       background: var(--mat-sys-surface-container-high, #ece6f0);
+    }
+
+    // CDK drags the one element it was given, so a dragged parent's children
+    // sit still until the drop. Dimming them is what says they travel with it.
+    &.is-moving {
+      opacity: 0.45;
+    }
+  }
+
+  &__handle {
+    display: inline-flex;
+    align-items: center;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+    cursor: grab;
+
+    &:active {
+      cursor: grabbing;
+    }
+  }
+
+  &__nest {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    min-height: 40px;
+    margin-inline-start: auto;
+    border: 1px dashed transparent;
+    border-radius: 8px;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+    opacity: 0;
+
+    // Only worth showing while there is something to drop, and only where the
+    // drop would be accepted — `cdk-drop-list-receiving` is CDK's own answer to
+    // the enter predicate, so an illegal target never lights up.
+    .sections-tree.is-dragging & {
+      opacity: 0.5;
+      border-color: var(--mat-sys-outline-variant, #cac4d0);
+    }
+
+    &.cdk-drop-list-receiving {
+      opacity: 1;
+      border-color: var(--mat-sys-primary, #6750a4);
+      background: var(--mat-sys-primary-container, #eaddff);
     }
   }
 
@@ -66,6 +117,21 @@
   &__actions {
     display: flex;
     align-items: center;
-    margin-inline-start: auto;
   }
+}
+
+.cdk-drag-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: var(--mat-sys-surface-container-high, #ece6f0);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
+  list-style: none;
+}
+
+.cdk-drag-placeholder {
+  opacity: 0.3;
 }

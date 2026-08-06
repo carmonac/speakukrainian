@@ -14,78 +14,125 @@
     <mat-progress-bar mode="indeterminate" />
   }
 
-  <ul class="sections-tree">
-    @for (row of rows(); track row.section.id) {
-      <li
-        class="sections-tree__row"
-        [class.is-saved]="row.section.id === savedId()"
-        [style.padding-inline-start.px]="row.depth * 24"
-      >
-        @if (row.hasChildren) {
-          <button
-            matIconButton
-            type="button"
-            class="sections-tree__toggle"
-            [attr.aria-label]="(row.expanded ? 'Collapse ' : 'Expand ') + title(row)"
-            [attr.aria-expanded]="row.expanded"
-            (click)="toggle(row.section.id)"
-          >
-            <mat-icon>{{ row.expanded ? 'expand_more' : 'chevron_right' }}</mat-icon>
-          </button>
-        } @else {
-          <span class="sections-tree__toggle-spacer"></span>
-        }
+  @if (rows().length > 0) {
+    <p class="sections__drag-hint">{{ dragHint }}</p>
+  }
 
-        <a class="sections-tree__title" [routerLink]="['/sections', row.section.id]">{{ title(row) }}</a>
-        <code class="sections-tree__path">{{ row.section.path }}</code>
-        <span class="sections-tree__status">{{ row.section.status }}</span>
-        @if (row.hasChildren) {
-          <span class="sections-tree__count"
-            >{{ row.childCount }} {{ row.childCount === 1 ? 'subsection' : 'subsections' }}</span
-          >
-        }
+  <div cdkDropListGroup>
+    <ul
+      class="sections-tree"
+      cdkDropList
+      cdkDropListLockAxis="y"
+      [class.is-dragging]="dragging() !== null"
+      [cdkDropListSortPredicate]="sortPredicate"
+      (cdkDropListDropped)="reorder($event)"
+    >
+      @for (row of rows(); track row.section.id) {
+        <li
+          class="sections-tree__row"
+          cdkDrag
+          [cdkDragData]="row"
+          [cdkDragDisabled]="busy()"
+          (cdkDragStarted)="dragging.set(row.section.id)"
+          (cdkDragEnded)="dragging.set(null)"
+          [class.is-saved]="row.section.id === savedId()"
+          [class.is-moving]="travelsWithDrag(row)"
+          [style.padding-inline-start.px]="row.depth * 24"
+        >
+          <!-- The gesture starts on the handle and never on the title, or the
+               browser's own link drag fights the CDK one. -->
+          <span class="sections-tree__handle" cdkDragHandle aria-hidden="true">
+            <mat-icon>drag_indicator</mat-icon>
+          </span>
 
-        <span class="sections-tree__actions">
-          @if (row.canAddChild) {
-            <a
-              matIconButton
-              class="sections-tree__add"
-              [routerLink]="['/sections', 'new']"
-              [queryParams]="{ parentId: row.section.id }"
-              [attr.aria-label]="'Add subsection under ' + title(row)"
-            >
-              <mat-icon>add</mat-icon>
-            </a>
-          } @else {
-            <span class="sections-tree__add-hint" [matTooltip]="maxDepthMessage">
-              <button
-                matIconButton
-                type="button"
-                class="sections-tree__add"
-                disabled
-                [attr.aria-label]="'Add subsection under ' + title(row)"
-              >
-                <mat-icon>add</mat-icon>
-              </button>
-            </span>
-          }
-
-          <span class="sections-tree__delete-hint" [matTooltip]="row.hasChildren ? deleteWithChildrenMessage : ''">
+          @if (row.hasChildren) {
             <button
               matIconButton
               type="button"
-              class="sections-tree__delete"
-              [disabled]="row.hasChildren || busy()"
-              [attr.aria-label]="'Delete ' + title(row)"
-              (click)="confirmDelete(row)"
+              class="sections-tree__toggle"
+              [attr.aria-label]="(row.expanded ? 'Collapse ' : 'Expand ') + title(row)"
+              [attr.aria-expanded]="row.expanded"
+              (click)="toggle(row.section.id)"
             >
-              <mat-icon>delete</mat-icon>
+              <mat-icon>{{ row.expanded ? 'expand_more' : 'chevron_right' }}</mat-icon>
             </button>
+          } @else {
+            <span class="sections-tree__toggle-spacer"></span>
+          }
+
+          <a class="sections-tree__title" [routerLink]="['/sections', row.section.id]">{{ title(row) }}</a>
+          <code class="sections-tree__path">{{ row.section.path }}</code>
+          <span class="sections-tree__status">{{ row.section.status }}</span>
+          @if (row.hasChildren) {
+            <span class="sections-tree__count"
+              >{{ row.childCount }} {{ row.childCount === 1 ? 'subsection' : 'subsections' }}</span
+            >
+          }
+
+          <!-- Its own drop list rather than the whole row: a row that swallowed
+               the pointer would leave nowhere to drop for a plain reorder. -->
+          <span
+            class="sections-tree__nest"
+            cdkDropList
+            [cdkDropListData]="row"
+            [cdkDropListEnterPredicate]="nestPredicate(row)"
+            (cdkDropListDropped)="nest(row, $event)"
+            [matTooltip]="nestHint"
+          >
+            <mat-icon>subdirectory_arrow_right</mat-icon>
           </span>
-        </span>
-      </li>
-    }
-  </ul>
+
+          <span class="sections-tree__actions">
+            <a
+              matIconButton
+              class="sections-tree__move"
+              [routerLink]="['/sections', row.section.id, 'move']"
+              [attr.aria-label]="'Move ' + title(row)"
+            >
+              <mat-icon>drive_file_move</mat-icon>
+            </a>
+
+            @if (row.canAddChild) {
+              <a
+                matIconButton
+                class="sections-tree__add"
+                [routerLink]="['/sections', 'new']"
+                [queryParams]="{ parentId: row.section.id }"
+                [attr.aria-label]="'Add subsection under ' + title(row)"
+              >
+                <mat-icon>add</mat-icon>
+              </a>
+            } @else {
+              <span class="sections-tree__add-hint" [matTooltip]="maxDepthMessage">
+                <button
+                  matIconButton
+                  type="button"
+                  class="sections-tree__add"
+                  disabled
+                  [attr.aria-label]="'Add subsection under ' + title(row)"
+                >
+                  <mat-icon>add</mat-icon>
+                </button>
+              </span>
+            }
+
+            <span class="sections-tree__delete-hint" [matTooltip]="row.hasChildren ? deleteWithChildrenMessage : ''">
+              <button
+                matIconButton
+                type="button"
+                class="sections-tree__delete"
+                [disabled]="row.hasChildren || busy()"
+                [attr.aria-label]="'Delete ' + title(row)"
+                (click)="confirmDelete(row)"
+              >
+                <mat-icon>delete</mat-icon>
+              </button>
+            </span>
+          </span>
+        </li>
+      }
+    </ul>
+  </div>
 
   @if (!loading() && rows().length === 0) {
     <p class="sections__empty">No sections yet.</p>

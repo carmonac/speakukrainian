@@ -28,3 +28,21 @@ export const MENU_LABEL_HINT =
 
 /** Used only if a 400 or 422 about the link target arrives without a message to quote. */
 export const LINK_REJECTED_FALLBACK = 'The API refused this link target.';
+
+/** The parent picker's entry for "no parent at all", which `parentId: null` is. */
+export const TOP_LEVEL_OPTION = 'Top level';
+
+/** The position picker's entry for "before every other child". */
+export const MOVE_FIRST_POSITION = 'First';
+
+/**
+ * The move route resolved a tree that has no such section. No request failed,
+ * so nothing else would say anything.
+ */
+export const SECTION_GONE = 'That section no longer exists.';
+
+export const NEST_HINT = 'Drop here to nest inside';
+
+/** Both gestures, said once above the tree, because neither is discoverable. */
+export const TREE_DRAG_HINT =
+  'Drag a section by its handle to reorder it among its siblings, or drop it on another section’s nest area to move it inside. “Move to…” does the same from the keyboard.';

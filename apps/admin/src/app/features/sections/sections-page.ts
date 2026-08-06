@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal, type OnInit } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
+import { DragDropModule, type CdkDrag, type CdkDragDrop } from '@angular/cdk/drag-drop';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
@@ -11,13 +12,35 @@ import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { navigationState } from '../../core/router/navigation-state';
 import { ConfirmDialog, type ConfirmDialogData } from '../../shared/dialogs/confirm-dialog';
-import { DELETE_WITH_CHILDREN_MESSAGE, MAX_DEPTH_MESSAGE } from './section-messages';
-import { flattenTree, sectionTitle, type SectionRow } from './sections.model';
+import {
+  DELETE_WITH_CHILDREN_MESSAGE,
+  MAX_DEPTH_MESSAGE,
+  NEST_HINT,
+  TREE_DRAG_HINT,
+} from './section-messages';
+import {
+  applyMove,
+  canMoveInto,
+  findNode,
+  flattenTree,
+  isNoOpMove,
+  sectionTitle,
+  siblingDropRange,
+  siblingPositionAt,
+  type SectionRow,
+} from './sections.model';
 import { SectionsApi } from './sections.api';
 
 @Component({
   selector: 'app-sections-page',
-  imports: [RouterLink, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule],
+  imports: [
+    DragDropModule,
+    RouterLink,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MatTooltipModule,
+  ],
   templateUrl: './sections-page.html',
   styleUrl: './sections-page.scss',
 })
@@ -36,8 +59,13 @@ export class SectionsPage implements OnInit {
   protected readonly busy = signal(false);
   protected readonly rows = computed(() => flattenTree(this.tree(), this.collapsed()));
 
+  /** The row being dragged, which is what tells its descendants to dim. */
+  protected readonly dragging = signal<string | null>(null);
+
   protected readonly maxDepthMessage = MAX_DEPTH_MESSAGE;
   protected readonly deleteWithChildrenMessage = DELETE_WITH_CHILDREN_MESSAGE;
+  protected readonly nestHint = NEST_HINT;
+  protected readonly dragHint = TREE_DRAG_HINT;
 
   /**
    * Set by the form page on save, so the row the admin just touched is obvious.
@@ -64,6 +92,92 @@ export class SectionsPage implements OnInit {
       next.add(id);
     }
     this.collapsed.set(next);
+  }
+
+  /** True for a row that travels with the drag: CDK moves only the dragged element. */
+  protected travelsWithDrag(row: SectionRow): boolean {
+    const id = this.dragging();
+    return id !== null && row.section.ancestorIds.includes(id);
+  }
+
+  // The four members below are the drop decisions, and they are public rather
+  // than protected because a spec calls them: jsdom gives every element a zero
+  // rect, so CDK's own sorting maths is meaningless there and a synthesised
+  // pointer sequence would assert nothing. They are driven directly instead.
+
+  /**
+   * Where the drag placeholder may go: inside the dragged row's own sibling
+   * band and nowhere else, so a plain vertical drag is always a reorder and
+   * never an accidental re-parent.
+   */
+  readonly sortPredicate = (index: number, drag: CdkDrag<SectionRow>): boolean => {
+    const { start, end } = siblingDropRange(this.rows(), drag.data.section.id);
+    return index >= start && index <= end;
+  };
+
+  /**
+   * Whether the dragged section may be dropped into `target`'s nest column.
+   * Refuses while a move is in flight, so a second drop cannot race the first
+   * one's rollback.
+   */
+  nestPredicate(target: SectionRow): (drag: CdkDrag<SectionRow>) => boolean {
+    return (drag) => !this.busy() && canMoveInto(drag.data.section, target.section);
+  }
+
+  /** A vertical drag: same parent, new position among its siblings. */
+  reorder(event: CdkDragDrop<SectionRow[]>): void {
+    const moving = event.item.data.section;
+    const position = siblingPositionAt(this.rows(), moving.id, event.currentIndex);
+    void this.move(moving.id, moving.parentId, position);
+  }
+
+  /** A drop on a row's nest column: the dragged section becomes its last child. */
+  nest(target: SectionRow, event: CdkDragDrop<SectionRow>): void {
+    const moving = event.item.data.section;
+    // Unfold the target first, or the row lands somewhere the tree does not show.
+    const next = new Set(this.collapsed());
+    next.delete(target.section.id);
+    this.collapsed.set(next);
+
+    void this.move(moving.id, target.section.id, target.section.children.length);
+  }
+
+  /**
+   * Repaints first and asks afterwards. On success the optimistic tree stands
+   * rather than being replaced by a re-read: `applyMove` recomputes exactly
+   * what the server recomputes from the same inputs, the body carries no
+   * derived field, and the next visit to `/sections` re-reads anyway. On a
+   * failure nothing changed on the server, so putting the previous tree back is
+   * the whole repair — the interceptor has already said what went wrong.
+   */
+  private async move(id: string, parentId: string | null, position: number): Promise<void> {
+    if (this.busy()) {
+      return;
+    }
+
+    const previous = this.tree();
+    const before = findNode(previous, id);
+    if (before === null) {
+      return;
+    }
+
+    const next = applyMove(previous, id, { parentId, position });
+    if (isNoOpMove(previous, next, id)) {
+      return;
+    }
+
+    this.busy.set(true);
+    this.tree.set(next);
+    try {
+      await firstValueFrom(this.api.move(id, { parentId, sortOrder: position }));
+      this.notifications.success(`"${sectionTitle(before, this.defaultCode())}" was moved.`);
+    } catch {
+      // Reported by the HTTP error interceptor. The server refused, so the tree
+      // it had before the drop is still the true one.
+      this.tree.set(previous);
+    } finally {
+      this.busy.set(false);
+    }
   }
 
   protected async confirmDelete(row: SectionRow): Promise<void> {
