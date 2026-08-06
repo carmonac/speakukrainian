@@ -741,14 +741,13 @@ describe('SectionFormPage', () => {
     fillSlug(harness, 'present-simple-renamed');
     await submit(harness);
 
-    // `kind`, `showInMenu` and `menuLabel` are this form's now — but `link` is
-    // still absent, because the stored section is a content section and sending
-    // a target for one is a 422.
+    // `kind` and `showInMenu` are this form's now — but `link` is still absent,
+    // because the stored section is a content section and sending a target for
+    // one is a 422, and so is `menuLabel`, which this section has never had.
     expect(Object.keys(bodyOf(calls, 'update')).sort()).toEqual([
       'description',
       'image',
       'kind',
-      'menuLabel',
       'showInMenu',
       'slug',
       'sortOrder',
@@ -973,6 +972,37 @@ describe('SectionFormPage', () => {
     const body = bodyOf(calls, 'create');
     expect(body['showInMenu']).toBe(true);
     expect(body['menuLabel']).toEqual({ uk: 'Грам' });
+  });
+
+  it('leaves menuLabel out of a save for a section that has never had one', async () => {
+    // An omitted key means "leave it alone", so an empty map here would write
+    // `menuLabel: {}` onto every label-less section on every single save.
+    const { calls } = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Grammar points</p>');
+    clickCheckbox(harness, 'section-form__show-in-menu');
+
+    await submit(harness);
+
+    expect(Object.keys(bodyOf(calls, 'create'))).not.toContain('menuLabel');
+  });
+
+  it('still sends an emptied menuLabel for a section that had one', async () => {
+    // The other half of leaving the key out: omitting it unconditionally would
+    // make a stored label impossible to remove.
+    const stored = section('menu-2', {
+      showInMenu: true,
+      menuLabel: { en: 'Grammar' },
+      sortOrder: 1,
+    });
+    const { calls } = setup({ sections: [stored] });
+    const harness = await open('/sections/menu-2');
+
+    await typeInto(harness, 'menuLabel', EN, '<p></p>');
+    await submit(harness);
+
+    expect(bodyOf(calls, 'update')['menuLabel']).toEqual({ en: '' });
   });
 
   it('opens a stored section with its menu settings already filled in', async () => {

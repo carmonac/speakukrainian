@@ -17,6 +17,7 @@ import type {
   AssetRef,
   CreateSectionInput,
   LinkTarget,
+  LocalizedText,
   PublishStatus,
   RichText,
   Section,
@@ -346,8 +347,8 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
       title: toPlainLocalized(value.title),
       description: value.description,
       showInMenu: value.showInMenu,
-      menuLabel: toPlainLocalized(value.menuLabel),
       status: value.status,
+      ...this.menuLabelOf(value, null),
       ...this.linkOf(value),
       ...(image === null ? {} : { image }),
       ...(value.sortOrder === null ? {} : { sortOrder: value.sortOrder }),
@@ -376,12 +377,30 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
       // it as "remove this", where an omitted key means "leave it alone".
       image,
       showInMenu: value.showInMenu,
-      menuLabel: toPlainLocalized(value.menuLabel),
       status: value.status,
+      ...this.menuLabelOf(value, this.formData().section),
       ...this.linkOf(value),
       ...(value.sortOrder === null ? {} : { sortOrder: value.sortOrder }),
     };
     return firstValueFrom(this.api.update(id, input));
+  }
+
+  /**
+   * A menu label nobody typed is left out of the payload: an omitted key means
+   * "leave it alone", so sending an empty map would write `menuLabel: {}` onto
+   * every section that has none, on every save.
+   *
+   * It is still sent — empty — when the stored section carries a label, because
+   * omitting the key is also the only thing that would stop an author from
+   * clearing one they no longer want.
+   */
+  private menuLabelOf(
+    value: SectionFormValue,
+    stored: Section | null,
+  ): { menuLabel?: LocalizedText } {
+    const menuLabel = toPlainLocalized(value.menuLabel);
+    const typed = Object.values(menuLabel).some((text) => text.trim() !== '');
+    return typed || stored?.menuLabel !== undefined ? { menuLabel } : {};
   }
 
   /**
