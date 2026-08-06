@@ -214,6 +214,30 @@ function fillSlug(harness: RouterTestingHarness, value: string): void {
   harness.detectChanges();
 }
 
+function fillSortOrder(harness: RouterTestingHarness, value: string): void {
+  const input = root(harness).querySelector<HTMLInputElement>('input[formControlName="sortOrder"]');
+  if (!input) {
+    throw new Error('Expected the form to render a sort order field');
+  }
+  input.value = value;
+  input.dispatchEvent(new Event('input'));
+  harness.detectChanges();
+}
+
+function sortOrderError(harness: RouterTestingHarness): string | null {
+  return (
+    root(harness).querySelector('.section-form__sort-order-error')?.textContent?.trim() ?? null
+  );
+}
+
+function saveButton(harness: RouterTestingHarness): HTMLButtonElement {
+  const button = root(harness).querySelector<HTMLButtonElement>('button[type="submit"]');
+  if (!button) {
+    throw new Error('Expected the form to render a Save button');
+  }
+  return button;
+}
+
 /**
  * Selects a locale tab inside one localized editor and answers with the single
  * `RichTextEditor` behind it — `MatTabGroup` keeps only the selected tab's body
@@ -468,6 +492,83 @@ describe('SectionFormPage', () => {
     await submit(harness);
 
     expect(bodyOf(calls, 'create')['title']).toEqual({ en: 'Present Simple' });
+  });
+
+  it('leaves a tag-shaped title and alt exactly as stored when nothing is edited', async () => {
+    // The editor treats its value as HTML, so text that merely looks like
+    // markup is truncated on the way in — and that truncation is what the next
+    // save would store, rewriting content nobody touched.
+    const awkward = section('sec-2', {
+      title: { en: 'Modal verbs <can>', uk: 'Tom & Jerry' },
+      image: { ...HERO, alt: { en: 'a > b' } },
+    });
+    const { calls } = setup({ sections: [awkward] });
+    const harness = await open('/sections/sec-2');
+
+    expect(await renderedIn(harness, 'title', EN)).toBe('Modal verbs <can>');
+    expect(await renderedIn(harness, 'title', UK)).toBe('Tom & Jerry');
+    expect(await renderedIn(harness, 'imageAlt', EN)).toBe('a > b');
+
+    await submit(harness);
+
+    expect(bodyOf(calls, 'update')['title']).toEqual(awkward.title);
+    expect(bodyOf(calls, 'update')['image']).toEqual(awkward.image);
+  });
+
+  it('refuses a fractional sort order at the field instead of at the API', async () => {
+    const { calls } = setup({ sections: [STORED] });
+    const harness = await open('/sections/sec-1');
+
+    fillSortOrder(harness, '1.5');
+
+    expect(sortOrderError(harness)).toBe('Whole numbers only.');
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await submit(harness);
+
+    expect(calls.some((call) => call.method === 'update')).toBe(false);
+  });
+
+  it('treats an emptied sort order on an edit as an error, not as a no-op', async () => {
+    // Omitting the key would leave the stored number in place, so the author
+    // would come back to a number they thought they had cleared.
+    const { calls } = setup({ sections: [STORED] });
+    const harness = await open('/sections/sec-1');
+
+    fillSortOrder(harness, '');
+
+    expect(sortOrderError(harness)).toBe('Give the section a position.');
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await submit(harness);
+
+    expect(calls.some((call) => call.method === 'update')).toBe(false);
+  });
+
+  it('still lets the create route leave the sort order empty', async () => {
+    const { calls } = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Listening</p>');
+
+    expect(sortOrderError(harness)).toBeNull();
+    expect(saveButton(harness).disabled).toBe(false);
+
+    await submit(harness);
+
+    // No key at all: an omitted sortOrder is what the API reads as "append
+    // after the last sibling".
+    expect(Object.keys(bodyOf(calls, 'create'))).not.toContain('sortOrder');
+  });
+
+  it('says what a brand-new form is missing before the author touches anything', async () => {
+    setup();
+    const harness = await open('/sections/new');
+
+    expect(saveButton(harness).disabled).toBe(true);
+    expect(root(harness).querySelector('.section-form__error')?.textContent?.trim()).toBe(
+      'Give the section a title in the default locale.',
+    );
   });
 
   it('patches only the fields this form owns', async () => {

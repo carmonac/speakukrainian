@@ -1,6 +1,6 @@
 import { FormControl } from '@angular/forms';
 import { describe, expect, it } from 'vitest';
-import { localizedRequired, toPlainLocalized } from './localized-plain-text';
+import { fromPlainLocalized, localizedRequired, toPlainLocalized } from './localized-plain-text';
 
 describe('toPlainLocalized', () => {
   it('decodes entities rather than storing them', () => {
@@ -40,6 +40,35 @@ describe('toPlainLocalized', () => {
   it('answers with an empty record for a value that was never set', () => {
     expect(toPlainLocalized(null)).toEqual({});
     expect(toPlainLocalized(undefined)).toEqual({});
+  });
+});
+
+describe('fromPlainLocalized', () => {
+  it('escapes text the editor would otherwise parse as markup', () => {
+    expect(fromPlainLocalized({ en: 'Modal verbs <can>' })).toEqual({
+      en: 'Modal verbs &lt;can&gt;',
+    });
+  });
+
+  it('maps every key, including a locale left blank', () => {
+    expect(fromPlainLocalized({ en: 'Hi', uk: '' })).toEqual({ en: 'Hi', uk: '' });
+  });
+
+  it('answers with an empty record for a value that was never stored', () => {
+    expect(fromPlainLocalized(null)).toEqual({});
+    expect(fromPlainLocalized(undefined)).toEqual({});
+  });
+
+  // The seam is only safe if it is lossless both ways: opening a stored section
+  // and pressing Save with no edit at all has to store what was already there.
+  it.each([
+    ['a tag-shaped title', 'Modal verbs <can>'],
+    ['a bare ampersand', 'Tom & Jerry'],
+    ['a greater-than sign', 'a > b'],
+    ['text that already looks escaped', 'Tom &amp; Jerry &lt;3'],
+    ['an unbalanced angle bracket', 'Use < for less than'],
+  ])('round-trips %s unchanged', (_name, text) => {
+    expect(toPlainLocalized(fromPlainLocalized({ en: text }))).toEqual({ en: text });
   });
 });
 

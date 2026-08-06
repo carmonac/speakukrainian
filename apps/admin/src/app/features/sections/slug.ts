@@ -1,4 +1,3 @@
-import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import { slugSchema } from '@speakukrainian/shared';
 
 /**
@@ -24,7 +23,3 @@ export function slugify(value: string): string {
   const capped = max === null ? kebab : kebab.slice(0, max);
   return capped.replace(/-+$/, '');
 }
-
-/** Delegates to `slugSchema`; the kebab-case regex is never restated here. */
-export const slugValidator: ValidatorFn = (control: AbstractControl): ValidationErrors | null =>
-  slugSchema.safeParse(control.value).success ? null : { slug: true };

@@ -1,6 +1,7 @@
 import { FormControl } from '@angular/forms';
 import { describe, expect, it } from 'vitest';
-import { slugValidator, slugify } from './slug';
+import { slugValidator } from './section-validators';
+import { slugify } from './slug';
 
 describe('slugify', () => {
   it('kebab-cases a plain title', () => {
@@ -27,18 +28,5 @@ describe('slugify', () => {
 
   it('suggests nothing for a title in a script it cannot transliterate', () => {
     expect(slugify('Привіт')).toBe('');
-  });
-});
-
-describe('slugValidator', () => {
-  it('accepts a kebab-case slug', () => {
-    expect(slugValidator(new FormControl('present-simple'))).toBeNull();
-  });
-
-  it('rejects what slugSchema rejects, without restating its regex', () => {
-    expect(slugValidator(new FormControl('Not Kebab'))).toEqual({ slug: true });
-    expect(slugValidator(new FormControl(''))).toEqual({ slug: true });
-    expect(slugValidator(new FormControl('trailing-'))).toEqual({ slug: true });
-    expect(slugValidator(new FormControl('a'.repeat(81)))).toEqual({ slug: true });
   });
 });

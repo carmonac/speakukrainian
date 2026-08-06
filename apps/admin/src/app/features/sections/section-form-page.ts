@@ -5,6 +5,7 @@ import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
+import type { ErrorStateMatcher } from '@angular/material/core';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -24,12 +25,17 @@ import { NotificationService } from '../../core/notifications/notification.servi
 import type { HasUnsavedChanges } from '../../core/router/unsaved-changes.guard';
 import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { LocalizedRichTextEditor } from '../../shared/rich-text/localized-rich-text-editor';
-import { localizedRequired, toPlainLocalized } from './localized-plain-text';
+import {
+  fromPlainLocalized,
+  localizedRequired,
+  toPlainLocalized,
+} from '../../shared/rich-text/localized-plain-text';
 import { PLAIN_TITLE_HINT, SLUG_TAKEN_FALLBACK } from './section-messages';
 import type { SectionFormData } from './section-form.resolver';
 import { sectionTitle } from './sections.model';
 import { SectionsApi } from './sections.api';
-import { slugValidator, slugify } from './slug';
+import { slugValidator, sortOrderValidator } from './section-validators';
+import { slugify } from './slug';
 
 /** The form's raw value, which the two payload builders read. */
 interface SectionFormValue {
@@ -87,6 +93,17 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
   protected readonly slugConflict = signal<string | null>(null);
   protected readonly plainTitleHint = PLAIN_TITLE_HINT;
 
+  /**
+   * Material's default matcher waits for a blur or a submit, and sort order can
+   * reach neither: Save is disabled while the form is invalid, so there is no
+   * submit, and an author who types `1.5` and reaches for Save would be shown a
+   * dead button and no reason for it. A number input only ever hands over a
+   * complete number, so there is no half-typed value to nag about.
+   */
+  protected readonly showWhileTyping: ErrorStateMatcher = {
+    isErrorState: (control) => control?.invalid ?? false,
+  };
+
   protected readonly form = this.fb.group({
     title: this.fb.nonNullable.control<RichText>({}, localizedRequired(this.defaultCode)),
     slug: this.fb.nonNullable.control('', [Validators.required, slugValidator]),
@@ -94,14 +111,21 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
     image: this.fb.control<AssetRef | null>(null),
     imageAlt: this.fb.nonNullable.control<RichText>({}),
     status: this.fb.nonNullable.control<PublishStatus>('draft'),
-    /** `null` on create means "append after the last sibling" — the API resolves it. */
-    sortOrder: this.fb.control<number | null>(null),
+    /**
+     * `null` on create means "append after the last sibling" — the API resolves
+     * it. An edit always starts from a stored number, so `ngOnInit` adds
+     * `required` on that route and an emptied field is an error, not a no-op.
+     */
+    sortOrder: this.fb.control<number | null>(null, sortOrderValidator),
   });
 
   /**
    * Change detection is zoneless, so anything the template reads out of a form
    * control has to reach it as a signal: a `setValue` after an `await` notifies
    * nothing on its own.
+   *
+   * These track `valueChanges`, so a future `setValue(…, { emitEvent: false })`
+   * on one of those controls would leave the signal — and the template — behind.
    */
   private readonly slugValue = toSignal(this.form.controls.slug.valueChanges, {
     initialValue: '',
@@ -146,12 +170,17 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
     if (section === null) {
       this.suggestSlugFromTitle();
     } else {
+      // A stored section always carries a sort order, so an emptied field is a
+      // lost edit rather than the create route's "append at the end".
+      this.form.controls.sortOrder.addValidators(Validators.required);
       this.form.patchValue({
-        title: section.title,
+        // `title` and `imageAlt` are stored plain and edited as HTML, so they
+        // come back in through the inverse of what `submit` applies.
+        title: fromPlainLocalized(section.title),
         slug: section.slug,
         description: section.description ?? {},
         image: section.image ?? null,
-        imageAlt: section.image?.alt ?? {},
+        imageAlt: fromPlainLocalized(section.image?.alt),
         status: section.status,
         sortOrder: section.sortOrder,
       });
@@ -175,7 +204,7 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
     }
 
     this.form.controls.image.setValue(asset);
-    this.form.controls.imageAlt.setValue(asset.alt ?? {});
+    this.form.controls.imageAlt.setValue(fromPlainLocalized(asset.alt));
     // `setValue` marks nothing dirty, and without this the `canDeactivate`
     // guard would let a picked image be navigated away from in silence.
     this.form.markAsDirty();

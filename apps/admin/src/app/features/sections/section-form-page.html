@@ -23,7 +23,10 @@
           <legend>Title</legend>
           <app-localized-rich-text-editor formControlName="title" [locales]="locales()" [inlineOnly]="true" />
           <p class="section-form__hint">{{ plainTitleHint }}</p>
-          @if (form.controls.title.touched && form.controls.title.invalid) {
+          <!-- Not gated on `touched`: the localized editor never marks itself
+               touched on blur, so gating would hide the only explanation for a
+               Save that is disabled on a form nobody has typed into yet. -->
+          @if (form.controls.title.invalid) {
             <p class="section-form__error">Give the section a title in the default locale.</p>
           }
         </fieldset>
@@ -78,9 +81,14 @@
 
         <mat-form-field appearance="outline">
           <mat-label>Sort order</mat-label>
-          <input matInput type="number" formControlName="sortOrder" />
+          <input matInput type="number" formControlName="sortOrder" [errorStateMatcher]="showWhileTyping" />
           @if (!isEdit()) {
             <mat-hint>Left empty, the section is appended after its last sibling.</mat-hint>
+          }
+          @if (form.controls.sortOrder.invalid) {
+            <mat-error class="section-form__sort-order-error">{{
+              form.controls.sortOrder.hasError('required') ? 'Give the section a position.' : 'Whole numbers only.'
+            }}</mat-error>
           }
         </mat-form-field>
 
