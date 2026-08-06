@@ -127,6 +127,13 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
   protected readonly plainTitleHint = PLAIN_TITLE_HINT;
   protected readonly menuLabelHint = MENU_LABEL_HINT;
 
+  /**
+   * Declared ahead of the form because the href validator reads it: the target
+   * type is the validator's parameter, not something it digs out of whatever
+   * group it happens to be in.
+   */
+  private readonly linkType = this.fb.nonNullable.control<LinkTarget['type']>('internal');
+
   protected readonly form = this.fb.group({
     kind: this.fb.nonNullable.control<SectionKind>('content'),
     title: this.fb.nonNullable.control<RichText>({}, localizedRequired(this.defaultCode)),
@@ -137,8 +144,11 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
     showInMenu: this.fb.nonNullable.control(false),
     menuLabel: this.fb.nonNullable.control<RichText>({}),
     link: this.fb.group({
-      type: this.fb.nonNullable.control<LinkTarget['type']>('internal'),
-      href: this.fb.nonNullable.control('', [Validators.required, linkHrefValidator]),
+      type: this.linkType,
+      href: this.fb.nonNullable.control('', [
+        Validators.required,
+        linkHrefValidator(() => this.linkType.value),
+      ]),
       openInNewTab: this.fb.nonNullable.control(false),
     }),
     status: this.fb.nonNullable.control<PublishStatus>('draft'),

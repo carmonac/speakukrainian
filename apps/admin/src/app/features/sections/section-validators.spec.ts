@@ -37,17 +37,19 @@ describe('sortOrderValidator', () => {
 
 describe('linkHrefValidator', () => {
   /**
-   * The validator reads its sibling `type`, so it has to run inside a group —
-   * and re-run once the group exists: a control validates at construction, when
-   * it has no parent to read yet.
+   * The type reaches the validator through the getter the form passes it, so a
+   * group here is only what makes the two controls move together — the same
+   * arrangement the form has.
    */
   function group(type: 'internal' | 'external', href: string): FormGroup {
-    const form = new FormGroup({
-      type: new FormControl(type),
-      href: new FormControl(href, linkHrefValidator),
+    const typeControl = new FormControl(type, { nonNullable: true });
+    return new FormGroup({
+      type: typeControl,
+      href: new FormControl(
+        href,
+        linkHrefValidator(() => typeControl.value),
+      ),
     });
-    form.get('href')?.updateValueAndValidity();
-    return form;
   }
 
   function hrefOf(form: FormGroup): AbstractControl {
@@ -68,7 +70,7 @@ describe('linkHrefValidator', () => {
     expect(hrefOf(group('external', '/grammar-points')).errors).toEqual({ href: true });
   });
 
-  it('rejects what linkTargetInputSchema rejects, without restating its rule', () => {
+  it('rejects what linkTargetSchema rejects, without restating its rule', () => {
     // `//evil.com` looks like a path and leaves the site.
     expect(hrefOf(group('internal', '//evil.com')).errors).toEqual({ href: true });
     expect(hrefOf(group('external', 'javascript:alert(1)')).errors).toEqual({ href: true });
@@ -76,8 +78,10 @@ describe('linkHrefValidator', () => {
   });
 
   it('leaves an empty field to Validators.required', () => {
-    expect(linkHrefValidator(new FormControl(''))).toBeNull();
-    expect(linkHrefValidator(new FormControl(null))).toBeNull();
+    const validator = linkHrefValidator(() => 'internal');
+
+    expect(validator(new FormControl(''))).toBeNull();
+    expect(validator(new FormControl(null))).toBeNull();
   });
 
   it('re-decides when the sibling type changes', () => {
@@ -90,10 +94,12 @@ describe('linkHrefValidator', () => {
     expect(hrefOf(form).errors).toBeNull();
   });
 
-  it('treats a target with no sibling type as internal', () => {
-    // A control outside a group has no type to read, and the safer default is
-    // the one that cannot send a reader off the site.
-    expect(linkHrefValidator(new FormControl('/grammar'))).toBeNull();
-    expect(linkHrefValidator(new FormControl('https://example.com'))).toEqual({ href: true });
+  it('takes the target type from the getter it was built with, not from the control tree', () => {
+    // A detached control: nothing to read a sibling off, and the validator does
+    // not need one — which is what removes the unwritten "assume internal".
+    const href = new FormControl('https://example.com');
+
+    expect(linkHrefValidator(() => 'external')(href)).toBeNull();
+    expect(linkHrefValidator(() => 'internal')(href)).toEqual({ href: true });
   });
 });

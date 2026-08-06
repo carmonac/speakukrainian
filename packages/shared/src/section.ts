@@ -18,34 +18,43 @@ export type SectionKind = z.infer<typeof sectionKindSchema>;
 
 /**
  * The stored shape of a link target, and deliberately *not* where the href
- * shape rule lives — {@link linkTargetInputSchema} is (ADR-012). A document written
+ * shape rule lives — {@link linkTargetSchema} is (ADR-012). A document written
  * before that rule existed can carry an href it would refuse, and refusing to
  * *read* such a document takes the public menu, the admin tree and the section
  * itself down at once, leaving an editor unable to open the very screen that
  * would repair it. So the rule guards the values arriving from a request, and
  * reading stays lenient.
+ *
+ * Only `sectionSchema` should reach for this one. Anything that *publishes* an
+ * href — the menu projection is the first — checks it against
+ * {@link linkTargetSchema} first, because a lenient read keeps a bad value
+ * repairable, not fit to serve.
  */
-export const linkTargetSchema = z.object({
+export const storedLinkTargetSchema = z.object({
   /** `internal` resolves against the site's own router; `external` is an absolute URL. */
   type: z.enum(['internal', 'external']),
   /** For `internal`: a site-relative path starting with `/`. For `external`: an absolute URL. */
   href: z.string().min(1),
   openInNewTab: z.boolean().default(false),
 });
-export type LinkTarget = z.infer<typeof linkTargetSchema>;
+export type LinkTarget = z.infer<typeof storedLinkTargetSchema>;
 
 /**
- * A link target as a request supplies it. The href shape rule lives here and
- * nowhere else: the controller pipes reach it through `createSectionSchema` and
- * `updateSectionSchema`, and the admin's own field validator parses through it
- * directly (rule 1).
+ * A link target with the href shape rule, which lives here and nowhere else:
+ * the controller pipes reach it through `createSectionSchema` and
+ * `updateSectionSchema`, the admin's own field validator parses through it
+ * directly (rule 1), and the menu projection re-checks a stored target against
+ * it before publishing the href.
+ *
+ * It has the plain name because it is what almost every caller wants;
+ * {@link storedLinkTargetSchema} is the exception and says so.
  *
  * `//evil.com` is refused for an internal link because a protocol-relative URL
  * leaves the site while looking like a path — the one case `startsWith('/')`
  * alone would wave through. The external branch is a `z.url` restricted to
  * `http`/`https`, which refuses `javascript:`, `ftp:` and bare strings.
  */
-export const linkTargetInputSchema = linkTargetSchema.refine(
+export const linkTargetSchema = storedLinkTargetSchema.refine(
   (target) =>
     target.type === 'internal'
       ? target.href.startsWith('/') && !target.href.startsWith('//')
@@ -90,7 +99,7 @@ export const editableSectionFields = {
    * Present only when `kind === 'link'`. Every input schema is built from this
    * table, so the href shape rule applies to every request carrying a target.
    */
-  link: linkTargetInputSchema.optional(),
+  link: linkTargetSchema.optional(),
   sortOrder: z.number().int(),
   status: publishStatusSchema,
 };
@@ -121,12 +130,12 @@ export const sectionSchema = z
     menuLabel: editableSectionFields.menuLabel,
 
     /**
-     * The stored target is read through the lenient {@link linkTargetSchema},
-     * not through `editableSectionFields.link`: this schema is what the
-     * repository parses documents *with*, and a stored href the input rule
-     * refuses has to stay readable so it can be repaired.
+     * The stored target is read through the lenient
+     * {@link storedLinkTargetSchema}, not through `editableSectionFields.link`:
+     * this schema is what the repository parses documents *with*, and a stored
+     * href the input rule refuses has to stay readable so it can be repaired.
      */
-    link: linkTargetSchema.optional(),
+    link: storedLinkTargetSchema.optional(),
 
     sortOrder: editableSectionFields.sortOrder.default(0),
     status: editableSectionFields.status.default('draft'),

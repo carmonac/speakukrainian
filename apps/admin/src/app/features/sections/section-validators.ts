@@ -1,7 +1,7 @@
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import {
   editableSectionFields,
-  linkTargetInputSchema,
+  linkTargetSchema,
   slugSchema,
   type LinkTarget,
 } from '@speakukrainian/shared';
@@ -29,21 +29,24 @@ export const sortOrderValidator: ValidatorFn = (
 };
 
 /**
- * The href rule is `linkTargetInputSchema`'s — the schema the API validates a
- * request body with — parsed through a whole target because the rule depends on
- * `type`. Nothing is restated here (rule 1).
+ * The href rule is `linkTargetSchema`'s — the schema the API validates a request
+ * body with — parsed through a whole target because the rule depends on `type`.
+ * Nothing is restated here (rule 1).
  *
- * It reads its sibling control, and Angular does not re-run a control's
- * validators when a sibling changes — the form re-runs this one itself when
- * `type` moves.
+ * The type is read through `typeOf` rather than off a sibling control, so the
+ * validator has no opinion about the shape of the group it sits in and no
+ * unwritten default for the case where that sibling is not there yet. Angular
+ * does not re-run a control's validators when another control changes, so the
+ * form re-runs this one itself when `type` moves.
  */
-export function linkHrefValidator(control: AbstractControl): ValidationErrors | null {
-  if (control.value === '' || control.value === null) {
-    // Emptiness is `Validators.required`'s business.
-    return null;
-  }
-  const type = control.parent?.get('type')?.value as LinkTarget['type'] | undefined;
-  return linkTargetInputSchema.safeParse({ type: type ?? 'internal', href: control.value }).success
-    ? null
-    : { href: true };
+export function linkHrefValidator(typeOf: () => LinkTarget['type']): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    if (control.value === '' || control.value === null) {
+      // Emptiness is `Validators.required`'s business.
+      return null;
+    }
+    return linkTargetSchema.safeParse({ type: typeOf(), href: control.value }).success
+      ? null
+      : { href: true };
+  };
 }
