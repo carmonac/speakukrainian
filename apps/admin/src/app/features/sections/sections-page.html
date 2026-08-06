@@ -40,7 +40,9 @@
         <code class="sections-tree__path">{{ row.section.path }}</code>
         <span class="sections-tree__status">{{ row.section.status }}</span>
         @if (row.hasChildren) {
-          <span class="sections-tree__count">{{ row.childCount }} subsections</span>
+          <span class="sections-tree__count"
+            >{{ row.childCount }} {{ row.childCount === 1 ? 'subsection' : 'subsections' }}</span
+          >
         }
 
         <span class="sections-tree__actions">

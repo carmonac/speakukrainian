@@ -300,6 +300,38 @@ describe('SectionsPage', () => {
     expect(titles(harness)).toEqual(['Граматика', '(untitled)']);
   });
 
+  it('stays readable when the default locale is not the one the content was authored in', async () => {
+    setup([seeded()], { defaultCode: 'uk' });
+    const harness = await open();
+
+    expect(titles(harness)).toEqual(['Grammar', 'Tenses', 'Present simple', 'Listening']);
+  });
+
+  it('counts a single subsection in the singular', async () => {
+    setup([[node('grammar', { title: { en: 'Grammar' } }, [node('tenses', { depth: 1 })])]]);
+    const harness = await open();
+
+    expect(rows(harness)[0]?.querySelector('.sections-tree__count')?.textContent?.trim()).toBe(
+      '1 subsection',
+    );
+  });
+
+  it('counts several subsections in the plural', async () => {
+    setup([
+      [
+        node('grammar', { title: { en: 'Grammar' } }, [
+          node('tenses', { depth: 1 }),
+          node('articles', { depth: 1 }),
+        ]),
+      ],
+    ]);
+    const harness = await open();
+
+    expect(rows(harness)[0]?.querySelector('.sections-tree__count')?.textContent?.trim()).toBe(
+      '2 subsections',
+    );
+  });
+
   it('marks the row carried in the navigation state after a save', async () => {
     setup([seeded()]);
     const harness = await RouterTestingHarness.create();

@@ -117,15 +117,22 @@ describe('sectionTitle', () => {
     );
   });
 
-  it('falls back for a section with no text in the default locale', () => {
-    expect(sectionTitle(node('grammar', { title: { uk: 'Граматика' } }), 'en')).toBe(
-      UNTITLED_SECTION,
+  it('falls back to any locale that has text when the default one is blank', () => {
+    // Making a locale default that the existing content was never authored in
+    // is a state `/locales` can put the site into; the tree has to survive it.
+    expect(sectionTitle(node('grammar', { title: { uk: 'Граматика' } }), 'en')).toBe('Граматика');
+    expect(sectionTitle(node('grammar', { title: { en: '  ', uk: 'Граматика' } }), 'en')).toBe(
+      'Граматика',
     );
-    expect(sectionTitle(node('grammar', { title: { en: '  ' } }), 'en')).toBe(UNTITLED_SECTION);
   });
 
   it('falls back when the locales list failed to load', () => {
-    expect(sectionTitle(node('grammar', { title: { en: 'Grammar' } }), null)).toBe(
+    expect(sectionTitle(node('grammar', { title: { en: 'Grammar' } }), null)).toBe('Grammar');
+  });
+
+  it('placeholders a section with no text in any locale', () => {
+    expect(sectionTitle(node('grammar', { title: {} }), 'en')).toBe(UNTITLED_SECTION);
+    expect(sectionTitle(node('grammar', { title: { en: '  ', uk: '' } }), 'en')).toBe(
       UNTITLED_SECTION,
     );
   });

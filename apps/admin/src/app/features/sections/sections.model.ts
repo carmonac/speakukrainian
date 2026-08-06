@@ -59,13 +59,27 @@ export function flattenTree(
 }
 
 /**
- * The title to show in the admin's own chrome. ADR-009's fallback is about the
- * public site; here there is no second locale to fall back to, so an untitled
- * section gets a placeholder rather than an empty row that cannot be clicked.
+ * The title to show in the admin's own chrome: the default locale, then any
+ * locale that has text, then a placeholder.
+ *
+ * The admin falls back further than ADR-009 does. ADR-009 governs rendering the
+ * public site, where showing a reader a language they did not ask for is a
+ * product decision; here the string only has to identify a row well enough to
+ * click on. Stopping at the default locale would blank the whole tree the
+ * moment an admin makes a locale default that the existing content was not
+ * authored in — a state `/locales` can put the site into.
  */
 export function sectionTitle(section: Section, defaultCode: LocaleCode | null): string {
-  if (defaultCode === null) {
-    return UNTITLED_SECTION;
+  if (defaultCode !== null) {
+    const preferred = resolveLocalized(section.title, defaultCode, defaultCode);
+    if (preferred.length > 0) {
+      return preferred;
+    }
   }
-  return resolveLocalized(section.title, defaultCode, defaultCode) || UNTITLED_SECTION;
+  for (const text of Object.values(section.title)) {
+    if (text.trim().length > 0) {
+      return text;
+    }
+  }
+  return UNTITLED_SECTION;
 }
