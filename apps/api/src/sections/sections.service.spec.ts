@@ -1,6 +1,6 @@
 import { ConflictException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
-import type { CreateSectionInput, Section } from '@speakukrainian/shared';
+import type { CreateSectionInput, Section, UpdateSectionInput } from '@speakukrainian/shared';
 import { RichTextSanitizer } from '../common/rich-text.sanitizer.js';
 import {
   MAX_TREE_SECTIONS,
@@ -45,9 +45,25 @@ const child: Section = {
   title: { en: 'Present simple' },
 };
 
+interface RecordedCall {
+  method: string;
+  args: unknown[];
+}
+
 interface RepositoryDouble {
   repository: SectionsRepository;
-  calls: { method: string; args: unknown[] }[];
+  calls: RecordedCall[];
+}
+
+/**
+ * The recorder keeps one flat list, so an assertion on `calls[0]` would follow
+ * whichever method happened to run first. Selecting by name and demanding
+ * exactly one call keeps the assertion pinned to the call it is about.
+ */
+function onlyCallTo(calls: RecordedCall[], method: string): RecordedCall {
+  const matching = calls.filter((call) => call.method === method);
+  expect(matching).toHaveLength(1);
+  return matching[0]!;
 }
 
 interface DoubleResults {
@@ -57,7 +73,7 @@ interface DoubleResults {
 }
 
 function createRepository(results: DoubleResults = {}): RepositoryDouble {
-  const calls: { method: string; args: unknown[] }[] = [];
+  const calls: RecordedCall[] = [];
   const record = <T>(method: string, result: T) => {
     return (...args: unknown[]): Promise<T> => {
       calls.push({ method, args });
@@ -81,7 +97,7 @@ function createRepository(results: DoubleResults = {}): RepositoryDouble {
 
 function createService(results: DoubleResults = {}): {
   service: SectionsService;
-  calls: { method: string; args: unknown[] }[];
+  calls: RecordedCall[];
 } {
   const { repository, calls } = createRepository(results);
   // A real sanitizer: it is pure and fast, and a double would let the wiring rot.
@@ -106,8 +122,8 @@ describe('SectionsService rich text', () => {
       'editor-uid',
     );
 
-    const [call] = calls;
-    expect((call?.args[0] as CreateSectionInput).description).toEqual({ en: '<p>a</p>' });
+    const call = onlyCallTo(calls, 'create');
+    expect((call.args[0] as CreateSectionInput).description).toEqual({ en: '<p>a</p>' });
   });
 
   it('strips a script out of a patched description too', async () => {
@@ -115,8 +131,23 @@ describe('SectionsService rich text', () => {
 
     await service.update('root-id', { description: { uk: '<script>x</script><p>б</p>' } }, 'uid');
 
-    const [call] = calls;
-    expect((call?.args[1] as CreateSectionInput).description).toEqual({ uk: '<p>б</p>' });
+    const call = onlyCallTo(calls, 'update');
+    expect(call.args[0]).toBe('root-id');
+    expect((call.args[1] as UpdateSectionInput).description).toEqual({ uk: '<p>б</p>' });
+  });
+
+  it('leaves the fields a patch omits out of what the repository receives', async () => {
+    // The repository merges the patch over the stored document, so a key the
+    // request never carried must not arrive here: a `status` of `draft` added
+    // on the way through would unpublish a live section on a title edit.
+    const { service, calls } = createService();
+
+    await service.update('root-id', { title: { en: 'Renamed' } }, 'uid');
+
+    const patch = onlyCallTo(calls, 'update').args[1] as UpdateSectionInput;
+    expect(patch.status).toBeUndefined();
+    expect(patch.showInMenu).toBeUndefined();
+    expect(patch.kind).toBeUndefined();
   });
 
   it('leaves an absent description absent rather than materialising an empty record', async () => {
@@ -124,7 +155,8 @@ describe('SectionsService rich text', () => {
 
     await service.create(newSection, 'editor-uid');
 
-    expect((calls[0]?.args[0] as CreateSectionInput).description).toBeUndefined();
+    const call = onlyCallTo(calls, 'create');
+    expect((call.args[0] as CreateSectionInput).description).toBeUndefined();
   });
 
   it('does not touch the plain-text title', async () => {
@@ -134,7 +166,8 @@ describe('SectionsService rich text', () => {
 
     await service.create({ ...newSection, title: { en: 'Tom & Jerry' } }, 'editor-uid');
 
-    expect((calls[0]?.args[0] as CreateSectionInput).title).toEqual({ en: 'Tom & Jerry' });
+    const call = onlyCallTo(calls, 'create');
+    expect((call.args[0] as CreateSectionInput).title).toEqual({ en: 'Tom & Jerry' });
   });
 });
 
