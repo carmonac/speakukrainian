@@ -332,7 +332,18 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
           return;
         }
         const code = this.defaultCode;
-        slug.setValue(code === null ? '' : slugify(toPlainLocalized(title)[code] ?? ''));
+        const text = code === null ? '' : (toPlainLocalized(title)[code] ?? '');
+        const suggestion = slugify(text);
+        slug.setValue(suggestion);
+        // `slugify` folds away everything outside `[a-z0-9]`, so a title in a
+        // non-Latin script — the ordinary case here — suggests nothing. That
+        // leaves the field required-invalid but pristine and untouched, which
+        // `showOnceEdited` reads as "not yet worth an error": Save is disabled
+        // and no field says why. Touching it is what puts the author back
+        // inside the policy.
+        if (suggestion === '' && text !== '') {
+          slug.markAsTouched();
+        }
       });
   }
 }

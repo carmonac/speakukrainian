@@ -544,6 +544,26 @@ describe('SectionFormPage', () => {
     expect(calls.some((call) => call.method === 'update')).toBe(false);
   });
 
+  it('names the slug when a title in a non-Latin script suggests nothing', async () => {
+    // The suggestion writes the control, so nothing the author did marks it
+    // dirty or touched — and a Cyrillic title is the ordinary case here, not an
+    // edge one. Without a nudge the author is left with a dead Save button and
+    // no field named.
+    const { calls } = setup();
+    const harness = await open('/sections/new');
+
+    await typeInto(harness, 'title', EN, '<p>Теперішній простий</p>');
+
+    expect(slugField(harness).value).toBe('');
+    expect(slugError(harness)).toBe('Give the section a slug.');
+    expect(slugFormField(harness).classList).toContain('mat-form-field-invalid');
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await submit(harness);
+
+    expect(calls.some((call) => call.method === 'create')).toBe(false);
+  });
+
   it('tells an emptied slug apart from a malformed one', async () => {
     setup({ sections: [STORED] });
     const harness = await open('/sections/sec-1');
