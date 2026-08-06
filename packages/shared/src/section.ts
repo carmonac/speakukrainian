@@ -36,6 +36,31 @@ export const sectionIdSchema = z
   .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id');
 
 /**
+ * The fields an admin edits, without their defaults. A stored document and a
+ * create body both want the defaults, so they are applied in `sectionSchema`
+ * and `createSectionSchema` below — but never in the patch schema: `.partial()`
+ * wraps a field in optional and keeps its inner `.default()`, so a patch schema
+ * derived from the create schema would fill in every field the request left out
+ * and silently rewrite the stored value. `parentId` is absent because a section
+ * is re-parented through `PATCH /:id/move`, which recomputes the whole subtree.
+ */
+export const editableSectionFields = {
+  kind: sectionKindSchema,
+  slug: slugSchema,
+  title: localizedTextSchema,
+  description: richTextSchema.optional(),
+  image: assetRefSchema.optional(),
+  /** Whether this section appears in the site navigation menu. */
+  showInMenu: z.boolean(),
+  /** Overrides `title` in the menu when set — for shorter or different menu wording. */
+  menuLabel: localizedTextSchema.optional(),
+  /** Present only when `kind === 'link'`. */
+  link: linkTargetSchema.optional(),
+  sortOrder: z.number().int(),
+  status: publishStatusSchema,
+};
+
+/**
  * Sections form a tree via `parentId`. A root section (`parentId: null`) is what
  * the product calls a "section"; a section with a parent is a "subsection".
  * Nesting deeper than {@link MAX_SECTION_DEPTH} is rejected.
@@ -48,25 +73,22 @@ export const sectionSchema = z
     ancestorIds: z.array(sectionIdSchema).default([]),
     /** 0 for a root section, 1 for a subsection, and so on. Derived from `ancestorIds`. */
     depth: z.number().int().min(0).max(4),
-    kind: sectionKindSchema,
+    kind: editableSectionFields.kind,
 
-    slug: slugSchema,
+    slug: editableSectionFields.slug,
     /** Full public path built from the ancestor slugs, e.g. `/grammar-points/present-simple`. */
     path: z.string().startsWith('/'),
-    title: localizedTextSchema,
-    description: richTextSchema.optional(),
-    image: assetRefSchema.optional(),
+    title: editableSectionFields.title,
+    description: editableSectionFields.description,
+    image: editableSectionFields.image,
 
-    /** Whether this section appears in the site navigation menu. */
-    showInMenu: z.boolean().default(false),
-    /** Overrides `title` in the menu when set — for shorter or different menu wording. */
-    menuLabel: localizedTextSchema.optional(),
+    showInMenu: editableSectionFields.showInMenu.default(false),
+    menuLabel: editableSectionFields.menuLabel,
 
-    /** Present only when `kind === 'link'`. */
-    link: linkTargetSchema.optional(),
+    link: editableSectionFields.link,
 
-    sortOrder: z.number().int().default(0),
-    status: publishStatusSchema.default('draft'),
+    sortOrder: editableSectionFields.sortOrder.default(0),
+    status: editableSectionFields.status.default('draft'),
     audit: auditSchema,
   })
   .refine((s) => (s.kind === 'link' ? s.link !== undefined : s.link === undefined), {
@@ -84,20 +106,25 @@ export const MAX_SECTION_DEPTH = 4;
 
 export const createSectionSchema = z.object({
   parentId: sectionIdSchema.nullable().default(null),
-  kind: sectionKindSchema.default('content'),
-  slug: slugSchema,
-  title: localizedTextSchema,
-  description: richTextSchema.optional(),
-  image: assetRefSchema.optional(),
-  showInMenu: z.boolean().default(false),
-  menuLabel: localizedTextSchema.optional(),
-  link: linkTargetSchema.optional(),
-  sortOrder: z.number().int().optional(),
-  status: publishStatusSchema.default('draft'),
+  kind: editableSectionFields.kind.default('content'),
+  slug: editableSectionFields.slug,
+  title: editableSectionFields.title,
+  description: editableSectionFields.description,
+  image: editableSectionFields.image,
+  showInMenu: editableSectionFields.showInMenu.default(false),
+  menuLabel: editableSectionFields.menuLabel,
+  link: editableSectionFields.link,
+  /** Omitted means "append after the last sibling", which the repository resolves. */
+  sortOrder: editableSectionFields.sortOrder.optional(),
+  status: editableSectionFields.status.default('draft'),
 });
 export type CreateSectionInput = z.infer<typeof createSectionSchema>;
 
-export const updateSectionSchema = createSectionSchema.partial().omit({ parentId: true });
+/**
+ * Body of `PATCH /api/sections/:id`: every key optional, none defaulted, so a
+ * request that carries one field changes exactly that field.
+ */
+export const updateSectionSchema = z.object(editableSectionFields).partial();
 export type UpdateSectionInput = z.infer<typeof updateSectionSchema>;
 
 /** Moving a section re-parents it and repositions it among its new siblings. */
