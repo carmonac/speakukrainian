@@ -1,0 +1,95 @@
+<section class="sections">
+  <header class="sections__header">
+    <div>
+      <h1>Sections</h1>
+      <p>The content tree of the public site.</p>
+    </div>
+    <a matButton="filled" [routerLink]="['/sections', 'new']">
+      <mat-icon>add</mat-icon>
+      New section
+    </a>
+  </header>
+
+  @if (loading()) {
+    <mat-progress-bar mode="indeterminate" />
+  }
+
+  <ul class="sections-tree">
+    @for (row of rows(); track row.section.id) {
+      <li
+        class="sections-tree__row"
+        [class.is-saved]="row.section.id === savedId()"
+        [style.padding-inline-start.px]="row.depth * 24"
+      >
+        @if (row.hasChildren) {
+          <button
+            matIconButton
+            type="button"
+            class="sections-tree__toggle"
+            [attr.aria-label]="(row.expanded ? 'Collapse ' : 'Expand ') + title(row)"
+            [attr.aria-expanded]="row.expanded"
+            (click)="toggle(row.section.id)"
+          >
+            <mat-icon>{{ row.expanded ? 'expand_more' : 'chevron_right' }}</mat-icon>
+          </button>
+        } @else {
+          <span class="sections-tree__toggle-spacer"></span>
+        }
+
+        <a class="sections-tree__title" [routerLink]="['/sections', row.section.id]">{{ title(row) }}</a>
+        <code class="sections-tree__path">{{ row.section.path }}</code>
+        <span class="sections-tree__status">{{ row.section.status }}</span>
+        @if (row.hasChildren) {
+          <span class="sections-tree__count">{{ row.childCount }} subsections</span>
+        }
+
+        <span class="sections-tree__actions">
+          @if (row.canAddChild) {
+            <a
+              matIconButton
+              class="sections-tree__add"
+              [routerLink]="['/sections', 'new']"
+              [queryParams]="{ parentId: row.section.id }"
+              [attr.aria-label]="'Add subsection under ' + title(row)"
+            >
+              <mat-icon>add</mat-icon>
+            </a>
+          } @else {
+            <span class="sections-tree__add-hint" [matTooltip]="maxDepthMessage">
+              <button
+                matIconButton
+                type="button"
+                class="sections-tree__add"
+                disabled
+                [attr.aria-label]="'Add subsection under ' + title(row)"
+              >
+                <mat-icon>add</mat-icon>
+              </button>
+            </span>
+          }
+
+          <span class="sections-tree__delete-hint" [matTooltip]="row.hasChildren ? deleteWithChildrenMessage : ''">
+            <button
+              matIconButton
+              type="button"
+              class="sections-tree__delete"
+              [disabled]="row.hasChildren || busy()"
+              [attr.aria-label]="'Delete ' + title(row)"
+              (click)="confirmDelete(row)"
+            >
+              <mat-icon>delete</mat-icon>
+            </button>
+          </span>
+        </span>
+      </li>
+    }
+  </ul>
+
+  @if (!loading() && rows().length === 0) {
+    <p class="sections__empty">No sections yet.</p>
+    <a matButton="filled" [routerLink]="['/sections', 'new']">
+      <mat-icon>add</mat-icon>
+      New section
+    </a>
+  }
+</section>
