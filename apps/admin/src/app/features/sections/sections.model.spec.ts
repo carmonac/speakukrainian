@@ -7,6 +7,7 @@ import {
   findNode,
   flattenTree,
   isNoOpMove,
+  isSiblingSlot,
   parentOptions,
   positionOptions,
   sectionTitle,
@@ -250,6 +251,45 @@ describe('siblingDropRange', () => {
   it('ignores a collapsed sibling own subtree, which renders no rows', () => {
     const collapsed = flattenTree(forest(), new Set(['a1']));
     expect(siblingDropRange(collapsed, 'a1')).toEqual({ start: 1, end: 2 });
+  });
+});
+
+describe('isSiblingSlot', () => {
+  const rows = (): ReturnType<typeof flattenTree> => flattenTree(forest(), new Set());
+
+  it('refuses a slot outside the sibling band', () => {
+    // Rows: a(0) a1(1) a1x(2) a2(1) b(0) b1(1). "b1" is an only child.
+    expect(isSiblingSlot(rows(), 'b1', 5)).toBe(true);
+    expect(isSiblingSlot(rows(), 'b1', 4)).toBe(false);
+  });
+
+  it('refuses a slot in the middle of another sibling expanded subtree', () => {
+    // Dragging the root "b" over "a"'s open subtree: landing between "a1" and
+    // "a1x" would draw the placeholder there and then drop the row after the
+    // whole of "a", which is a different place.
+    expect(isSiblingSlot(rows(), 'b', 2)).toBe(false);
+    expect(isSiblingSlot(rows(), 'b', 3)).toBe(false);
+  });
+
+  it('offers the slot before each of its own siblings, and the one after the last', () => {
+    // Every position among the two roots is still reachable: before "a", and
+    // after the whole of "a" — which is where "b" already is.
+    expect(isSiblingSlot(rows(), 'b', 0)).toBe(true);
+    expect(isSiblingSlot(rows(), 'b', 4)).toBe(true);
+    expect(siblingPositionAt(rows(), 'b', 0)).toBe(0);
+    expect(siblingPositionAt(rows(), 'b', 4)).toBe(1);
+  });
+
+  it('offers the slots inside the moving row own subtree, which travels with it', () => {
+    // "a1x" is "a1"'s child and sits still during the drag, so the slot after
+    // it is how "a1" gets dropped back where it started.
+    expect(isSiblingSlot(rows(), 'a1', 1)).toBe(true);
+    expect(isSiblingSlot(rows(), 'a1', 2)).toBe(true);
+    expect(isSiblingSlot(rows(), 'a1', 3)).toBe(true);
+  });
+
+  it('refuses every slot for a row the tree does not render', () => {
+    expect(isSiblingSlot(rows(), 'nobody', 0)).toBe(false);
   });
 });
 

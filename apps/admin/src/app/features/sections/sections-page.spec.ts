@@ -1,15 +1,15 @@
-import { Component, signal, type WritableSignal } from '@angular/core';
+import { Component, signal, type DebugElement, type WritableSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { HttpErrorResponse } from '@angular/common/http';
 import { By } from '@angular/platform-browser';
-import type { CdkDrag, CdkDragDrop } from '@angular/cdk/drag-drop';
+import { CdkDropList, type CdkDrag, type CdkDragDrop } from '@angular/cdk/drag-drop';
 import { MatDialog } from '@angular/material/dialog';
 import { MatTooltip } from '@angular/material/tooltip';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { of, throwError } from 'rxjs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MAX_SECTION_DEPTH, type LocaleCode, type SectionTreeNode } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
@@ -392,11 +392,10 @@ describe('SectionsPage', () => {
 
 /**
  * jsdom gives every element a zero-sized rect, so CDK's sorting maths — which
- * works off rects, pointer events and CSS transforms — decides nothing there,
- * and a synthesised pointer sequence would assert nothing real. These drive the
- * component's own drop decisions instead, with the two fields of a drop event
- * that they read. What the CDK wiring itself does with a real pointer is on the
- * manual check list in the plan.
+ * works off rects, pointer events and CSS transforms — decides nothing there
+ * unless it is handed a layout. These drive the component's own drop decisions
+ * instead, with the two fields of a drop event that they read; the suite below
+ * them supplies a layout and drives CDK itself.
  */
 function paths(harness: RouterTestingHarness): string[] {
   return rows(harness).map(
@@ -566,5 +565,284 @@ describe('SectionsPage drag and drop', () => {
     expect(sortPredicate(3, dragging(rowOf(tree, 'present')))).toBe(false);
     // A root may go anywhere among the roots and their subtrees.
     expect(sortPredicate(3, dragging(rowOf(tree, 'grammar')))).toBe(true);
+  });
+});
+
+const ROW_HEIGHT = 40;
+const ROW_WIDTH = 1200;
+const NEST_LEFT = 1140;
+const NEST_SIZE = 40;
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+/**
+ * The rectangles the tree would have on screen, and an `elementFromPoint` that
+ * answers from the same ones — rows stacked `ROW_HEIGHT` apart across a
+ * `ROW_WIDTH` row, a drag handle at the left of each and a nest column at the
+ * right.
+ *
+ * Both are needed because jsdom measures nothing: every element reports a
+ * zero-sized rect and `document.elementFromPoint` does not exist at all, and
+ * CDK reads both on every pointer move.
+ */
+function layOut(harness: RouterTestingHarness): {
+  handle(index: number): Point;
+  nest(index: number): Point;
+  restore(): void;
+} {
+  const rects = new Map<Element, DOMRect>();
+  const list = requireIn<HTMLElement>(root(harness), 'ul.sections-tree');
+  const items = rows(harness);
+
+  rects.set(list, new DOMRect(0, 0, ROW_WIDTH, items.length * ROW_HEIGHT));
+  items.forEach((item, index) => {
+    const top = index * ROW_HEIGHT;
+    rects.set(item, new DOMRect(0, top, ROW_WIDTH, ROW_HEIGHT));
+    rects.set(requireIn(item, '.sections-tree__handle'), new DOMRect(8, top + 8, 24, 24));
+    rects.set(
+      requireIn(item, '.sections-tree__nest'),
+      new DOMRect(NEST_LEFT, top, NEST_SIZE, NEST_SIZE),
+    );
+  });
+
+  const measure = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+    return rects.get(this) ?? new DOMRect(0, 0, 0, 0);
+  };
+
+  // The innermost laid-out element covering the point, which is what a browser
+  // returns and what CDK checks a candidate drop list against.
+  document.elementFromPoint = (x: number, y: number): Element | null => {
+    let hit: Element | null = null;
+    let smallest = Number.POSITIVE_INFINITY;
+    for (const [element, rect] of rects) {
+      const area = rect.width * rect.height;
+      if (x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom && area < smallest) {
+        hit = element;
+        smallest = area;
+      }
+    }
+    return hit;
+  };
+
+  return {
+    handle: (index) => ({ x: 20, y: index * ROW_HEIGHT + 20 }),
+    nest: (index) => ({ x: NEST_LEFT + NEST_SIZE / 2, y: index * ROW_HEIGHT + NEST_SIZE / 2 }),
+    restore: () => {
+      Element.prototype.getBoundingClientRect = measure;
+      Reflect.deleteProperty(document, 'elementFromPoint');
+    },
+  };
+}
+
+/**
+ * A whole press-move-release gesture, walked in steps the way a hand moves.
+ * `beforeRelease` runs with the pointer held at `to`, which is the only moment
+ * the mid-drag state exists.
+ */
+async function dragPointer(
+  harness: RouterTestingHarness,
+  from: Point,
+  to: Point,
+  beforeRelease: () => void = () => {},
+  steps = 8,
+): Promise<void> {
+  const at = (type: string, point: Point): MouseEvent =>
+    new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      clientX: point.x,
+      clientY: point.y,
+      // CDK reads both to tell a real press from the synthetic one a screen
+      // reader raises, and jsdom defaults them to the screen reader's shape.
+      buttons: 1,
+      detail: 1,
+    });
+
+  const handle = document.elementFromPoint(from.x, from.y);
+  if (handle === null) {
+    throw new Error('Nothing was laid out where the gesture starts');
+  }
+  handle.dispatchEvent(at('mousedown', from));
+
+  for (let step = 1; step <= steps; step += 1) {
+    document.dispatchEvent(
+      at('mousemove', {
+        x: from.x + ((to.x - from.x) * step) / steps,
+        y: from.y + ((to.y - from.y) * step) / steps,
+      }),
+    );
+    harness.detectChanges();
+  }
+
+  beforeRelease();
+
+  document.dispatchEvent(at('mouseup', to));
+  await harness.fixture.whenStable();
+  harness.detectChanges();
+}
+
+/**
+ * The nest columns of the tree, found through their directive rather than by
+ * selector: mid-drag the DOM also holds CDK's clones of the dragged row, which
+ * match every class it does and carry no directive at all.
+ */
+function nestColumns(harness: RouterTestingHarness): DebugElement[] {
+  return harness.fixture.debugElement
+    .queryAll(By.directive(CdkDropList))
+    .filter((found) =>
+      (found.nativeElement as HTMLElement).classList.contains('sections-tree__nest'),
+    );
+}
+
+/** The rows whose nest column CDK has accepted as a target for this drag. */
+function receivingNests(harness: RouterTestingHarness): string[] {
+  return nestColumns(harness)
+    .map((found) => found.nativeElement as HTMLElement)
+    .filter((element) => element.classList.contains('cdk-drop-list-receiving'))
+    .map(
+      (element) =>
+        element
+          .closest('.sections-tree__row')
+          ?.querySelector('.sections-tree__title')
+          ?.textContent?.trim() ?? '',
+    );
+}
+
+/**
+ * These drive CDK itself over the layout above, which is the half of the
+ * gesture the handler specs cannot reach: CDK looks for a drop list to hand the
+ * drag to at the *constrained* pointer position, and both an axis lock and a
+ * nest column that never joined the tree's siblings make that search silently
+ * come up empty while every handler stays correct.
+ *
+ * What the layout cannot model is the page reflowing under the pointer, so a
+ * row that moves as the drag enters a column is still only findable in a real
+ * browser.
+ */
+describe('SectionsPage drag and drop through CDK', () => {
+  let laidOut: { restore(): void } | null = null;
+
+  beforeEach(() => {
+    history.replaceState({}, '');
+  });
+
+  afterEach(() => {
+    laidOut?.restore();
+    laidOut = null;
+  });
+
+  it('re-parents when the pointer is dragged onto another row nest column', async () => {
+    const { calls } = setup([seeded()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    // Rows: Grammar(0) Tenses(1) Present simple(2) Listening(3). Dragging
+    // "Listening" sideways onto "Tenses" crosses the whole width of the row,
+    // which is exactly the movement an axis lock throws away.
+    await dragPointer(harness, layout.handle(3), layout.nest(1));
+
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['listening', { parentId: 'tenses', sortOrder: 1 }] },
+    ]);
+    expect(paths(harness)).toEqual([
+      '/grammar',
+      '/grammar/tenses',
+      '/grammar/tenses/present-simple',
+      '/grammar/tenses/listening',
+    ]);
+  });
+
+  it('refuses a nest column inside the dragged row own subtree', async () => {
+    const { calls } = setup([seeded()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    // "Tenses" and "Present simple" are inside "Grammar", so their columns must
+    // not offer themselves however precisely the pointer lands on one, and
+    // "Grammar" must not offer itself either. "Listening" is the only target
+    // outside the dragged subtree, and it does light up — which is what says
+    // the empty list above is the predicate refusing and not the drag failing.
+    let offered: string[] = [];
+    await dragPointer(harness, layout.handle(0), layout.nest(2), () => {
+      offered = receivingNests(harness);
+    });
+
+    expect(offered).toEqual(['Listening']);
+    expect(calls.map((call) => call.method)).toEqual(['tree']);
+    expect(paths(harness)).toEqual([
+      '/grammar',
+      '/grammar/tenses',
+      '/grammar/tenses/present-simple',
+      '/listening',
+    ]);
+  });
+
+  it('reorders and never re-parents when the pointer only moves vertically', async () => {
+    const { calls } = setup([seeded()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    await dragPointer(harness, layout.handle(3), layout.handle(0));
+
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['listening', { parentId: null, sortOrder: 0 }] },
+    ]);
+    expect(titles(harness)).toEqual(['Listening', 'Grammar', 'Tenses', 'Present simple']);
+  });
+
+  it('says nothing over a nest column until there is something to drop', async () => {
+    setup([seeded()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    const hints = (): boolean[] =>
+      nestColumns(harness).map((found) => found.injector.get(MatTooltip).disabled);
+
+    // The column is invisible at rest, and an invisible box that answers a
+    // hover with "Drop here to nest inside" explains nothing about the blank
+    // space the pointer is over.
+    expect(hints()).toEqual([true, true, true, true]);
+
+    let whileDragging: boolean[] = [];
+    await dragPointer(harness, layout.handle(3), layout.handle(1), () => {
+      whileDragging = hints();
+    });
+
+    expect(whileDragging).toEqual([false, false, false, false]);
+    expect(hints()).toEqual([true, true, true, true]);
+  });
+
+  it('connects the tree drop list to every row nest column', async () => {
+    setup([seeded()]);
+    const harness = await open();
+
+    const tree = harness.fixture.debugElement
+      .query(By.css('ul.sections-tree'))
+      .injector.get(CdkDropList);
+    const nests = nestColumns(harness).map((found) => found.injector.get(CdkDropList));
+
+    // A `cdkDropListGroup` cannot do this job: a `cdkDropList` shadows
+    // `CDK_DROP_LIST_GROUP` with `undefined` for its own subtree, so the nest
+    // columns would join no group and the tree would have nothing to hand a
+    // drag to — with no error anywhere.
+    expect(nests.map((nest) => nest.id)).toEqual([
+      'nest-grammar',
+      'nest-tenses',
+      'nest-present',
+      'nest-listening',
+    ]);
+    expect(tree.connectedTo).toEqual(nests.map((nest) => nest.id));
+    // An axis lock would freeze x at the drag handle in the position CDK
+    // searches for a sibling list at, and the nest columns sit at the far end
+    // of the row.
+    expect(tree.lockAxis).toBeNull();
   });
 });
