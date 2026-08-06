@@ -150,9 +150,36 @@ navigation, which looks like data loss to the admin who did it. Promotion keeps 
 admin asked for in the menu reachable, and "hidden" covers unpublished as well as unticked with no
 second rule.
 
+_Ordering:_ the menu is built by walking the whole section tree in order and keeping the sections
+that are in it, so a promoted child lands in the slot its hidden ancestor occupied and siblings
+never interleave. It cannot be built from a query that filters the hidden sections out:
+`sortOrder` is assigned per parent, so two sections' numbers are only comparable when they share
+one, and a promoted child's number was handed out under a parent that is not there.
+
 _Cost:_ a promoted entry's `href` still contains the hidden ancestor's slug, so the URL reveals a
 section that has no menu entry of its own — acceptable, since the path is where the page really
-lives.
+lives. And the public menu reads every section rather than only the ones it shows, which is one
+bounded read of a collection the admin tree already reads whole; caching it is the answer if that
+ever bites, not a narrower query.
+
+### ADR-012 — Validation of a stored document is looser than validation of a request
+
+A rule about the _shape of a value_ — the href rule on `linkTargetInputSchema` is the first —
+lives on the input schemas (`createSectionSchema`, `updateSectionSchema`, and the admin validators
+that parse through the same schema), not on the schema the repository reads documents with.
+Structural rules that a document cannot be useful without, like a section's `depth` matching its
+ancestor chain, stay on the stored schema.
+
+_Why:_ a repository parses on read so a malformed document fails loudly instead of flowing into a
+response. But when a rule is _tightened_, documents that predate it already exist, and refusing to
+read them takes down every route that touches the collection: one section with an href written
+before the rule 500s the public menu, the admin tree and that section's own edit screen at once —
+so the only screen that could repair it is one of the casualties, and deleting the section is the
+only way out.
+
+_Cost:_ a value the write path refuses can still be read back and re-saved by an edit to some
+other field, so tightening a rule does not clean up existing data on its own. A migration is what
+does that; the rule only stops new ones arriving.
 
 ## Data model
 

@@ -75,54 +75,23 @@ describe('sectionSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it.each(['/grammar', '/', '/a/b/c'])('accepts %j as an internal link target', (href) => {
-    const result = sectionSchema.safeParse({
-      ...baseSection,
-      kind: 'link',
-      link: { type: 'internal', href },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it.each(['grammar', '//evil.com', 'https://x.test', 'javascript:alert(1)'])(
-    'rejects %j as an internal link target, pathed to the href',
+  it.each(['ftp://legacy.test', '//evil.com', 'not a url', 'grammar'])(
+    'still reads a stored section whose href is %j',
     (href) => {
-      // `//evil.com` is the one that matters: a protocol-relative URL leaves the
-      // site while passing for a path.
-      const result = sectionSchema.safeParse({
-        ...baseSection,
-        kind: 'link',
-        link: { type: 'internal', href },
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
-    },
-  );
-
-  it.each(['https://example.com/x', 'http://a.test'])(
-    'accepts %j as an external link target',
-    (href) => {
+      // The write path refuses these (see `createSectionSchema` below), but a
+      // document that already carries one — the API accepted bare strings before
+      // the rule existed — has to stay readable: the repository parses every
+      // document it reads through this schema, so refusing here would 500 the
+      // public menu, the admin tree and the section's own edit screen at once,
+      // and the only remaining way to clear it would be deleting the section.
       const result = sectionSchema.safeParse({
         ...baseSection,
         kind: 'link',
         link: { type: 'external', href },
       });
+
       expect(result.success).toBe(true);
-    },
-  );
-
-  it.each(['/internal', 'javascript:alert(1)', 'ftp://x.test', 'not a url'])(
-    'rejects %j as an external link target, pathed to the href',
-    (href) => {
-      const result = sectionSchema.safeParse({
-        ...baseSection,
-        kind: 'link',
-        link: { type: 'external', href },
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+      expect(result.data?.link?.href).toBe(href);
     },
   );
 
@@ -172,6 +141,63 @@ describe('createSectionSchema', () => {
 
     expect(result.success).toBe(false);
   });
+
+  it.each(['/grammar', '/', '/a/b/c'])('accepts %j as an internal link target', (href) => {
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening' },
+      kind: 'link',
+      link: { type: 'internal', href },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each(['grammar', '//evil.com', 'https://x.test', 'javascript:alert(1)'])(
+    'rejects %j as an internal link target, pathed to the href',
+    (href) => {
+      // `//evil.com` is the one that matters: a protocol-relative URL leaves the
+      // site while passing for a path.
+      const result = createSectionSchema.safeParse({
+        slug: 'listening',
+        title: { en: 'Listening' },
+        kind: 'link',
+        link: { type: 'internal', href },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+    },
+  );
+
+  it.each(['https://example.com/x', 'http://a.test'])(
+    'accepts %j as an external link target',
+    (href) => {
+      const result = createSectionSchema.safeParse({
+        slug: 'listening',
+        title: { en: 'Listening' },
+        kind: 'link',
+        link: { type: 'external', href },
+      });
+
+      expect(result.success).toBe(true);
+    },
+  );
+
+  it.each(['/internal', 'javascript:alert(1)', 'ftp://x.test', 'not a url'])(
+    'rejects %j as an external link target, pathed to the href',
+    (href) => {
+      const result = createSectionSchema.safeParse({
+        slug: 'listening',
+        title: { en: 'Listening' },
+        kind: 'link',
+        link: { type: 'external', href },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+    },
+  );
 });
 
 describe('updateSectionSchema', () => {

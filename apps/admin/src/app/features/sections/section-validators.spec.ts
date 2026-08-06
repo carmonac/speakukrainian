@@ -68,7 +68,7 @@ describe('linkHrefValidator', () => {
     expect(hrefOf(group('external', '/grammar-points')).errors).toEqual({ href: true });
   });
 
-  it('rejects what linkTargetSchema rejects, without restating its rule', () => {
+  it('rejects what linkTargetInputSchema rejects, without restating its rule', () => {
     // `//evil.com` looks like a path and leaves the site.
     expect(hrefOf(group('internal', '//evil.com')).errors).toEqual({ href: true });
     expect(hrefOf(group('external', 'javascript:alert(1)')).errors).toEqual({ href: true });

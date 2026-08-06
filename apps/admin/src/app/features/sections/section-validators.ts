@@ -1,7 +1,7 @@
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import {
   editableSectionFields,
-  linkTargetSchema,
+  linkTargetInputSchema,
   slugSchema,
   type LinkTarget,
 } from '@speakukrainian/shared';
@@ -29,8 +29,9 @@ export const sortOrderValidator: ValidatorFn = (
 };
 
 /**
- * The href rule is `linkTargetSchema`'s, parsed through a whole target because
- * the rule depends on `type`. Nothing is restated here (rule 1).
+ * The href rule is `linkTargetInputSchema`'s — the schema the API validates a
+ * request body with — parsed through a whole target because the rule depends on
+ * `type`. Nothing is restated here (rule 1).
  *
  * It reads its sibling control, and Angular does not re-run a control's
  * validators when a sibling changes — the form re-runs this one itself when
@@ -42,7 +43,7 @@ export function linkHrefValidator(control: AbstractControl): ValidationErrors | 
     return null;
   }
   const type = control.parent?.get('type')?.value as LinkTarget['type'] | undefined;
-  return linkTargetSchema.safeParse({ type: type ?? 'internal', href: control.value }).success
+  return linkTargetInputSchema.safeParse({ type: type ?? 'internal', href: control.value }).success
     ? null
     : { href: true };
 }

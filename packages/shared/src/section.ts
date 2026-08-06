@@ -17,35 +17,45 @@ export const sectionKindSchema = z.enum(['content', 'link']);
 export type SectionKind = z.infer<typeof sectionKindSchema>;
 
 /**
- * The href shape rule lives here and nowhere else: the controller pipes, the
- * repository's write and read parses, and the admin's own field validator all
- * reach it through this schema (rule 1).
+ * The stored shape of a link target, and deliberately *not* where the href
+ * shape rule lives — {@link linkTargetInputSchema} is (ADR-012). A document written
+ * before that rule existed can carry an href it would refuse, and refusing to
+ * *read* such a document takes the public menu, the admin tree and the section
+ * itself down at once, leaving an editor unable to open the very screen that
+ * would repair it. So the rule guards the values arriving from a request, and
+ * reading stays lenient.
+ */
+export const linkTargetSchema = z.object({
+  /** `internal` resolves against the site's own router; `external` is an absolute URL. */
+  type: z.enum(['internal', 'external']),
+  /** For `internal`: a site-relative path starting with `/`. For `external`: an absolute URL. */
+  href: z.string().min(1),
+  openInNewTab: z.boolean().default(false),
+});
+export type LinkTarget = z.infer<typeof linkTargetSchema>;
+
+/**
+ * A link target as a request supplies it. The href shape rule lives here and
+ * nowhere else: the controller pipes reach it through `createSectionSchema` and
+ * `updateSectionSchema`, and the admin's own field validator parses through it
+ * directly (rule 1).
  *
  * `//evil.com` is refused for an internal link because a protocol-relative URL
  * leaves the site while looking like a path — the one case `startsWith('/')`
  * alone would wave through. The external branch is a `z.url` restricted to
  * `http`/`https`, which refuses `javascript:`, `ftp:` and bare strings.
  */
-export const linkTargetSchema = z
-  .object({
-    /** `internal` resolves against the site's own router; `external` is an absolute URL. */
-    type: z.enum(['internal', 'external']),
-    /** For `internal`: a site-relative path starting with `/`. For `external`: an absolute URL. */
-    href: z.string().min(1),
-    openInNewTab: z.boolean().default(false),
-  })
-  .refine(
-    (target) =>
-      target.type === 'internal'
-        ? target.href.startsWith('/') && !target.href.startsWith('//')
-        : z.url({ protocol: /^https?$/ }).safeParse(target.href).success,
-    {
-      message:
-        'An internal link is a site-relative path starting with "/"; an external link is an absolute http(s) URL',
-      path: ['href'],
-    },
-  );
-export type LinkTarget = z.infer<typeof linkTargetSchema>;
+export const linkTargetInputSchema = linkTargetSchema.refine(
+  (target) =>
+    target.type === 'internal'
+      ? target.href.startsWith('/') && !target.href.startsWith('//')
+      : z.url({ protocol: /^https?$/ }).safeParse(target.href).success,
+  {
+    message:
+      'An internal link is a site-relative path starting with "/"; an external link is an absolute http(s) URL',
+    path: ['href'],
+  },
+);
 
 /**
  * A Firestore document id. Constrained so a hand-crafted path segment cannot
@@ -76,8 +86,11 @@ export const editableSectionFields = {
   showInMenu: z.boolean(),
   /** Overrides `title` in the menu when set — for shorter or different menu wording. */
   menuLabel: localizedTextSchema.optional(),
-  /** Present only when `kind === 'link'`. */
-  link: linkTargetSchema.optional(),
+  /**
+   * Present only when `kind === 'link'`. Every input schema is built from this
+   * table, so the href shape rule applies to every request carrying a target.
+   */
+  link: linkTargetInputSchema.optional(),
   sortOrder: z.number().int(),
   status: publishStatusSchema,
 };
@@ -107,7 +120,13 @@ export const sectionSchema = z
     showInMenu: editableSectionFields.showInMenu.default(false),
     menuLabel: editableSectionFields.menuLabel,
 
-    link: editableSectionFields.link,
+    /**
+     * The stored target is read through the lenient {@link linkTargetSchema},
+     * not through `editableSectionFields.link`: this schema is what the
+     * repository parses documents *with*, and a stored href the input rule
+     * refuses has to stay readable so it can be repaired.
+     */
+    link: linkTargetSchema.optional(),
 
     sortOrder: editableSectionFields.sortOrder.default(0),
     status: editableSectionFields.status.default('draft'),

@@ -438,6 +438,35 @@ describe('sections (e2e)', () => {
     }).expect(400);
   });
 
+  it('still reads and repairs a stored href it would refuse on the way in', async () => {
+    const link = await create({
+      slug: 'e2e-link-legacy',
+      title: { en: 'Legacy' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://legacy.test', openInNewTab: false },
+    });
+    // Exactly what `POST /api/sections` accepted while `href` was only
+    // `z.string().min(1)`, written straight to the document to skip today's pipe.
+    await firestore
+      .collection(COLLECTIONS.sections)
+      .doc(link.id)
+      .update({ 'link.href': 'ftp://legacy.test' });
+
+    // A document the input rule rejects has to stay readable, or the only screen
+    // that could repair it is the one it takes down: `read` and `readTree` both
+    // assert 200, and the tree is the admin's only listing.
+    expect((await read(link.id)).link?.href).toBe('ftp://legacy.test');
+    expect((await readTree()).length).toBeGreaterThan(0);
+
+    await patch(link.id, {
+      link: { type: 'external', href: 'https://legacy.test', openInNewTab: false },
+    }).expect(200);
+    expect((await read(link.id)).link?.href).toBe('https://legacy.test');
+
+    // Repairable, but not re-breakable: the rule still holds on the way in.
+    await patch(link.id, { link: { type: 'external', href: 'ftp://legacy.test' } }).expect(400);
+  });
+
   it('refuses a content section that carries a link instead of dropping the body', async () => {
     const content = await create({ slug: 'e2e-link-contradiction', title: { en: 'Content' } });
 
