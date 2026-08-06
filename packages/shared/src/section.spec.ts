@@ -142,22 +142,9 @@ describe('createSectionSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it.each(['/grammar', '/', '/a/b/c'])('accepts %j as an internal link target', (href) => {
-    const result = createSectionSchema.safeParse({
-      slug: 'listening',
-      title: { en: 'Listening' },
-      kind: 'link',
-      link: { type: 'internal', href },
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  it.each(['grammar', '//evil.com', 'https://x.test', 'javascript:alert(1)'])(
-    'rejects %j as an internal link target, pathed to the href',
+  it.each(['/grammar', '/', '/a/b/c', '/grammar?q=1#top'])(
+    'accepts %j as an internal link target',
     (href) => {
-      // `//evil.com` is the one that matters: a protocol-relative URL leaves the
-      // site while passing for a path.
       const result = createSectionSchema.safeParse({
         slug: 'listening',
         title: { en: 'Listening' },
@@ -165,10 +152,39 @@ describe('createSectionSchema', () => {
         link: { type: 'internal', href },
       });
 
-      expect(result.success).toBe(false);
-      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+      expect(result.success).toBe(true);
     },
   );
+
+  it.each([
+    'grammar',
+    'https://x.test',
+    'javascript:alert(1)',
+    '//evil.com',
+    '/\\evil.com',
+    '/\\\\evil.com',
+    '/\\/evil.com',
+    '/\t/evil.com',
+    '/\n/evil.com',
+    '/\r/evil.com',
+    '/\\\\',
+  ])('rejects %j as an internal link target, pathed to the href', (href) => {
+    // Every one of these leaves the site: a browser resolves `//evil.com`,
+    // `/\evil.com`, `/\/evil.com` and the tab/LF/CR spellings all to
+    // `http://evil.com/`, because the URL parser folds `\` to `/` and strips
+    // those three characters before parsing. They start with `/`, so a prefix
+    // rule waves them through — which is why the rule resolves the href
+    // instead. `/\\` is the case the parser refuses outright (empty host).
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening' },
+      kind: 'link',
+      link: { type: 'internal', href },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+  });
 
   it.each(['https://example.com/x', 'http://a.test'])(
     'accepts %j as an external link target',

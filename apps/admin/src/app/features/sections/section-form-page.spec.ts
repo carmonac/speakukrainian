@@ -827,7 +827,7 @@ describe('SectionFormPage', () => {
     await selectOption(harness, 'section-form__kind', 'Link');
     fillHref(harness, 'https://example.com');
 
-    expect(linkError(harness)).toBe('A link on this site starts with "/".');
+    expect(linkError(harness)).toBe('A link on this site is a path like "/grammar-points".');
     expect(saveButton(harness).disabled).toBe(true);
 
     await submit(harness);
@@ -852,7 +852,7 @@ describe('SectionFormPage', () => {
 
     await selectOption(harness, 'section-form__link-type', 'Somewhere on this site');
 
-    expect(linkError(harness)).toBe('A link on this site starts with "/".');
+    expect(linkError(harness)).toBe('A link on this site is a path like "/grammar-points".');
   });
 
   it('sends the link target and carries openInNewTab', async () => {

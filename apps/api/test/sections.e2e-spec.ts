@@ -436,6 +436,17 @@ describe('sections (e2e)', () => {
       kind: 'link',
       link: { type: 'external', href: 'javascript:alert(1)' },
     }).expect(400);
+
+    // A browser resolves this to `http://evil.test/` exactly as `//evil.test`:
+    // the URL parser folds `\` to `/`. It reaches the pipe as the authoring path
+    // sends it, so the refusal has to happen here and not only in the schema
+    // spec.
+    await post({
+      slug: 'e2e-link-backslash-internal',
+      title: { en: 'Bad' },
+      kind: 'link',
+      link: { type: 'internal', href: '/\\evil.test' },
+    }).expect(400);
   });
 
   it('still reads and repairs a stored href it would refuse on the way in', async () => {

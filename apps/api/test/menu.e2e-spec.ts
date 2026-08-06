@@ -291,6 +291,29 @@ describe('menu (e2e)', () => {
     ]);
   });
 
+  it('never publishes a stored internal href that a browser would resolve off-site', async () => {
+    // `/\evil.test` starts with `/` but resolves to `http://evil.test/`, because
+    // the URL parser folds `\` to `/`. The write path refuses it; a document
+    // carrying one must not reach an anonymous reader either.
+    const link = await create({
+      slug: 'e2e-menu-folded',
+      title: { en: 'Folded' },
+      kind: 'link',
+      link: { type: 'internal', href: '/e2e-menu-folded-target', openInNewTab: false },
+      status: 'published',
+      showInMenu: true,
+    });
+    await firestore
+      .collection(COLLECTIONS.sections)
+      .doc(link.id)
+      .update({ 'link.href': '/\\e2e-menu-evil.test' });
+
+    const menu = await readMenu();
+
+    expect(flatten(menu).some((entry) => entry.id === link.id)).toBe(false);
+    expect(JSON.stringify(menu)).not.toContain('e2e-menu-evil.test');
+  });
+
   it('labels a section titled in no locale the reader asked for with the text it does have', async () => {
     // The API does not require a title in the default locale — only the admin
     // form does — so this is a shape an anonymous reader can reach.

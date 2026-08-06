@@ -40,6 +40,42 @@ export const storedLinkTargetSchema = z.object({
 export type LinkTarget = z.infer<typeof storedLinkTargetSchema>;
 
 /**
+ * An origin an href can never legitimately resolve to: `.invalid` is reserved by
+ * RFC 2606 and can never be registered.
+ */
+const INTERNAL_HREF_BASE = 'https://internal.invalid';
+
+/**
+ * Whether an internal href still points at this site once a browser has resolved
+ * it.
+ *
+ * This is an origin comparison rather than a prefix test because a prefix test
+ * cannot express the rule. The WHATWG URL parser folds `\` to `/` for special
+ * schemes and strips tab, LF and CR before parsing, so `/\evil.com`,
+ * `/\/evil.com` and `/<TAB>/evil.com` all resolve to `http://evil.com/` in a
+ * browser — exactly what `//evil.com` does, and a prefix rule has to enumerate
+ * spellings it cannot know all of. Resolving against a sentinel origin asks the
+ * same parser the browser will use, so every spelling it folds is covered,
+ * including the ones nobody has written down yet.
+ *
+ * The leading `/` is still required on top of that: `grammar` resolves onto the
+ * sentinel origin too, but as a *relative* reference it lands somewhere
+ * different on every page it is rendered from.
+ */
+function isInternalHref(href: string): boolean {
+  if (!href.startsWith('/')) {
+    return false;
+  }
+  try {
+    return new URL(href, INTERNAL_HREF_BASE).origin === INTERNAL_HREF_BASE;
+  } catch {
+    // The parser refuses some hrefs outright rather than folding them (`/\\`
+    // asks for an empty host). Unfollowable is not internal.
+    return false;
+  }
+}
+
+/**
  * A link target with the href shape rule, which lives here and nowhere else:
  * the controller pipes reach it through `createSectionSchema` and
  * `updateSectionSchema`, the admin's own field validator parses through it
@@ -49,19 +85,18 @@ export type LinkTarget = z.infer<typeof storedLinkTargetSchema>;
  * It has the plain name because it is what almost every caller wants;
  * {@link storedLinkTargetSchema} is the exception and says so.
  *
- * `//evil.com` is refused for an internal link because a protocol-relative URL
- * leaves the site while looking like a path — the one case `startsWith('/')`
- * alone would wave through. The external branch is a `z.url` restricted to
- * `http`/`https`, which refuses `javascript:`, `ftp:` and bare strings.
+ * The internal branch is {@link isInternalHref}. The external branch is a
+ * `z.url` restricted to `http`/`https`, which refuses `javascript:`, `ftp:` and
+ * bare strings.
  */
 export const linkTargetSchema = storedLinkTargetSchema.refine(
   (target) =>
     target.type === 'internal'
-      ? target.href.startsWith('/') && !target.href.startsWith('//')
+      ? isInternalHref(target.href)
       : z.url({ protocol: /^https?$/ }).safeParse(target.href).success,
   {
     message:
-      'An internal link is a site-relative path starting with "/"; an external link is an absolute http(s) URL',
+      'An internal link is a site-relative path that stays on this site; an external link is an absolute http(s) URL',
     path: ['href'],
   },
 );

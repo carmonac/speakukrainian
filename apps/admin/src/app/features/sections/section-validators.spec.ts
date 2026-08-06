@@ -77,6 +77,15 @@ describe('linkHrefValidator', () => {
     expect(hrefOf(group('external', 'ftp://x.test')).errors).toEqual({ href: true });
   });
 
+  it.each(['/\\evil.com', '/\\\\evil.com', '/\\/evil.com', '/\t/evil.com'])(
+    'rejects %j, which a browser resolves off-site despite the leading slash',
+    (href) => {
+      // The authoring path this reaches the API through is this field, so the
+      // author has to be told here and not by a 400.
+      expect(hrefOf(group('internal', href)).errors).toEqual({ href: true });
+    },
+  );
+
   it('leaves an empty field to Validators.required', () => {
     const validator = linkHrefValidator(() => 'internal');
 

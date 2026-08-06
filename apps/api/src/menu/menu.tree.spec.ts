@@ -191,13 +191,23 @@ describe('buildMenu hrefs', () => {
     },
   );
 
-  it('leaves an internal target that escapes the site out of the menu', () => {
-    // `//evil.com` is a protocol-relative URL wearing a path's clothes.
+  it.each([
+    '//evil.com',
+    '/\\evil.com',
+    '/\\\\evil.com',
+    '/\\/evil.com',
+    '/\t/evil.com',
+    '/\n/evil.com',
+    '/\r/evil.com',
+  ])('leaves the internal target %j, which escapes the site, out of the menu', (href) => {
+    // A browser resolves every one of these to `http://evil.com/`: the URL
+    // parser folds `\` to `/` and strips tab, LF and CR before parsing. They all
+    // start with `/`, so they are the spellings a prefix rule waves through.
     const menu = buildMenu(
       [
         section('a', {
           kind: 'link',
-          link: { type: 'internal', href: '//evil.com', openInNewTab: false },
+          link: { type: 'internal', href, openInNewTab: false },
         }),
         section('b'),
       ],
@@ -206,6 +216,7 @@ describe('buildMenu hrefs', () => {
     );
 
     expect(menu.map((entry) => entry.id)).toEqual(['b']);
+    expect(JSON.stringify(menu)).not.toContain('evil.com');
   });
 
   it('keeps the visible children of a section whose stored href is refused, in its slot', () => {
