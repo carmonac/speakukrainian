@@ -5,6 +5,7 @@ import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { ErrorStateMatcher } from '@angular/material/core';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -15,9 +16,11 @@ import { firstValueFrom } from 'rxjs';
 import type {
   AssetRef,
   CreateSectionInput,
+  LinkTarget,
   PublishStatus,
   RichText,
   Section,
+  SectionKind,
   UpdateSectionInput,
 } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
@@ -30,11 +33,16 @@ import {
   localizedRequired,
   toPlainLocalized,
 } from '../../shared/rich-text/localized-plain-text';
-import { PLAIN_TITLE_HINT, SLUG_TAKEN_FALLBACK } from './section-messages';
+import {
+  LINK_REJECTED_FALLBACK,
+  MENU_LABEL_HINT,
+  PLAIN_TITLE_HINT,
+  SLUG_TAKEN_FALLBACK,
+} from './section-messages';
 import type { SectionFormData } from './section-form.resolver';
 import { sectionTitle } from './sections.model';
 import { SectionsApi } from './sections.api';
-import { slugValidator, sortOrderValidator } from './section-validators';
+import { linkHrefValidator, slugValidator, sortOrderValidator } from './section-validators';
 import { slugify } from './slug';
 
 /**
@@ -55,11 +63,15 @@ const showOnceEdited: ErrorStateMatcher = {
 
 /** The form's raw value, which the two payload builders read. */
 interface SectionFormValue {
+  kind: SectionKind;
   title: RichText;
   slug: string;
   description: RichText;
   image: AssetRef | null;
   imageAlt: RichText;
+  showInMenu: boolean;
+  menuLabel: RichText;
+  link: { type: LinkTarget['type']; href: string; openInNewTab: boolean };
   status: PublishStatus;
   sortOrder: number | null;
 }
@@ -76,6 +88,7 @@ interface SectionFormValue {
     RouterLink,
     MatButtonModule,
     MatCardModule,
+    MatCheckboxModule,
     MatFormFieldModule,
     MatIconModule,
     MatInputModule,
@@ -108,14 +121,25 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
 
   protected readonly saving = signal(false);
   protected readonly slugConflict = signal<string | null>(null);
+  /** The API's own sentence about a link target it refused, bound to the href field. */
+  protected readonly linkError = signal<string | null>(null);
   protected readonly plainTitleHint = PLAIN_TITLE_HINT;
+  protected readonly menuLabelHint = MENU_LABEL_HINT;
 
   protected readonly form = this.fb.group({
+    kind: this.fb.nonNullable.control<SectionKind>('content'),
     title: this.fb.nonNullable.control<RichText>({}, localizedRequired(this.defaultCode)),
     slug: this.fb.nonNullable.control('', [Validators.required, slugValidator]),
     description: this.fb.nonNullable.control<RichText>({}),
     image: this.fb.control<AssetRef | null>(null),
     imageAlt: this.fb.nonNullable.control<RichText>({}),
+    showInMenu: this.fb.nonNullable.control(false),
+    menuLabel: this.fb.nonNullable.control<RichText>({}),
+    link: this.fb.group({
+      type: this.fb.nonNullable.control<LinkTarget['type']>('internal'),
+      href: this.fb.nonNullable.control('', [Validators.required, linkHrefValidator]),
+      openInNewTab: this.fb.nonNullable.control(false),
+    }),
     status: this.fb.nonNullable.control<PublishStatus>('draft'),
     /**
      * `null` on create means "append after the last sibling" — the API resolves
@@ -141,6 +165,15 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
   });
   private readonly imageAltValue = toSignal(this.form.controls.imageAlt.valueChanges, {
     initialValue: {} as RichText,
+  });
+  protected readonly kindValue = toSignal(this.form.controls.kind.valueChanges, {
+    initialValue: 'content' as SectionKind,
+  });
+  protected readonly showInMenuValue = toSignal(this.form.controls.showInMenu.valueChanges, {
+    initialValue: false,
+  });
+  protected readonly linkTypeValue = toSignal(this.form.controls.link.controls.type.valueChanges, {
+    initialValue: 'internal' as LinkTarget['type'],
   });
 
   protected readonly isEdit = computed(() => this.formData().section !== null);
@@ -182,22 +215,66 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
       // below is what applies it, so it has to stay after this line.
       this.form.controls.sortOrder.addValidators(Validators.required);
       this.form.patchValue({
-        // `title` and `imageAlt` are stored plain and edited as HTML, so they
-        // come back in through the inverse of what `submit` applies.
+        // `title`, `imageAlt` and `menuLabel` are stored plain and edited as
+        // HTML, so they come back in through the inverse of what `submit`
+        // applies.
+        kind: section.kind,
         title: fromPlainLocalized(section.title),
         slug: section.slug,
         description: section.description ?? {},
         image: section.image ?? null,
         imageAlt: fromPlainLocalized(section.image?.alt),
+        showInMenu: section.showInMenu,
+        menuLabel: fromPlainLocalized(section.menuLabel),
+        link: section.link ?? { type: 'internal', href: '', openInNewTab: false },
         status: section.status,
         sortOrder: section.sortOrder,
       });
       this.form.markAsPristine();
     }
 
+    this.syncLinkGroup(this.form.controls.kind.value);
+
+    this.form.controls.kind.valueChanges
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((kind) => {
+        this.syncLinkGroup(kind);
+        if (kind === 'link') {
+          // The revealed href is empty and required, and clicking a disabled
+          // Save does not blur it — the same trap `suggestSlugFromTitle`
+          // documents, answered by the one `showOnceEdited` policy rather than
+          // a second matcher.
+          this.form.controls.link.controls.href.markAsTouched();
+        }
+      });
+
+    // The href rule depends on `type`, and Angular does not re-run a control's
+    // validators when a sibling changes.
+    this.form.controls.link.controls.type.valueChanges
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => this.form.controls.link.controls.href.updateValueAndValidity());
+
+    this.form.controls.link.valueChanges
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => this.linkError.set(null));
+
     this.form.controls.slug.valueChanges
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(() => this.slugConflict.set(null));
+  }
+
+  /**
+   * Disabling the group is what keeps its empty, required `href` out of
+   * `form.invalid` on a content section — without it Save would be dead on
+   * every content section with no field on screen to explain why.
+   */
+  private syncLinkGroup(kind: SectionKind): void {
+    const link = this.form.controls.link;
+    if (kind === 'link' && link.disabled) {
+      link.enable();
+    } else if (kind === 'content' && link.enabled) {
+      link.disable();
+    }
   }
 
   hasUnsavedChanges(): boolean {
@@ -254,6 +331,7 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
       }
     } catch (error) {
       this.applySlugConflict(error);
+      this.applyLinkRejection(error);
       // Anything else has already been toasted by the error interceptor.
     } finally {
       this.saving.set(false);
@@ -263,14 +341,14 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
   private createSection(value: SectionFormValue, image: AssetRef | null): Promise<Section> {
     const input: CreateSectionInput = {
       parentId: this.formData().parent?.id ?? null,
-      // `kind` and `showInMenu` become controls when link sections and the menu
-      // settings land (#6); `CreateSectionInput` requires both today.
-      kind: 'content',
-      showInMenu: false,
+      kind: value.kind,
       slug: value.slug,
       title: toPlainLocalized(value.title),
       description: value.description,
+      showInMenu: value.showInMenu,
+      menuLabel: toPlainLocalized(value.menuLabel),
       status: value.status,
+      ...this.linkOf(value),
       ...(image === null ? {} : { image }),
       ...(value.sortOrder === null ? {} : { sortOrder: value.sortOrder }),
     };
@@ -278,9 +356,11 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
   }
 
   /**
-   * Only the fields this form owns. `kind`, `showInMenu`, `menuLabel` and
-   * `link` are left out on purpose: a patch that omits a field leaves it alone,
-   * and sending them would let this form quietly undo #6's fields.
+   * Every field this form owns, which since #6 includes `kind`, `showInMenu`,
+   * `menuLabel` and `link`. `link` is sent only for `kind === 'link'`: the API
+   * refuses a content section that carries a target, and omitting it is exactly
+   * what makes the repository drop a stored one when a link section becomes a
+   * content section.
    */
   private updateSection(
     id: string,
@@ -288,16 +368,30 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
     image: AssetRef | null,
   ): Promise<Section> {
     const input: UpdateSectionInput = {
+      kind: value.kind,
       title: toPlainLocalized(value.title),
       slug: value.slug,
       description: value.description,
       // `null` clears a stored image; the schema and the repository both treat
       // it as "remove this", where an omitted key means "leave it alone".
       image,
+      showInMenu: value.showInMenu,
+      menuLabel: toPlainLocalized(value.menuLabel),
       status: value.status,
+      ...this.linkOf(value),
       ...(value.sortOrder === null ? {} : { sortOrder: value.sortOrder }),
     };
     return firstValueFrom(this.api.update(id, input));
+  }
+
+  /**
+   * Keyed on `kind`, never on whether the group holds a value: `getRawValue()`
+   * answers for disabled controls too, so a content section whose author once
+   * typed a target would otherwise ship a `link` and be refused with a 422 that
+   * names a field they cannot see.
+   */
+  private linkOf(value: SectionFormValue): { link?: LinkTarget } {
+    return value.kind === 'link' ? { link: value.link } : {};
   }
 
   /**
@@ -318,6 +412,34 @@ export class SectionFormPage implements OnInit, HasUnsavedChanges {
     this.slugConflict.set(body?.message ?? SLUG_TAKEN_FALLBACK);
     this.form.controls.slug.setErrors({ taken: true });
     this.form.controls.slug.markAsTouched();
+  }
+
+  /**
+   * Binds a refused link target to the href field. Keyed on the issue's `path`
+   * rather than on the status: a missing target is a 422 raised by
+   * `SectionsService.fail`, a malformed href is a 400 from `ZodValidationPipe`,
+   * and both carry the same `errors` shape.
+   *
+   * It clears itself the way the slug conflict does — the `link` group's
+   * `valueChanges` subscription drops the message, and the next validation run
+   * replaces the whole `errors` object.
+   */
+  private applyLinkRejection(error: unknown): void {
+    if (!(error instanceof HttpErrorResponse)) {
+      return;
+    }
+    const body = error.error as { errors?: { path?: string; message?: string }[] } | null;
+    const issue = body?.errors?.find(
+      (entry) => entry.path === 'link' || entry.path?.startsWith('link.') === true,
+    );
+    if (issue === undefined) {
+      return;
+    }
+
+    const href = this.form.controls.link.controls.href;
+    this.linkError.set(issue.message ?? LINK_REJECTED_FALLBACK);
+    href.setErrors({ rejected: true });
+    href.markAsTouched();
   }
 
   /** Create only. Rewriting an existing section's slug from its title is a defect. */
