@@ -43,7 +43,12 @@ subsection-list pages need a whole subtree, which `ancestorIds` gives in a singl
 _Cost:_ re-parenting a section must rewrite `path`, `depth` and `ancestorIds` for the node
 **and every descendant**, transactionally. This is the single most defect-prone operation in
 the codebase — a stale descendant path is a broken public URL. It gets integration tests, not
-unit tests with mocks.
+unit tests with mocks. The rewrite is one Firestore transaction, and a subtree larger than
+`MAX_DESCENDANT_REWRITES` (499, the commit limit minus the node itself) is refused with 422
+rather than split across several commits: a partially rewritten subtree is a set of broken
+public URLs with no way back, and the depth limit makes a subtree that big a data-modelling
+accident. If one ever becomes real the answer is a background re-path job behind a "moving"
+flag, not a multi-batch write.
 
 ### ADR-003 — Rich text is stored as sanitized HTML
 

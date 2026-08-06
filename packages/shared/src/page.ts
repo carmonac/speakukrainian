@@ -77,19 +77,36 @@ export const seoSchema = z.object({
 });
 export type Seo = z.infer<typeof seoSchema>;
 
+/**
+ * The fields an admin edits, without their defaults — see the same split in
+ * `section.ts`. `.partial()` keeps a field's inner `.default()`, so a patch
+ * schema derived from the create schema would fill in `status` and `sortOrder`
+ * on every request and unpublish or reorder a page nobody asked to touch.
+ * `sectionId` is absent because a page is moved between sections by its own
+ * operation, which has to recompute `path`.
+ */
+export const editableContentPageFields = {
+  slug: slugSchema,
+  title: localizedTextSchema,
+  body: pageBodySchema,
+  seo: seoSchema.optional(),
+  sortOrder: z.number().int(),
+  status: publishStatusSchema,
+};
+
 export const contentPageSchema = z
   .object({
     id: z.string().min(1),
     /** Every page lives inside a section or subsection. */
     sectionId: z.string().min(1),
-    slug: slugSchema,
+    slug: editableContentPageFields.slug,
     /** Full public path, e.g. `/grammar-points/present-simple/intro`. */
     path: z.string().startsWith('/'),
-    title: localizedTextSchema,
-    body: pageBodySchema,
-    seo: seoSchema.optional(),
-    sortOrder: z.number().int().default(0),
-    status: publishStatusSchema.default('draft'),
+    title: editableContentPageFields.title,
+    body: editableContentPageFields.body,
+    seo: editableContentPageFields.seo,
+    sortOrder: editableContentPageFields.sortOrder.default(0),
+    status: editableContentPageFields.status.default('draft'),
     publishedAt: z.string().nullable().default(null),
     audit: auditSchema,
   })
@@ -105,14 +122,19 @@ export type ContentPage = z.infer<typeof contentPageSchema>;
 
 export const createContentPageSchema = z.object({
   sectionId: z.string().min(1),
-  slug: slugSchema,
-  title: localizedTextSchema,
-  body: pageBodySchema,
-  seo: seoSchema.optional(),
-  sortOrder: z.number().int().optional(),
-  status: publishStatusSchema.default('draft'),
+  slug: editableContentPageFields.slug,
+  title: editableContentPageFields.title,
+  body: editableContentPageFields.body,
+  seo: editableContentPageFields.seo,
+  /** Omitted means "append after the last sibling", which the repository resolves. */
+  sortOrder: editableContentPageFields.sortOrder.optional(),
+  status: editableContentPageFields.status.default('draft'),
 });
 export type CreateContentPageInput = z.infer<typeof createContentPageSchema>;
 
-export const updateContentPageSchema = createContentPageSchema.partial().omit({ sectionId: true });
+/**
+ * Body of `PATCH /api/pages/:id`: every key optional, none defaulted, so a
+ * request that carries one field changes exactly that field.
+ */
+export const updateContentPageSchema = z.object(editableContentPageFields).partial();
 export type UpdateContentPageInput = z.infer<typeof updateContentPageSchema>;

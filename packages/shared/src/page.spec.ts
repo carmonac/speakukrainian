@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { contentPageSchema, pageBodySchema } from './page.js';
+import {
+  contentPageSchema,
+  createContentPageSchema,
+  editableContentPageFields,
+  pageBodySchema,
+  updateContentPageSchema,
+} from './page.js';
 
 const audit = {
   createdAt: '2026-01-01T00:00:00Z',
@@ -79,5 +85,86 @@ describe('contentPageSchema', () => {
       body: { type: 'h5p_exercise', h5pContentId: null, explanationPosition: 'above' },
     });
     expect(result.success).toBe(true);
+  });
+
+  it('defaults a stored document written before the flags existed', () => {
+    const { sortOrder: _sortOrder, status: _status, ...old } = basePage;
+
+    expect(
+      contentPageSchema.parse({
+        ...old,
+        body: { type: 'subsection_list' },
+      }),
+    ).toMatchObject({ sortOrder: 0, status: 'draft' });
+  });
+});
+
+describe('createContentPageSchema', () => {
+  it('defaults a new page to a draft and leaves sortOrder to the repository', () => {
+    const parsed = createContentPageSchema.parse({
+      sectionId: 'sec-1',
+      slug: 'intro',
+      title: { en: 'Introduction' },
+      body: { type: 'rich_text', content: { en: '<p>Hi</p>' } },
+    });
+
+    expect(parsed.status).toBe('draft');
+    expect(parsed.sortOrder).toBeUndefined();
+  });
+});
+
+describe('updateContentPageSchema', () => {
+  it('returns only the fields the request carried', () => {
+    const parsed = updateContentPageSchema.parse({ slug: 'intro' });
+
+    // A defaulted `status` here would unpublish a live page on a slug fix, and
+    // a defaulted `sortOrder` would jump it to the top of its section.
+    expect(parsed).toEqual({ slug: 'intro' });
+    expect(Object.keys(parsed)).toEqual(['slug']);
+  });
+
+  it('accepts an empty patch without inventing any field', () => {
+    expect(updateContentPageSchema.parse({})).toEqual({});
+  });
+
+  it('strips a sectionId, which only a move between sections may change', () => {
+    expect(updateContentPageSchema.parse({ sectionId: 'sec-2', slug: 'intro' })).toEqual({
+      slug: 'intro',
+    });
+  });
+
+  it('keeps the values a full patch does carry', () => {
+    const parsed = updateContentPageSchema.parse({
+      slug: 'intro',
+      title: { en: 'Introduction' },
+      body: { type: 'subsection_list', layout: 'list' },
+      sortOrder: 4,
+      status: 'published',
+    });
+
+    expect(parsed).toMatchObject({
+      slug: 'intro',
+      title: { en: 'Introduction' },
+      sortOrder: 4,
+      status: 'published',
+    });
+    expect(parsed.body).toMatchObject({ type: 'subsection_list', layout: 'list' });
+  });
+
+  it('rejects an invalid value for a field it does carry', () => {
+    expect(updateContentPageSchema.safeParse({ status: 'nonsense' }).success).toBe(false);
+    expect(updateContentPageSchema.safeParse({ slug: 'Not Kebab' }).success).toBe(false);
+    expect(updateContentPageSchema.safeParse({ body: { type: 'video' } }).success).toBe(false);
+  });
+});
+
+describe('editableContentPageFields', () => {
+  it('names only fields the stored document also has', () => {
+    const stored = Object.keys(contentPageSchema.shape);
+    const unstorable = Object.keys(editableContentPageFields).filter(
+      (field) => !stored.includes(field),
+    );
+
+    expect(unstorable).toEqual([]);
   });
 });
