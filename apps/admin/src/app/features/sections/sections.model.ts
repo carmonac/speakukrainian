@@ -68,6 +68,10 @@ export function flattenTree(
  * click on. Stopping at the default locale would blank the whole tree the
  * moment an admin makes a locale default that the existing content was not
  * authored in — a state `/locales` can put the site into.
+ *
+ * Which locale the fallback lands on is the record's own key order, which is
+ * whatever the API answered with. That is good enough to identify a row; a
+ * caller that needs a deterministic choice should iterate the locales list.
  */
 export function sectionTitle(section: Section, defaultCode: LocaleCode | null): string {
   if (defaultCode !== null) {

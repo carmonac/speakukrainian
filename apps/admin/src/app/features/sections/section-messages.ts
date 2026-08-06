@@ -1,10 +1,8 @@
 import { MAX_SECTION_DEPTH } from '@speakukrainian/shared';
 
-/**
- * The wording both section screens share, so the tree and the form explain a
- * restriction in the same words and a test asserts one constant rather than a
- * string copied into a template.
- */
+// The wording both section screens share, so the tree and the form explain a
+// restriction in the same words and a test asserts one constant rather than a
+// string copied into a template.
 
 /**
  * The API refuses to delete a section that still has subsections. The tree
@@ -19,7 +17,7 @@ export const MAX_DEPTH_MESSAGE = `Sections nest at most ${MAX_SECTION_DEPTH + 1}
 export const PLAIN_TITLE_HINT =
   'Formatting is not kept — the title is used in menus, breadcrumbs and the browser tab.';
 
-/** Shown for a section with no title in the default locale, so no row is blank. */
+/** Shown for a section with no title in any locale at all, so no row is blank. */
 export const UNTITLED_SECTION = '(untitled)';
 
 /** Used only if a 409 arrives without a body to quote. */
