@@ -75,6 +75,57 @@ describe('sectionSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it.each(['/grammar', '/', '/a/b/c'])('accepts %j as an internal link target', (href) => {
+    const result = sectionSchema.safeParse({
+      ...baseSection,
+      kind: 'link',
+      link: { type: 'internal', href },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it.each(['grammar', '//evil.com', 'https://x.test', 'javascript:alert(1)'])(
+    'rejects %j as an internal link target, pathed to the href',
+    (href) => {
+      // `//evil.com` is the one that matters: a protocol-relative URL leaves the
+      // site while passing for a path.
+      const result = sectionSchema.safeParse({
+        ...baseSection,
+        kind: 'link',
+        link: { type: 'internal', href },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+    },
+  );
+
+  it.each(['https://example.com/x', 'http://a.test'])(
+    'accepts %j as an external link target',
+    (href) => {
+      const result = sectionSchema.safeParse({
+        ...baseSection,
+        kind: 'link',
+        link: { type: 'external', href },
+      });
+      expect(result.success).toBe(true);
+    },
+  );
+
+  it.each(['/internal', 'javascript:alert(1)', 'ftp://x.test', 'not a url'])(
+    'rejects %j as an external link target, pathed to the href',
+    (href) => {
+      const result = sectionSchema.safeParse({
+        ...baseSection,
+        kind: 'link',
+        link: { type: 'external', href },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+    },
+  );
+
   it('rejects a slug that is not kebab-case', () => {
     expect(sectionSchema.safeParse({ ...baseSection, slug: 'Grammar Points' }).success).toBe(false);
   });
@@ -179,6 +230,17 @@ describe('updateSectionSchema', () => {
   it('still refuses null for a field that has no clearing meaning', () => {
     expect(updateSectionSchema.safeParse({ title: null }).success).toBe(false);
     expect(updateSectionSchema.safeParse({ slug: null }).success).toBe(false);
+  });
+
+  it('still applies the href shape rule after .partial()', () => {
+    // `.partial()` is the route a PATCH body takes, and a rule that only held on
+    // the create schema would let an edit store a target the reader cannot follow.
+    const result = updateSectionSchema.safeParse({
+      link: { type: 'external', href: 'nope' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
   });
 
   it('rejects an invalid value for a field it does carry', () => {

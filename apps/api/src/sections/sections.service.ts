@@ -18,6 +18,7 @@ import { RichTextSanitizer } from '../common/rich-text.sanitizer.js';
 import {
   MAX_TREE_SECTIONS,
   SectionsRepository,
+  type SectionListResult,
   type SectionWriteFailure,
   type SectionWriteResult,
 } from './sections.repository.js';
@@ -57,13 +58,22 @@ export class SectionsService {
    * collection is an error rather than a partial answer.
    */
   async tree(): Promise<SectionTreeNode[]> {
-    const result = await this.repository.listAllForTree();
+    return buildTree(this.sectionsOrThrow(await this.repository.listAllForTree()));
+  }
+
+  /** Published, `showInMenu` sections, ordered by `sortOrder` — what `MenuService` nests. */
+  async menuSections(): Promise<Section[]> {
+    return this.sectionsOrThrow(await this.repository.listForMenu());
+  }
+
+  /** One overflow message for both bounded reads, so the two cannot disagree. */
+  private sectionsOrThrow(result: SectionListResult): Section[] {
     if (!result.ok) {
       throw new UnprocessableEntityException(
         `The section tree is limited to ${MAX_TREE_SECTIONS} sections and the collection holds more.`,
       );
     }
-    return buildTree(result.sections);
+    return result.sections;
   }
 
   async update(id: string, input: UpdateSectionInput, actorId: string): Promise<Section> {

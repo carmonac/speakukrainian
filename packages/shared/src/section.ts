@@ -16,13 +16,35 @@ import {
 export const sectionKindSchema = z.enum(['content', 'link']);
 export type SectionKind = z.infer<typeof sectionKindSchema>;
 
-export const linkTargetSchema = z.object({
-  /** `internal` resolves against the site's own router; `external` is an absolute URL. */
-  type: z.enum(['internal', 'external']),
-  /** For `internal`: a site-relative path starting with `/`. For `external`: an absolute URL. */
-  href: z.string().min(1),
-  openInNewTab: z.boolean().default(false),
-});
+/**
+ * The href shape rule lives here and nowhere else: the controller pipes, the
+ * repository's write and read parses, and the admin's own field validator all
+ * reach it through this schema (rule 1).
+ *
+ * `//evil.com` is refused for an internal link because a protocol-relative URL
+ * leaves the site while looking like a path — the one case `startsWith('/')`
+ * alone would wave through. The external branch is a `z.url` restricted to
+ * `http`/`https`, which refuses `javascript:`, `ftp:` and bare strings.
+ */
+export const linkTargetSchema = z
+  .object({
+    /** `internal` resolves against the site's own router; `external` is an absolute URL. */
+    type: z.enum(['internal', 'external']),
+    /** For `internal`: a site-relative path starting with `/`. For `external`: an absolute URL. */
+    href: z.string().min(1),
+    openInNewTab: z.boolean().default(false),
+  })
+  .refine(
+    (target) =>
+      target.type === 'internal'
+        ? target.href.startsWith('/') && !target.href.startsWith('//')
+        : z.url({ protocol: /^https?$/ }).safeParse(target.href).success,
+    {
+      message:
+        'An internal link is a site-relative path starting with "/"; an external link is an absolute http(s) URL',
+      path: ['href'],
+    },
+  );
 export type LinkTarget = z.infer<typeof linkTargetSchema>;
 
 /**

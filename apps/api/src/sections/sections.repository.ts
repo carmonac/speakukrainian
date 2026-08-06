@@ -150,6 +150,33 @@ export class SectionsRepository extends BaseRepository<Section> {
     };
   }
 
+  /**
+   * The sections `GET /api/menu` is built from. Nested in memory like the tree,
+   * so the read behind it is bounded the same way and shares
+   * {@link MAX_TREE_SECTIONS} — the menu is a subset of the tree by definition.
+   *
+   * Served by the existing `sections (status ASC, showInMenu ASC, sortOrder
+   * ASC)` entry in `docker/firebase/firestore.indexes.json`; the filters are
+   * written in that order to keep the correspondence obvious. The emulator
+   * serves this query with or without an index, so a missing entry would only
+   * surface in production.
+   */
+  async listForMenu(): Promise<SectionListResult> {
+    const snapshot = await this.collection
+      .where('status', '==', 'published')
+      .where('showInMenu', '==', true)
+      .orderBy('sortOrder')
+      .limit(MAX_TREE_SECTIONS + 1)
+      .get();
+    if (snapshot.size > MAX_TREE_SECTIONS) {
+      return { ok: false, overflow: true };
+    }
+    return {
+      ok: true,
+      sections: snapshot.docs.map((doc) => this.fromDocument(doc.id, doc.data())),
+    };
+  }
+
   async update(
     id: string,
     input: UpdateSectionInput,
@@ -184,10 +211,15 @@ export class SectionsRepository extends BaseRepository<Section> {
         delete merged.image;
       }
 
-      // A patch body has no way to say "remove this optional object", so
-      // switching a link section back to content would otherwise be impossible
-      // — and `sectionSchema` refuses a content section that still has a link.
-      if (merged.kind === 'content') {
+      // Dropping the stored link is the only way a patch can say "this is a
+      // content section now" — a PATCH body has no way to remove an optional
+      // object, and `sectionSchema` refuses a content section that still has a
+      // link. A patch that *sends* a link for a content section is a different
+      // thing: a contradiction, which the refinement below refuses with the
+      // issue pathed to `link`. Dropping it silently would answer 200 to a
+      // write that did not happen. The `undefined`-stripping loop above has
+      // already run, so this really does mean "the request carried none".
+      if (merged.kind === 'content' && patch.link === undefined) {
         delete merged.link;
       }
 

@@ -139,6 +139,21 @@ _Cost:_ a second schema per publicly-read collection, and the projection has to 
 route. It stays in `packages/shared` and is derived from the stored schema with `.omit()`, so the
 two cannot drift (rule 1).
 
+### ADR-011 — The public menu promotes a visible child of a hidden ancestor
+
+`GET /api/menu` returns only published sections with `showInMenu: true`, nested by the nearest
+ancestor that is itself in that set; a section whose parent is missing from it becomes a child of
+the nearest ancestor that is present, or a top-level entry. Its `href` is unchanged.
+
+_Why:_ the alternative is that unticking one section silently deletes a whole branch of the
+navigation, which looks like data loss to the admin who did it. Promotion keeps every page the
+admin asked for in the menu reachable, and "hidden" covers unpublished as well as unticked with no
+second rule.
+
+_Cost:_ a promoted entry's `href` still contains the hidden ancestor's slug, so the URL reveals a
+section that has no menu entry of its own — acceptable, since the path is where the page really
+lives.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |

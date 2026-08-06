@@ -70,6 +70,7 @@ interface DoubleResults {
   write?: SectionWriteResult;
   remove?: SectionDeleteResult;
   tree?: SectionListResult;
+  menu?: SectionListResult;
 }
 
 function createRepository(results: DoubleResults = {}): RepositoryDouble {
@@ -90,6 +91,7 @@ function createRepository(results: DoubleResults = {}): RepositoryDouble {
     list: record('list', { items: [root], nextCursor: null }),
     findByIdOrFail: record('findByIdOrFail', root),
     listAllForTree: record('listAllForTree', results.tree ?? { ok: true, sections: [root, child] }),
+    listForMenu: record('listForMenu', results.menu ?? { ok: true, sections: [root] }),
   } as unknown as SectionsRepository;
 
   return { repository, calls };
@@ -241,6 +243,28 @@ describe('SectionsService tree', () => {
     const { service } = createService({ tree: { ok: false, overflow: true } });
 
     await expect(service.tree()).rejects.toThrow(String(MAX_TREE_SECTIONS));
+  });
+});
+
+describe('SectionsService menu sections', () => {
+  it('answers with the repository rows flat, for the menu builder to nest', async () => {
+    const { service, calls } = createService({ menu: { ok: true, sections: [root, child] } });
+
+    const sections = await service.menuSections();
+
+    expect(sections.map((section) => section.id)).toEqual(['root-id', 'child-id']);
+    expect(onlyCallTo(calls, 'listForMenu').args).toEqual([]);
+  });
+
+  it('refuses an overflowing menu query with the same message the tree uses', async () => {
+    const { service } = createService({ menu: { ok: false, overflow: true } });
+
+    const thrown = (await service
+      .menuSections()
+      .catch((error: unknown) => error)) as UnprocessableEntityException;
+
+    expect(thrown).toBeInstanceOf(UnprocessableEntityException);
+    expect(thrown.message).toContain(String(MAX_TREE_SECTIONS));
   });
 });
 
