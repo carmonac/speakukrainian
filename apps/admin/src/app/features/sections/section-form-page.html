@@ -41,7 +41,11 @@
           @if (slugConflict(); as conflict) {
             <mat-error class="section-form__slug-conflict">{{ conflict }}</mat-error>
           } @else {
-            <mat-error class="section-form__slug-error">Use lowercase words joined by hyphens.</mat-error>
+            <mat-error class="section-form__slug-error">{{
+              form.controls.slug.hasError('required')
+                ? 'Give the section a slug.'
+                : 'Use lowercase words joined by hyphens.'
+            }}</mat-error>
           }
         </mat-form-field>
 

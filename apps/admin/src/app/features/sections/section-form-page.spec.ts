@@ -544,6 +544,18 @@ describe('SectionFormPage', () => {
     expect(calls.some((call) => call.method === 'update')).toBe(false);
   });
 
+  it('tells an emptied slug apart from a malformed one', async () => {
+    setup({ sections: [STORED] });
+    const harness = await open('/sections/sec-1');
+
+    fillSlug(harness, 'Present Simple!');
+    expect(slugError(harness)).toBe('Use lowercase words joined by hyphens.');
+
+    fillSlug(harness, '');
+
+    expect(slugError(harness)).toBe('Give the section a slug.');
+  });
+
   it('does not paint a blank create form red, and keeps its hints', async () => {
     // The slug is empty and required from the first frame, so a matcher that
     // only asked `invalid` would open the form in an error state and swallow
