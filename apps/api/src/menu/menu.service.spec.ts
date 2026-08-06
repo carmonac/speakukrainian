@@ -42,14 +42,16 @@ function locale(code: string, isDefault: boolean): Locale {
   };
 }
 
-function createService(options: { locales?: Locale[]; overflows?: boolean } = {}): MenuService {
+function createService(
+  options: { locales?: Locale[]; overflows?: boolean; sections?: Section[] } = {},
+): MenuService {
   const sections = {
-    menuSections: () =>
+    allSections: () =>
       options.overflows === true
         ? Promise.reject(
             new UnprocessableEntityException('The section tree is limited to 1000 sections'),
           )
-        : Promise.resolve([grammar]),
+        : Promise.resolve(options.sections ?? [grammar]),
   } as unknown as SectionsService;
 
   const locales = {
@@ -96,6 +98,23 @@ describe('MenuService', () => {
     const menu = await service.menu({});
 
     expect(menu[0]?.label).toBe('Grammar points');
+  });
+
+  it('keeps a draft section out, though the read behind it no longer filters', async () => {
+    // The service hands `buildMenu` every section, so nothing but the builder's
+    // own predicate stands between an unpublished draft and an anonymous
+    // caller. That seam did not exist while Firestore did the filtering.
+    const service = createService({
+      sections: [
+        grammar,
+        { ...grammar, id: 'draft', slug: 'draft', path: '/draft', status: 'draft' },
+        { ...grammar, id: 'unticked', slug: 'unticked', path: '/unticked', showInMenu: false },
+      ],
+    });
+
+    const menu = await service.menu({});
+
+    expect(menu.map((entry) => entry.id)).toEqual(['grammar']);
   });
 
   it('lets the overflow refusal through instead of answering a truncated menu', async () => {

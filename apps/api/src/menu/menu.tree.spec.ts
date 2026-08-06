@@ -9,7 +9,14 @@ const audit = {
   updatedBy: 'editor',
 };
 
-/** Every fixture is what `listForMenu` answers with: published and in the menu. */
+/**
+ * A section as `listAllForTree` answers with it: the input is the whole
+ * collection, so a fixture opts *out* of the menu rather than into it.
+ *
+ * `sortOrder` defaults to 0 because that is what `nextSortOrder` assigns to a
+ * first child — numbering restarts under every parent, and a fixture that
+ * numbers globally hides exactly the interleaving these tests exist to catch.
+ */
 function section(id: string, overrides: Partial<Section> = {}): Section {
   return {
     id,
@@ -26,6 +33,17 @@ function section(id: string, overrides: Partial<Section> = {}): Section {
     audit,
     ...overrides,
   };
+}
+
+/** A child of `parent`, with the derived fields a real document would carry. */
+function child(id: string, parent: Section, overrides: Partial<Section> = {}): Section {
+  return section(id, {
+    parentId: parent.id,
+    ancestorIds: [...parent.ancestorIds, parent.id],
+    depth: parent.depth + 1,
+    path: `${parent.path}/${id}`,
+    ...overrides,
+  });
 }
 
 describe('buildMenu labels', () => {
@@ -137,50 +155,56 @@ describe('buildMenu hrefs', () => {
   });
 });
 
+describe('buildMenu visibility', () => {
+  it('leaves out a section that is not ticked into the menu', () => {
+    // The input is now the whole collection, so this predicate is the only thing
+    // keeping an unticked section out of an anonymous response.
+    const menu = buildMenu([section('a'), section('b', { showInMenu: false })], 'en', 'en');
+
+    expect(menu.map((entry) => entry.id)).toEqual(['a']);
+  });
+
+  it.each(['draft', 'archived'] as const)('leaves out a %s section', (status) => {
+    const menu = buildMenu([section('a'), section('b', { status })], 'en', 'en');
+
+    expect(menu.map((entry) => entry.id)).toEqual(['a']);
+  });
+});
+
 describe('buildMenu nesting', () => {
   it('nests a child under its parent', () => {
-    const menu = buildMenu(
-      [section('a'), section('b', { parentId: 'a', ancestorIds: ['a'], depth: 1, path: '/a/b' })],
-      'en',
-      'en',
-    );
+    const a = section('a');
+    const menu = buildMenu([a, child('b', a)], 'en', 'en');
 
     expect(menu.map((entry) => entry.id)).toEqual(['a']);
     expect(menu[0]?.children.map((entry) => entry.id)).toEqual(['b']);
   });
 
+  it('nests each of three visible levels under the level above it', () => {
+    // Two visible ancestors, which is what makes the *nearest* in "nearest
+    // visible ancestor" observable: attaching to the outermost one instead
+    // flattens every three-level menu into two.
+    const a = section('a');
+    const b = child('b', a);
+    const menu = buildMenu([a, b, child('c', b)], 'en', 'en');
+
+    expect(menu.map((entry) => entry.id)).toEqual(['a']);
+    expect(menu[0]?.children.map((entry) => entry.id)).toEqual(['b']);
+    expect(menu[0]?.children[0]?.children.map((entry) => entry.id)).toEqual(['c']);
+  });
+
   it('nests a child whose parent appears later in the input', () => {
-    // A one-pass implementation would leave the child at the top level.
-    const menu = buildMenu(
-      [
-        section('b', { parentId: 'a', ancestorIds: ['a'], depth: 1, path: '/a/b', sortOrder: 0 }),
-        section('a', { sortOrder: 1 }),
-      ],
-      'en',
-      'en',
-    );
+    const a = section('a', { sortOrder: 1 });
+    const menu = buildMenu([child('b', a), a], 'en', 'en');
 
     expect(menu.map((entry) => entry.id)).toEqual(['a']);
     expect(menu[0]?.children.map((entry) => entry.id)).toEqual(['b']);
   });
 
   it('promotes a visible child of a hidden parent to its grandparent, keeping its own href', () => {
-    // B is absent from the input, which is what "hidden or unpublished" means
-    // here — the query never returned it.
-    const menu = buildMenu(
-      [
-        section('a', { sortOrder: 0 }),
-        section('c', {
-          parentId: 'b',
-          ancestorIds: ['a', 'b'],
-          depth: 2,
-          path: '/a/b/c',
-          sortOrder: 1,
-        }),
-      ],
-      'en',
-      'en',
-    );
+    const a = section('a');
+    const b = child('b', a, { status: 'draft' });
+    const menu = buildMenu([a, b, child('c', b)], 'en', 'en');
 
     expect(menu.map((entry) => entry.id)).toEqual(['a']);
     expect(menu[0]?.children.map((entry) => entry.id)).toEqual(['c']);
@@ -191,46 +215,83 @@ describe('buildMenu nesting', () => {
   });
 
   it('promotes to the top level when no ancestor is in the menu', () => {
-    const menu = buildMenu(
-      [
-        section('c', {
-          parentId: 'b',
-          ancestorIds: ['a', 'b'],
-          depth: 2,
-          path: '/a/b/c',
-        }),
-      ],
-      'en',
-      'en',
-    );
+    const a = section('a', { showInMenu: false });
+    const b = child('b', a, { status: 'draft' });
+    const menu = buildMenu([a, b, child('c', b)], 'en', 'en');
 
     expect(menu.map((entry) => entry.id)).toEqual(['c']);
     expect(menu[0]?.href).toBe('/a/b/c');
   });
+});
 
-  it('orders a promoted child among its new siblings by sortOrder', () => {
+describe('buildMenu ordering', () => {
+  it('lands a promoted pair in the slot their hidden parent held, not interleaved', () => {
+    // The numbering `nextSortOrder` really assigns: it restarts under every
+    // parent, so `k1`'s 0 and `b1`'s 0 say nothing about each other. Ordering
+    // the visible sections by `sortOrder` alone reads `b1, k1, b2, k2` and
+    // breaks the 0-vs-0 tie by document id.
+    const root = section('root');
+    const b1 = child('b1', root, { sortOrder: 0 });
+    const b2 = child('b2', root, { sortOrder: 1 });
+    const hidden = child('hidden', root, { sortOrder: 2, status: 'draft' });
+    const b3 = child('b3', root, { sortOrder: 3 });
+
     const menu = buildMenu(
       [
-        section('a', { sortOrder: 0 }),
-        section('early', {
-          parentId: 'b',
-          ancestorIds: ['a', 'b'],
-          depth: 2,
-          path: '/a/b/early',
-          sortOrder: 1,
-        }),
-        section('direct', {
-          parentId: 'a',
-          ancestorIds: ['a'],
-          depth: 1,
-          path: '/a/direct',
-          sortOrder: 2,
-        }),
+        root,
+        b1,
+        child('k1', hidden, { sortOrder: 0 }),
+        b2,
+        child('k2', hidden, { sortOrder: 1 }),
+        hidden,
+        b3,
       ],
       'en',
       'en',
     );
 
-    expect(menu[0]?.children.map((entry) => entry.id)).toEqual(['early', 'direct']);
+    expect(menu[0]?.children.map((entry) => entry.id)).toEqual(['b1', 'b2', 'k1', 'k2', 'b3']);
+  });
+
+  it('keeps two parents apart when their children share sortOrder values', () => {
+    const left = section('left', { sortOrder: 0 });
+    const right = section('right', { sortOrder: 1 });
+    // The order `orderBy('sortOrder')` produces: every first child before every
+    // second one, whichever parent they belong to.
+    const menu = buildMenu(
+      [
+        left,
+        child('left-1', left, { sortOrder: 0 }),
+        child('right-1', right, { sortOrder: 0 }),
+        right,
+        child('left-2', left, { sortOrder: 1 }),
+        child('right-2', right, { sortOrder: 1 }),
+      ],
+      'en',
+      'en',
+    );
+
+    expect(menu[0]?.children.map((entry) => entry.id)).toEqual(['left-1', 'left-2']);
+    expect(menu[1]?.children.map((entry) => entry.id)).toEqual(['right-1', 'right-2']);
+  });
+
+  it("lands children promoted out of a hidden root in that root's slot", () => {
+    const first = section('first', { sortOrder: 0 });
+    const hidden = section('hidden', { sortOrder: 1, status: 'draft' });
+    const last = section('last', { sortOrder: 2 });
+
+    const menu = buildMenu(
+      [
+        first,
+        child('k1', hidden, { sortOrder: 0 }),
+        hidden,
+        child('k2', hidden, { sortOrder: 1 }),
+        last,
+      ],
+      'en',
+      'en',
+    );
+
+    expect(menu.map((entry) => entry.id)).toEqual(['first', 'k1', 'k2', 'last']);
   });
 });

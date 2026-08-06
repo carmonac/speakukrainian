@@ -22,7 +22,9 @@ export class MenuService {
    */
   async menu(query: MenuQuery): Promise<MenuEntry[]> {
     const defaultLocale = await this.defaultLocale();
-    const sections = await this.sections.menuSections();
+    // The whole tree, not just what the menu shows: `buildMenu` needs the
+    // hidden ancestors to place the children it promotes out of them.
+    const sections = await this.sections.allSections();
     return buildMenu(sections, query.locale ?? defaultLocale, defaultLocale);
   }
 

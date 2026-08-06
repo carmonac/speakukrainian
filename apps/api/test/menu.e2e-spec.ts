@@ -134,11 +134,15 @@ describe('menu (e2e)', () => {
   });
 
   it('carries a link section target and openInNewTab through', async () => {
+    // The hrefs are namespaced like the slugs are: the menu is a global read, so
+    // an assertion on a target this suite does not own — `/lessons`, or the
+    // admin form's own `https://example.com` placeholder — is one ordinary
+    // section away from failing for a reason that has nothing to do with it.
     await create({
       slug: 'e2e-menu-external',
       title: { en: 'External' },
       kind: 'link',
-      link: { type: 'external', href: 'https://example.com/x', openInNewTab: true },
+      link: { type: 'external', href: 'https://e2e-menu.example.test/x', openInNewTab: true },
       status: 'published',
       showInMenu: true,
     });
@@ -146,13 +150,15 @@ describe('menu (e2e)', () => {
       slug: 'e2e-menu-internal',
       title: { en: 'Internal' },
       kind: 'link',
-      link: { type: 'internal', href: '/lessons', openInNewTab: false },
+      link: { type: 'internal', href: '/e2e-menu-internal-target', openInNewTab: false },
       status: 'published',
       showInMenu: true,
     });
 
-    expect(await findByHref('https://example.com/x')).toMatchObject({ openInNewTab: true });
-    expect(await findByHref('/lessons')).toMatchObject({ openInNewTab: false });
+    expect(await findByHref('https://e2e-menu.example.test/x')).toMatchObject({
+      openInNewTab: true,
+    });
+    expect(await findByHref('/e2e-menu-internal-target')).toMatchObject({ openInNewTab: false });
     // The section's own path is not what a link section answers with.
     expect(await findByHref('/e2e-menu-external')).toBeUndefined();
   });
@@ -198,5 +204,67 @@ describe('menu (e2e)', () => {
     // ADR-011: the hidden ancestor gets no entry of its own, and the child's
     // href is not rewritten to skip it.
     expect(await findByHref('/e2e-menu-root/e2e-menu-hidden')).toBeUndefined();
+  });
+
+  it('lands promoted children where their hidden parent sat, not interleaved with its siblings', async () => {
+    // No `sortOrder` is sent anywhere here: the numbers are the ones the API
+    // itself hands out, and it numbers per parent, so `k1` and `b1` are both 0.
+    // Ordering the menu by `sortOrder` alone reads `b1, k1, b2, k2`.
+    const root = await create({
+      slug: 'e2e-menu-ord',
+      title: { en: 'Ordered' },
+      status: 'published',
+      showInMenu: true,
+    });
+    const inMenu = (slug: string, parentId: string): Record<string, unknown> => ({
+      parentId,
+      slug,
+      title: { en: slug },
+      status: 'published',
+      showInMenu: true,
+    });
+
+    await create(inMenu('e2e-menu-ord-b1', root.id));
+    await create(inMenu('e2e-menu-ord-b2', root.id));
+    const hidden = await create({
+      parentId: root.id,
+      slug: 'e2e-menu-ord-hidden',
+      title: { en: 'Hidden' },
+      status: 'draft',
+      showInMenu: true,
+    });
+    await create(inMenu('e2e-menu-ord-k1', hidden.id));
+    await create(inMenu('e2e-menu-ord-k2', hidden.id));
+    await create(inMenu('e2e-menu-ord-b3', root.id));
+
+    const rootEntry = flatten(await readMenu()).find((entry) => entry.id === root.id);
+
+    expect(rootEntry?.children.map((entry) => entry.label)).toEqual([
+      'e2e-menu-ord-b1',
+      'e2e-menu-ord-b2',
+      'e2e-menu-ord-k1',
+      'e2e-menu-ord-k2',
+      'e2e-menu-ord-b3',
+    ]);
+  });
+
+  it('serves the menu around a stored href the write path would refuse today', async () => {
+    const legacy = await create({
+      slug: 'e2e-menu-legacy',
+      title: { en: 'Legacy' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://e2e-menu.example.test/legacy', openInNewTab: false },
+      status: 'published',
+      showInMenu: true,
+    });
+    // What `POST /api/sections` stored while `href` was only a non-empty string.
+    await firestore
+      .collection(COLLECTIONS.sections)
+      .doc(legacy.id)
+      .update({ 'link.href': 'ftp://e2e-menu.legacy.test' });
+
+    // One such document must not take the entire public navigation down: the
+    // menu is anonymous, sitewide, and unrelated to the section that is broken.
+    expect(await findByHref('ftp://e2e-menu.legacy.test')).toBeDefined();
   });
 });

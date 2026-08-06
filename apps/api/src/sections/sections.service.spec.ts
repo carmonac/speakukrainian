@@ -70,7 +70,6 @@ interface DoubleResults {
   write?: SectionWriteResult;
   remove?: SectionDeleteResult;
   tree?: SectionListResult;
-  menu?: SectionListResult;
 }
 
 function createRepository(results: DoubleResults = {}): RepositoryDouble {
@@ -91,7 +90,6 @@ function createRepository(results: DoubleResults = {}): RepositoryDouble {
     list: record('list', { items: [root], nextCursor: null }),
     findByIdOrFail: record('findByIdOrFail', root),
     listAllForTree: record('listAllForTree', results.tree ?? { ok: true, sections: [root, child] }),
-    listForMenu: record('listForMenu', results.menu ?? { ok: true, sections: [root] }),
   } as unknown as SectionsRepository;
 
   return { repository, calls };
@@ -246,21 +244,23 @@ describe('SectionsService tree', () => {
   });
 });
 
-describe('SectionsService menu sections', () => {
+describe('SectionsService all sections', () => {
   it('answers with the repository rows flat, for the menu builder to nest', async () => {
-    const { service, calls } = createService({ menu: { ok: true, sections: [root, child] } });
+    // Flat and unfiltered: the menu builder needs the sections it will not show,
+    // because it places a promoted child by where its hidden ancestor sat.
+    const { service, calls } = createService();
 
-    const sections = await service.menuSections();
+    const sections = await service.allSections();
 
     expect(sections.map((section) => section.id)).toEqual(['root-id', 'child-id']);
-    expect(onlyCallTo(calls, 'listForMenu').args).toEqual([]);
+    expect(onlyCallTo(calls, 'listAllForTree').args).toEqual([]);
   });
 
-  it('refuses an overflowing menu query with the same message the tree uses', async () => {
-    const { service } = createService({ menu: { ok: false, overflow: true } });
+  it('refuses an overflowing read with the same message the tree uses', async () => {
+    const { service } = createService({ tree: { ok: false, overflow: true } });
 
     const thrown = (await service
-      .menuSections()
+      .allSections()
       .catch((error: unknown) => error)) as UnprocessableEntityException;
 
     expect(thrown).toBeInstanceOf(UnprocessableEntityException);

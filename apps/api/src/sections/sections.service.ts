@@ -58,16 +58,18 @@ export class SectionsService {
    * collection is an error rather than a partial answer.
    */
   async tree(): Promise<SectionTreeNode[]> {
-    return buildTree(this.sectionsOrThrow(await this.repository.listAllForTree()));
+    return buildTree(await this.allSections());
   }
 
-  /** Published, `showInMenu` sections, ordered by `sortOrder` — what `MenuService` nests. */
-  async menuSections(): Promise<Section[]> {
-    return this.sectionsOrThrow(await this.repository.listForMenu());
-  }
-
-  /** One overflow message for both bounded reads, so the two cannot disagree. */
-  private sectionsOrThrow(result: SectionListResult): Section[] {
+  /**
+   * Every section, ordered by `sortOrder`. The admin tree and the public menu
+   * are both projections of this one read: the menu needs the sections it does
+   * *not* show as well, because a promoted child's place among its new siblings
+   * comes from the ordering of the hidden ancestor it was promoted out of, and
+   * `sortOrder` is only comparable between siblings (ADR-011).
+   */
+  async allSections(): Promise<Section[]> {
+    const result: SectionListResult = await this.repository.listAllForTree();
     if (!result.ok) {
       throw new UnprocessableEntityException(
         `The section tree is limited to ${MAX_TREE_SECTIONS} sections and the collection holds more.`,

@@ -135,36 +135,14 @@ export class SectionsRepository extends BaseRepository<Section> {
     return this.paginate(scoped.orderBy('sortOrder'), query.limit, query.cursor);
   }
 
-  /** Reads one document past the cap so a truncated tree is detectable. */
+  /**
+   * Reads one document past the cap so a truncated tree is detectable. It backs
+   * the public menu as well as the admin tree: the menu's ordering depends on
+   * ancestors it does not itself show, so it cannot be served by a query that
+   * filters them out.
+   */
   async listAllForTree(): Promise<SectionListResult> {
     const snapshot = await this.collection
-      .orderBy('sortOrder')
-      .limit(MAX_TREE_SECTIONS + 1)
-      .get();
-    if (snapshot.size > MAX_TREE_SECTIONS) {
-      return { ok: false, overflow: true };
-    }
-    return {
-      ok: true,
-      sections: snapshot.docs.map((doc) => this.fromDocument(doc.id, doc.data())),
-    };
-  }
-
-  /**
-   * The sections `GET /api/menu` is built from. Nested in memory like the tree,
-   * so the read behind it is bounded the same way and shares
-   * {@link MAX_TREE_SECTIONS} — the menu is a subset of the tree by definition.
-   *
-   * Served by the existing `sections (status ASC, showInMenu ASC, sortOrder
-   * ASC)` entry in `docker/firebase/firestore.indexes.json`; the filters are
-   * written in that order to keep the correspondence obvious. The emulator
-   * serves this query with or without an index, so a missing entry would only
-   * surface in production.
-   */
-  async listForMenu(): Promise<SectionListResult> {
-    const snapshot = await this.collection
-      .where('status', '==', 'published')
-      .where('showInMenu', '==', true)
       .orderBy('sortOrder')
       .limit(MAX_TREE_SECTIONS + 1)
       .get();
