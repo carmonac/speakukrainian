@@ -17,7 +17,7 @@ import {
   type SectionTreeNode,
 } from '@speakukrainian/shared';
 import { FIRESTORE } from '../src/infra/firestore/firestore.tokens.js';
-import { MAX_TREE_SECTIONS } from '../src/sections/sections.repository.js';
+import { MAX_TRANSACTION_WRITES, MAX_TREE_SECTIONS } from '../src/sections/sections.repository.js';
 import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
 
 /**
@@ -746,6 +746,82 @@ describe('sections (e2e)', () => {
     const unchanged = await read(moving.id);
     expect(unchanged.parentId).toBe(source.id);
     expect(unchanged.path).toBe('/e2e-taken-a/e2e-taken-child');
+  });
+
+  it('refuses a move that would write more documents than one transaction commits', async () => {
+    const destination = await create({ slug: 'e2e-budget-to', title: { en: 'To' } });
+    const seed = await create({
+      parentId: destination.id,
+      slug: 'e2e-budget-0',
+      title: { en: 'Child 0' },
+    });
+    const mover = await create({ slug: 'e2e-budget-mover', title: { en: 'Mover' } });
+
+    // The rest of the destination's children are written straight to
+    // Firestore, from the document the route just wrote so the shape is
+    // exactly what the repository reads back. The branch under test is about
+    // how *many* children the destination has, and MAX_TRANSACTION_WRITES
+    // round trips through the route would buy nothing but minutes.
+    const collection = firestore.collection(COLLECTIONS.sections);
+    const template = (await collection.doc(seed.id).get()).data()!;
+    const filler: DocumentReference[] = [];
+    let batch = firestore.batch();
+    for (let index = 1; index < MAX_TRANSACTION_WRITES; index += 1) {
+      const ref = collection.doc();
+      filler.push(ref);
+      batch.set(ref, {
+        ...template,
+        slug: `e2e-budget-${index}`,
+        path: `${destination.path}/e2e-budget-${index}`,
+        sortOrder: index,
+      });
+      if (filler.length % 400 === 0) {
+        await batch.commit();
+        batch = firestore.batch();
+      }
+    }
+    await batch.commit();
+
+    try {
+      // Inserting at the front renumbers every one of the 500 children, so the
+      // commit would be 501 writes.
+      const refused = await moveTo(mover.id, {
+        parentId: destination.id,
+        sortOrder: 0,
+      }).expect(422);
+      expect((refused.body as ErrorBody).message).toContain(String(MAX_TRANSACTION_WRITES));
+      expect((await read(mover.id)).parentId).toBeNull();
+
+      // Appending renumbers nothing, so the same destination accepts the same
+      // move: the budget is spent on the rewrite, not on the destination.
+      await moveTo(mover.id, {
+        parentId: destination.id,
+        sortOrder: MAX_TRANSACTION_WRITES,
+      }).expect(200);
+      expect((await read(mover.id)).sortOrder).toBe(MAX_TRANSACTION_WRITES);
+
+      // With one more child than the cap the child list cannot even be read in
+      // full, and a renumbering computed from a truncated read would hand out
+      // numbers the unread children still hold — so it is refused outright,
+      // wherever the move would land.
+      const second = await create({ slug: 'e2e-budget-second', title: { en: 'Second' } });
+      const overflowed = await moveTo(second.id, {
+        parentId: destination.id,
+        sortOrder: MAX_TRANSACTION_WRITES + 1,
+      }).expect(422);
+      expect((overflowed.body as ErrorBody).message).toContain(String(MAX_TRANSACTION_WRITES));
+      expect((await read(second.id)).parentId).toBeNull();
+    } finally {
+      // The teardown purge reads one bounded page, and these would crowd out
+      // the documents every other test in this file left behind.
+      for (let from = 0; from < filler.length; from += 400) {
+        const cleanup = firestore.batch();
+        for (const ref of filler.slice(from, from + 400)) {
+          cleanup.delete(ref);
+        }
+        await cleanup.commit();
+      }
+    }
   });
 
   it('refuses every route to an anonymous caller and every mutation to a student', async () => {
