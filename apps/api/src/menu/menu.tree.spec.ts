@@ -101,6 +101,39 @@ describe('buildMenu labels', () => {
 
     expect(menu[0]?.label).toBe('Grammar points');
   });
+
+  it('falls back to a locale that has text when neither the requested nor the default does', () => {
+    // The API does not require a title in the default locale, so a section
+    // titled only in `uk` is a shape a reader can reach. A name in the wrong
+    // language identifies the destination; a blank one does not.
+    const menu = buildMenu([section('a', { title: { uk: 'Тільки' } })], 'en', 'en');
+
+    expect(menu[0]?.label).toBe('Тільки');
+  });
+
+  it('falls back through the menu label before the title when neither resolves', () => {
+    const menu = buildMenu(
+      [section('a', { title: { uk: 'Граматика' }, menuLabel: { uk: 'Грам' } })],
+      'en',
+      'en',
+    );
+
+    expect(menu[0]?.label).toBe('Грам');
+  });
+
+  it('leaves out a section with no text in any locale, and promotes its children', () => {
+    // Every locale blank is what the editor writes for tabs an author opened
+    // and left alone, so this is reachable without a hand-written document.
+    const nameless = section('nameless', { title: { en: '  ', uk: '' }, menuLabel: {} });
+    const menu = buildMenu(
+      [nameless, child('c', nameless, { title: { en: 'Child' } })],
+      'en',
+      'en',
+    );
+
+    expect(menu.map((entry) => entry.label)).toEqual(['Child']);
+    expect(menu[0]?.href).toBe('/nameless/c');
+  });
 });
 
 describe('buildMenu hrefs', () => {
@@ -140,6 +173,60 @@ describe('buildMenu hrefs', () => {
     const menu = buildMenu([section('a', { path: '/grammar-points' })], 'en', 'en');
 
     expect(menu[0]).toMatchObject({ href: '/grammar-points', openInNewTab: false });
+  });
+
+  it.each(['javascript:alert(1)', 'ftp://x.test', 'example.com'])(
+    'never publishes the stored href %j, which the write path refuses',
+    (href) => {
+      // ADR-012 reads such a document leniently so it stays repairable. Serving
+      // its href on an anonymous route is a different question, answered here.
+      const menu = buildMenu(
+        [section('a', { kind: 'link', link: { type: 'external', href, openInNewTab: false } })],
+        'en',
+        'en',
+      );
+
+      expect(menu).toEqual([]);
+      expect(JSON.stringify(menu)).not.toContain(href);
+    },
+  );
+
+  it('leaves an internal target that escapes the site out of the menu', () => {
+    // `//evil.com` is a protocol-relative URL wearing a path's clothes.
+    const menu = buildMenu(
+      [
+        section('a', {
+          kind: 'link',
+          link: { type: 'internal', href: '//evil.com', openInNewTab: false },
+        }),
+        section('b'),
+      ],
+      'en',
+      'en',
+    );
+
+    expect(menu.map((entry) => entry.id)).toEqual(['b']);
+  });
+
+  it('keeps the visible children of a section whose stored href is refused, in its slot', () => {
+    // The refused section is dropped the way a draft one is, so ADR-011's
+    // promotion applies and the branch under it is not lost with it.
+    const first = section('first', { sortOrder: 0 });
+    const bad = section('bad', {
+      sortOrder: 1,
+      kind: 'link',
+      link: { type: 'external', href: 'javascript:alert(1)', openInNewTab: false },
+    });
+    const last = section('last', { sortOrder: 2 });
+
+    const menu = buildMenu(
+      [first, child('k1', bad, { sortOrder: 0 }), bad, child('k2', bad, { sortOrder: 1 }), last],
+      'en',
+      'en',
+    );
+
+    expect(menu.map((entry) => entry.id)).toEqual(['first', 'k1', 'k2', 'last']);
+    expect(JSON.stringify(menu)).not.toContain('javascript:');
   });
 
   it('carries no audit and no status into the response (ADR-010)', () => {

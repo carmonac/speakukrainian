@@ -248,8 +248,15 @@ describe('menu (e2e)', () => {
     ]);
   });
 
-  it('serves the menu around a stored href the write path would refuse today', async () => {
+  it('serves the menu around a stored href the write path would refuse today, without publishing it', async () => {
+    const root = await create({
+      slug: 'e2e-menu-legacy-root',
+      title: { en: 'Legacy root' },
+      status: 'published',
+      showInMenu: true,
+    });
     const legacy = await create({
+      parentId: root.id,
       slug: 'e2e-menu-legacy',
       title: { en: 'Legacy' },
       kind: 'link',
@@ -257,14 +264,43 @@ describe('menu (e2e)', () => {
       status: 'published',
       showInMenu: true,
     });
+    await create({
+      parentId: legacy.id,
+      slug: 'e2e-menu-legacy-child',
+      title: { en: 'Legacy child' },
+      status: 'published',
+      showInMenu: true,
+    });
     // What `POST /api/sections` stored while `href` was only a non-empty string.
     await firestore
       .collection(COLLECTIONS.sections)
       .doc(legacy.id)
-      .update({ 'link.href': 'ftp://e2e-menu.legacy.test' });
+      .update({ 'link.href': 'javascript:alert(1)' });
 
-    // One such document must not take the entire public navigation down: the
-    // menu is anonymous, sitewide, and unrelated to the section that is broken.
-    expect(await findByHref('ftp://e2e-menu.legacy.test')).toBeDefined();
+    const rootEntry = flatten(await readMenu()).find((entry) => entry.id === root.id);
+
+    // One such document must not take the entire public navigation down — the
+    // menu is anonymous, sitewide, and unrelated to the section that is broken —
+    // and it must not be published either: reading leniently keeps the document
+    // repairable, it does not make its href fit to serve (ADR-012).
+    expect(rootEntry).toBeDefined();
+    expect(await findByHref('javascript:alert(1)')).toBeUndefined();
+    // ADR-011's promotion, so dropping the entry does not take its branch too.
+    expect(rootEntry?.children.map((entry) => entry.href)).toEqual([
+      '/e2e-menu-legacy-root/e2e-menu-legacy/e2e-menu-legacy-child',
+    ]);
+  });
+
+  it('labels a section titled in no locale the reader asked for with the text it does have', async () => {
+    // The API does not require a title in the default locale — only the admin
+    // form does — so this is a shape an anonymous reader can reach.
+    await create({
+      slug: 'e2e-menu-uk-only',
+      title: { uk: 'Тільки' },
+      status: 'published',
+      showInMenu: true,
+    });
+
+    expect((await findByHref('/e2e-menu-uk-only', '?locale=en'))?.label).toBe('Тільки');
   });
 });
