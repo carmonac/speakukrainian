@@ -123,8 +123,15 @@ export type CreateSectionInput = z.infer<typeof createSectionSchema>;
 /**
  * Body of `PATCH /api/sections/:id`: every key optional, none defaulted, so a
  * request that carries one field changes exactly that field.
+ *
+ * `image` also accepts `null`, meaning "clear it". Every other field is merely
+ * optional, and an omitted field is left alone — so without this there would be
+ * no way to remove a section's image once one had been set.
  */
-export const updateSectionSchema = z.object(editableSectionFields).partial();
+export const updateSectionSchema = z
+  .object(editableSectionFields)
+  .partial()
+  .extend({ image: assetRefSchema.nullable().optional() });
 export type UpdateSectionInput = z.infer<typeof updateSectionSchema>;
 
 /** Moving a section re-parents it and repositions it among its new siblings. */

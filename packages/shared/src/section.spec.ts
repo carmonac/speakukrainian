@@ -111,6 +111,16 @@ describe('createSectionSchema', () => {
 
     expect(result.sortOrder).toBeUndefined();
   });
+
+  it('refuses a null image, because a new section has nothing to clear', () => {
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening' },
+      image: null,
+    });
+
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('updateSectionSchema', () => {
@@ -158,6 +168,17 @@ describe('updateSectionSchema', () => {
     expect(updateSectionSchema.parse({ parentId: 'AbC012defGHI345jklMN', slug: 'x' })).toEqual({
       slug: 'x',
     });
+  });
+
+  it('accepts null for image, which is how a stored image is cleared', () => {
+    // An omitted field means "leave it alone", so removing an image needs a way
+    // to say "clear it" that is not simply the absence of the key.
+    expect(updateSectionSchema.parse({ image: null })).toEqual({ image: null });
+  });
+
+  it('still refuses null for a field that has no clearing meaning', () => {
+    expect(updateSectionSchema.safeParse({ title: null }).success).toBe(false);
+    expect(updateSectionSchema.safeParse({ slug: null }).success).toBe(false);
   });
 
   it('rejects an invalid value for a field it does carry', () => {

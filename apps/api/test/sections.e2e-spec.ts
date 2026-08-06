@@ -228,6 +228,30 @@ describe('sections (e2e)', () => {
     expect(patched.path).toBe('/e2e-keep-link-renamed');
   });
 
+  it('clears an image when the patch sends null, and leaves it alone when the patch omits it', async () => {
+    const image = {
+      path: 'images/2026/01/hero.webp',
+      url: 'https://cdn.test/images/2026/01/hero.webp',
+      contentType: 'image/webp',
+      sizeBytes: 4096,
+      alt: { en: 'A hero' },
+    };
+    const created = await create({ slug: 'e2e-image', title: { en: 'Image' }, image });
+    expect(created.image).toEqual(image);
+
+    await patch(created.id, { title: { en: 'Image renamed' } }).expect(200);
+
+    // An omitted key means "leave it alone", so a title fix must not strip the
+    // image the author uploaded.
+    expect((await read(created.id)).image).toEqual(image);
+
+    await patch(created.id, { image: null }).expect(200);
+
+    // Read it back: the criterion is that Firestore no longer holds the field,
+    // not that the response happened to omit it.
+    expect((await read(created.id)).image).toBeUndefined();
+  });
+
   it('leaves every document at its original path when a rewrite fails mid-way', async () => {
     const root = await create({ slug: 'e2e-atomic-root', title: { en: 'Root' } });
     const child = await create({
