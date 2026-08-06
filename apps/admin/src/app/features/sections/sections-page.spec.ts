@@ -491,7 +491,7 @@ describe('SectionsPage drag and drop', () => {
     const { calls } = setup([tree]);
     const harness = await open();
 
-    page(harness).nest(rowOf(tree, 'listening'), dropped(rowOf(tree, 'tenses'), 0));
+    page(harness).nest(rowOf(tree, 'listening'), rowOf(tree, 'tenses').section);
     await harness.fixture.whenStable();
     harness.detectChanges();
 
@@ -517,7 +517,7 @@ describe('SectionsPage drag and drop', () => {
     harness.detectChanges();
     expect(titles(harness)).toEqual(['Grammar', 'Tenses', 'Listening']);
 
-    page(harness).nest(rowOf(tree, 'tenses'), dropped(rowOf(tree, 'listening'), 0));
+    page(harness).nest(rowOf(tree, 'tenses'), rowOf(tree, 'listening').section);
     await harness.fixture.whenStable();
     harness.detectChanges();
 
@@ -531,7 +531,7 @@ describe('SectionsPage drag and drop', () => {
     const before = { titles: titles(harness), paths: paths(harness) };
 
     moveFails.set(new HttpErrorResponse({ status: 422, statusText: 'Unprocessable Entity' }));
-    page(harness).nest(rowOf(tree, 'listening'), dropped(rowOf(tree, 'tenses'), 0));
+    page(harness).nest(rowOf(tree, 'listening'), rowOf(tree, 'tenses').section);
     await harness.fixture.whenStable();
     harness.detectChanges();
 
@@ -540,16 +540,22 @@ describe('SectionsPage drag and drop', () => {
     expect(calls.map((call) => call.method)).toEqual(['tree', 'move']);
   });
 
-  it('refuses a nest target inside the dragged section own subtree', async () => {
+  it('offers a nest target only where the dragged section may legally land', async () => {
     const tree = seeded();
     setup([tree]);
     const harness = await open();
 
     // "Tenses" is deep enough to hold either subtree, so the only thing that
-    // refuses "Grammar" here is that "Tenses" is inside it.
-    const predicate = page(harness).nestPredicate(rowOf(tree, 'tenses'));
-    expect(predicate(dragging(rowOf(tree, 'grammar')))).toBe(false);
-    expect(predicate(dragging(rowOf(tree, 'listening')))).toBe(true);
+    // refuses "Grammar" there is that "Tenses" is inside it.
+    page(harness).beginDrag(rowOf(tree, 'grammar'));
+    expect([...page(harness).nestable()]).toEqual(['listening']);
+
+    page(harness).endDrag();
+    page(harness).beginDrag(rowOf(tree, 'listening'));
+    expect([...page(harness).nestable()]).toEqual(['grammar', 'tenses', 'present']);
+
+    page(harness).endDrag();
+    expect([...page(harness).nestable()]).toEqual([]);
   });
 
   it('keeps the drag placeholder inside the dragged row sibling band', async () => {
@@ -579,14 +585,18 @@ interface Point {
 }
 
 /**
- * The rectangles the tree would have on screen, and an `elementFromPoint` that
- * answers from the same ones — rows stacked `ROW_HEIGHT` apart across a
- * `ROW_WIDTH` row, a drag handle at the left of each and a nest column at the
- * right.
+ * The rectangles the tree would have on screen — rows stacked `ROW_HEIGHT`
+ * apart across a `ROW_WIDTH` row, a drag handle at the left of each and a nest
+ * column at the right — plus an `elementFromPoint` that answers from the same
+ * ones. jsdom measures nothing: every element reports a zero-sized rect and
+ * `document.elementFromPoint` does not exist at all, and both the component and
+ * CDK read the layout on every pointer move.
  *
- * Both are needed because jsdom measures nothing: every element reports a
- * zero-sized rect and `document.elementFromPoint` does not exist at all, and
- * CDK reads both on every pointer move.
+ * The rects are **live**, not fixed: each one is the row's resting rectangle
+ * shifted by whatever `translate3d` is on the element or an ancestor at the
+ * moment it is read. That is the whole reason a sibling was unreachable — CDK's
+ * sort translates the rows a drag passes — so a layout that ignored transforms
+ * would model away the very thing under test.
  */
 function layOut(harness: RouterTestingHarness): {
   handle(index: number): Point;
@@ -594,13 +604,19 @@ function layOut(harness: RouterTestingHarness): {
   restore(): void;
 } {
   const rects = new Map<Element, DOMRect>();
+  const slots = new Map<string, DOMRect>();
   const list = requireIn<HTMLElement>(root(harness), 'ul.sections-tree');
   const items = rows(harness);
 
   rects.set(list, new DOMRect(0, 0, ROW_WIDTH, items.length * ROW_HEIGHT));
   items.forEach((item, index) => {
     const top = index * ROW_HEIGHT;
-    rects.set(item, new DOMRect(0, top, ROW_WIDTH, ROW_HEIGHT));
+    const rect = new DOMRect(0, top, ROW_WIDTH, ROW_HEIGHT);
+    rects.set(item, rect);
+    const id = item.getAttribute('data-section-id');
+    if (id !== null) {
+      slots.set(id, rect);
+    }
     rects.set(requireIn(item, '.sections-tree__handle'), new DOMRect(8, top + 8, 24, 24));
     rects.set(
       requireIn(item, '.sections-tree__nest'),
@@ -608,17 +624,56 @@ function layOut(harness: RouterTestingHarness): {
     );
   });
 
+  const resting = (element: Element): DOMRect | null => {
+    const own = rects.get(element);
+    if (own !== undefined) {
+      return own;
+    }
+    // CDK stands a clone of the dragged row in its slot, so the clone measures
+    // as the row it replaced. Without this the sort has no height to work with
+    // and lays nothing out.
+    if (element.classList.contains('cdk-drag-placeholder')) {
+      const id = element.getAttribute('data-section-id');
+      return id === null ? null : (slots.get(id) ?? null);
+    }
+    return null;
+  };
+
+  const shiftedBy = (element: Element): number => {
+    let total = 0;
+    let node: Element | null = element;
+    while (node !== null) {
+      const transform = node instanceof HTMLElement ? node.style.transform : '';
+      const shift = /translate3d\(\s*[^,]+,\s*(-?[\d.]+)px/.exec(transform)?.[1];
+      if (shift !== undefined) {
+        total += Number(shift);
+      }
+      node = node.parentElement;
+    }
+    return total;
+  };
+
+  const liveRect = (element: Element): DOMRect => {
+    const base = resting(element);
+    if (base === null) {
+      return new DOMRect(0, 0, 0, 0);
+    }
+    const shift = shiftedBy(element);
+    return shift === 0 ? base : new DOMRect(base.x, base.y + shift, base.width, base.height);
+  };
+
   const measure = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
-    return rects.get(this) ?? new DOMRect(0, 0, 0, 0);
+    return liveRect(this);
   };
 
   // The innermost laid-out element covering the point, which is what a browser
-  // returns and what CDK checks a candidate drop list against.
+  // returns.
   document.elementFromPoint = (x: number, y: number): Element | null => {
     let hit: Element | null = null;
     let smallest = Number.POSITIVE_INFINITY;
-    for (const [element, rect] of rects) {
+    for (const element of rects.keys()) {
+      const rect = liveRect(element);
       const area = rect.width * rect.height;
       if (x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom && area < smallest) {
         hit = element;
@@ -639,15 +694,16 @@ function layOut(harness: RouterTestingHarness): {
 }
 
 /**
- * A whole press-move-release gesture, walked in steps the way a hand moves.
- * `beforeRelease` runs with the pointer held at `to`, which is the only moment
- * the mid-drag state exists.
+ * A whole press-move-release gesture, walked in steps the way a hand moves and
+ * pausing at each stop it is given. `atStop` runs with the pointer held there,
+ * which is the only moment the mid-drag state exists; the release happens at
+ * the last one.
  */
 async function dragPointer(
   harness: RouterTestingHarness,
   from: Point,
-  to: Point,
-  beforeRelease: () => void = () => {},
+  through: Point | readonly Point[],
+  atStop: (stop: number) => void = () => {},
   steps = 8,
 ): Promise<void> {
   const at = (type: string, point: Point): MouseEvent =>
@@ -668,41 +724,46 @@ async function dragPointer(
   }
   handle.dispatchEvent(at('mousedown', from));
 
-  for (let step = 1; step <= steps; step += 1) {
-    document.dispatchEvent(
-      at('mousemove', {
-        x: from.x + ((to.x - from.x) * step) / steps,
-        y: from.y + ((to.y - from.y) * step) / steps,
-      }),
-    );
-    harness.detectChanges();
-  }
+  const stops = Array.isArray(through) ? (through as readonly Point[]) : [through as Point];
+  let previous = from;
+  stops.forEach((stop, index) => {
+    for (let step = 1; step <= steps; step += 1) {
+      document.dispatchEvent(
+        at('mousemove', {
+          x: previous.x + ((stop.x - previous.x) * step) / steps,
+          y: previous.y + ((stop.y - previous.y) * step) / steps,
+        }),
+      );
+      harness.detectChanges();
+    }
+    previous = stop;
+    atStop(index);
+  });
 
-  beforeRelease();
-
-  document.dispatchEvent(at('mouseup', to));
+  document.dispatchEvent(at('mouseup', previous));
   await harness.fixture.whenStable();
   harness.detectChanges();
 }
 
 /**
- * The nest columns of the tree, found through their directive rather than by
- * selector: mid-drag the DOM also holds CDK's clones of the dragged row, which
- * match every class it does and carry no directive at all.
+ * Every nest column the tree renders, in row order. Found through the hint
+ * directive on it rather than by selector: mid-drag the DOM also holds CDK's
+ * clone of the dragged row, which matches every class the row does, is never
+ * updated again, and carries no directive at all.
  */
 function nestColumns(harness: RouterTestingHarness): DebugElement[] {
   return harness.fixture.debugElement
-    .queryAll(By.directive(CdkDropList))
+    .queryAll(By.directive(MatTooltip))
     .filter((found) =>
       (found.nativeElement as HTMLElement).classList.contains('sections-tree__nest'),
     );
 }
 
-/** The rows whose nest column CDK has accepted as a target for this drag. */
-function receivingNests(harness: RouterTestingHarness): string[] {
+/** The sections whose nest column carries `marker` right now. */
+function nestsMarked(harness: RouterTestingHarness, marker: string): string[] {
   return nestColumns(harness)
     .map((found) => found.nativeElement as HTMLElement)
-    .filter((element) => element.classList.contains('cdk-drop-list-receiving'))
+    .filter((element) => element.classList.contains(marker))
     .map(
       (element) =>
         element
@@ -712,16 +773,36 @@ function receivingNests(harness: RouterTestingHarness): string[] {
     );
 }
 
+/** A parent with three children, which is where re-parenting used to fall over. */
+const siblings = (): SectionTreeNode[] => {
+  const child = (id: string, title: string, sortOrder: number): SectionTreeNode =>
+    node(id, {
+      depth: 1,
+      parentId: 'beta',
+      ancestorIds: ['beta'],
+      title: { en: title },
+      path: `/beta/${id}`,
+      sortOrder,
+    });
+
+  return [
+    node('alpha', { title: { en: 'Alpha' } }),
+    node('beta', { title: { en: 'Beta' } }, [
+      child('beta-one', 'Beta One', 0),
+      child('beta-two', 'Beta Two', 1),
+      child('beta-three', 'Beta Three', 2),
+    ]),
+    node('gamma', { title: { en: 'Gamma' } }),
+  ];
+};
+
 /**
  * These drive CDK itself over the layout above, which is the half of the
- * gesture the handler specs cannot reach: CDK looks for a drop list to hand the
- * drag to at the *constrained* pointer position, and both an axis lock and a
- * nest column that never joined the tree's siblings make that search silently
- * come up empty while every handler stays correct.
- *
- * What the layout cannot model is the page reflowing under the pointer, so a
- * row that moves as the drag enters a column is still only findable in a real
- * browser.
+ * gesture the handler specs cannot reach. Both ways the re-parent gesture has
+ * failed live here: an axis lock froze the x the drop target is looked for at,
+ * and CDK's own sort slid a sibling out from under the pointer that was aiming
+ * at it. The layout models the second one, because it re-measures every row
+ * through the transforms the sort writes.
  */
 describe('SectionsPage drag and drop through CDK', () => {
   let laidOut: { restore(): void } | null = null;
@@ -757,6 +838,69 @@ describe('SectionsPage drag and drop through CDK', () => {
     ]);
   });
 
+  it('re-parents onto the sibling below the dragged row', async () => {
+    const { calls } = setup([siblings()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    // Rows: Alpha(0) Beta(1) Beta One(2) Beta Two(3) Beta Three(4) Gamma(5).
+    // The pointer crosses "Beta Three"'s own row on its way to the column, so
+    // the sort has already slid "Beta Three" up a row by the time it arrives —
+    // the drop used to land on the tree instead and quietly reorder.
+    await dragPointer(harness, layout.handle(3), layout.nest(4));
+
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['beta-two', { parentId: 'beta-three', sortOrder: 0 }] },
+    ]);
+    expect(titles(harness)).toEqual([
+      'Alpha',
+      'Beta',
+      'Beta One',
+      'Beta Three',
+      'Beta Two',
+      'Gamma',
+    ]);
+    expect(paths(harness)).toContain('/beta/beta-three/beta-two');
+  });
+
+  it('re-parents onto the sibling above the dragged row', async () => {
+    const { calls } = setup([siblings()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    await dragPointer(harness, layout.handle(3), layout.nest(2));
+
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['beta-two', { parentId: 'beta-one', sortOrder: 0 }] },
+    ]);
+    expect(paths(harness)).toContain('/beta/beta-one/beta-two');
+  });
+
+  it('holds the tree still while the pointer hunts along the nest strip', async () => {
+    const { calls } = setup([siblings()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    // Into the strip well below the dragged row, then back up it two rows at a
+    // time. Nothing may move underneath: the highlighted row has to be the row
+    // the pointer is level with in the tree's resting layout, every time.
+    const aimedAt: string[][] = [];
+    await dragPointer(
+      harness,
+      layout.handle(3),
+      [layout.nest(5), layout.nest(4), layout.nest(2)],
+      () => aimedAt.push(nestsMarked(harness, 'is-target')),
+    );
+
+    expect(aimedAt).toEqual([['Gamma'], ['Beta Three'], ['Beta One']]);
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['beta-two', { parentId: 'beta-one', sortOrder: 0 }] },
+    ]);
+  });
+
   it('refuses a nest column inside the dragged row own subtree', async () => {
     const { calls } = setup([seeded()]);
     const harness = await open();
@@ -767,13 +911,17 @@ describe('SectionsPage drag and drop through CDK', () => {
     // not offer themselves however precisely the pointer lands on one, and
     // "Grammar" must not offer itself either. "Listening" is the only target
     // outside the dragged subtree, and it does light up — which is what says
-    // the empty list above is the predicate refusing and not the drag failing.
+    // the empty list below is the tree refusing and not the drag failing.
     let offered: string[] = [];
+    let aimedAt: string[] = [];
     await dragPointer(harness, layout.handle(0), layout.nest(2), () => {
-      offered = receivingNests(harness);
+      offered = nestsMarked(harness, 'is-available');
+      aimedAt = nestsMarked(harness, 'is-target');
     });
 
     expect(offered).toEqual(['Listening']);
+    expect(aimedAt).toEqual([]);
+    // Not a reorder either: a release in the strip only ever re-parents.
     expect(calls.map((call) => call.method)).toEqual(['tree']);
     expect(paths(harness)).toEqual([
       '/grammar',
@@ -820,29 +968,21 @@ describe('SectionsPage drag and drop through CDK', () => {
     expect(hints()).toEqual([true, true, true, true]);
   });
 
-  it('connects the tree drop list to every row nest column', async () => {
+  it('keeps the tree as the only drop list, and leaves its axis unlocked', async () => {
     setup([seeded()]);
     const harness = await open();
 
-    const tree = harness.fixture.debugElement
-      .query(By.css('ul.sections-tree'))
-      .injector.get(CdkDropList);
-    const nests = nestColumns(harness).map((found) => found.injector.get(CdkDropList));
+    const lists = harness.fixture.debugElement.queryAll(By.directive(CdkDropList));
 
-    // A `cdkDropListGroup` cannot do this job: a `cdkDropList` shadows
-    // `CDK_DROP_LIST_GROUP` with `undefined` for its own subtree, so the nest
-    // columns would join no group and the tree would have nothing to hand a
-    // drag to — with no error anywhere.
-    expect(nests.map((nest) => nest.id)).toEqual([
-      'nest-grammar',
-      'nest-tenses',
-      'nest-present',
-      'nest-listening',
-    ]);
-    expect(tree.connectedTo).toEqual(nests.map((nest) => nest.id));
-    // An axis lock would freeze x at the drag handle in the position CDK
-    // searches for a sibling list at, and the nest columns sit at the far end
-    // of the row.
-    expect(tree.lockAxis).toBeNull();
+    // A `cdkDropList` per nest column is the arrangement this screen keeps
+    // being written with, and it cannot work: CDK measures a receiving list
+    // once, when the drag starts, so a row its own sort has since translated
+    // matches neither the rectangle it has left nor the one it now occupies.
+    // Every sibling of the dragged row is translated, so no sibling could ever
+    // take a drop. The columns are hit-tested against the live layout instead.
+    expect(lists.map((found) => (found.nativeElement as HTMLElement).tagName)).toEqual(['UL']);
+    // An axis lock would freeze x at the drag handle, and the strip the columns
+    // live in is at the far end of the row.
+    expect(lists[0]?.injector.get(CdkDropList).lockAxis).toBeNull();
   });
 });

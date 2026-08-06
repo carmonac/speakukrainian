@@ -6,10 +6,12 @@ import {
   canMoveInto,
   findNode,
   flattenTree,
+  isInNestStrip,
   isNoOpMove,
   isSiblingSlot,
   parentOptions,
   positionOptions,
+  rowBandAt,
   sectionTitle,
   siblingDropRange,
   siblingPositionAt,
@@ -315,6 +317,44 @@ describe('siblingPositionAt', () => {
     // b1 sits after a whole other parent subtree, so an index-based count
     // would report it as the third child of something.
     expect(siblingPositionAt(rows(), 'b1', 5)).toBe(0);
+  });
+});
+
+describe('isInNestStrip', () => {
+  const strip = { left: 1140, right: 1180 };
+
+  it('holds from the strip left edge up to but not including its right one', () => {
+    expect(isInNestStrip(strip, 1140)).toBe(true);
+    expect(isInNestStrip(strip, 1179)).toBe(true);
+    expect(isInNestStrip(strip, 1180)).toBe(false);
+    expect(isInNestStrip(strip, 1139)).toBe(false);
+  });
+
+  it('holds nowhere when the tree has no columns to measure', () => {
+    expect(isInNestStrip(null, 1160)).toBe(false);
+  });
+});
+
+describe('rowBandAt', () => {
+  // A whole row's height, not the box the icon is drawn in: the strip says
+  // where to aim horizontally and the band is what has to be hit.
+  const bands = [
+    { id: 'a', top: 0, bottom: 40 },
+    { id: 'b', top: 40, bottom: 80 },
+    { id: 'c', top: 80, bottom: 120 },
+  ];
+
+  it('answers with the row the pointer is level with', () => {
+    expect(rowBandAt(bands, 0)).toBe('a');
+    expect(rowBandAt(bands, 39)).toBe('a');
+    expect(rowBandAt(bands, 40)).toBe('b');
+    expect(rowBandAt(bands, 119)).toBe('c');
+  });
+
+  it('answers with nothing above the first row or below the last', () => {
+    expect(rowBandAt(bands, -1)).toBeNull();
+    expect(rowBandAt(bands, 120)).toBeNull();
+    expect(rowBandAt([], 20)).toBeNull();
   });
 });
 

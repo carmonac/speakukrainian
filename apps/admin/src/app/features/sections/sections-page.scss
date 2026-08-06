@@ -84,27 +84,19 @@
       pointer-events: auto;
     }
 
-    // Only a target the enter predicate accepted is shown at all:
-    // `cdk-drop-list-receiving` is CDK's own answer to that predicate, so an
-    // illegal target stays invisible and the dragged row's own subtree never
-    // offers itself.
-    &.cdk-drop-list-receiving {
+    // Only a section the dragged one may legally become a child of is shown at
+    // all, so an illegal target stays invisible and the dragged row's own
+    // subtree never offers itself.
+    &.is-available {
       opacity: 0.6;
       border-color: var(--mat-sys-outline-variant, #cac4d0);
     }
 
-    // The one the pointer is inside: CDK starts "dragging" a receiving list the
-    // moment the item enters it, and stops it receiving at the same instant.
-    &.cdk-drop-list-dragging {
+    // The one a release would land in.
+    &.is-target {
       opacity: 1;
       border-color: var(--mat-sys-primary, #6750a4);
       background: var(--mat-sys-primary-container, #eaddff);
-    }
-
-    // The dragged row is parked here while the pointer is over the column, and
-    // a whole row inside a 40px box would tear the target's layout apart.
-    .cdk-drag-placeholder {
-      display: none;
     }
   }
 
@@ -136,6 +128,14 @@
     align-items: center;
   }
 
+  // In the strip a release re-parents and never reorders, so the slot the
+  // placeholder is holding is not where the row is going. Faded rather than
+  // taken out of the flow, which would slide every row below it out from under
+  // the pointer that is hunting along them.
+  &.is-nesting .cdk-drag-placeholder {
+    opacity: 0;
+  }
+
   // Narrow on purpose: what the pointer is over has to stay readable, and the
   // nest columns sit at the far end of a row as wide as the tree.
   &__preview {
@@ -158,8 +158,6 @@
   list-style: none;
 }
 
-.cdk-drag-placeholder,
-// The slot CDK holds open in the tree while the row is over a nest column.
-.cdk-drag-anchor {
+.cdk-drag-placeholder {
   opacity: 0.3;
 }

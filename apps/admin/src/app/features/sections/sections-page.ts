@@ -1,4 +1,13 @@
-import { Component, computed, inject, signal, type OnInit } from '@angular/core';
+import {
+  Component,
+  computed,
+  inject,
+  signal,
+  viewChild,
+  type ElementRef,
+  type OnDestroy,
+  type OnInit,
+} from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { DragDropModule, type CdkDrag, type CdkDragDrop } from '@angular/cdk/drag-drop';
 import { MatButtonModule } from '@angular/material/button';
@@ -23,10 +32,14 @@ import {
   canMoveInto,
   findNode,
   flattenTree,
+  isInNestStrip,
   isNoOpMove,
   isSiblingSlot,
+  rowBandAt,
   sectionTitle,
   siblingPositionAt,
+  type NestStrip,
+  type RowBand,
   type SectionRow,
 } from './sections.model';
 import { SectionsApi } from './sections.api';
@@ -44,7 +57,7 @@ import { SectionsApi } from './sections.api';
   templateUrl: './sections-page.html',
   styleUrl: './sections-page.scss',
 })
-export class SectionsPage implements OnInit {
+export class SectionsPage implements OnInit, OnDestroy {
   private readonly api = inject(SectionsApi);
   private readonly dialog = inject(MatDialog);
   private readonly notifications = inject(NotificationService);
@@ -63,15 +76,21 @@ export class SectionsPage implements OnInit {
   protected readonly dragging = signal<string | null>(null);
 
   /**
-   * The nest columns the tree hands a drag to, named and connected by id.
-   *
-   * Not a `cdkDropListGroup`: a `cdkDropList` provides `CDK_DROP_LIST_GROUP:
-   * undefined` to its own subtree, so a nest column — which lives inside a row
-   * of this very list — resolves no group, joins nothing, and leaves the tree
-   * with no sibling to hand the drag to. That failure is silent, which is why
-   * `sections-page.spec.ts` pins the connection.
+   * Whether the pointer is in the nest strip, which is the gesture saying "this
+   * drop re-parents, it does not reorder".
    */
-  protected readonly nestListIds = computed(() => this.rows().map((row) => this.nestListId(row)));
+  protected readonly nesting = signal(false);
+
+  /** The row a release would nest into right now, or `null` for none. */
+  protected readonly nestTargetId = signal<string | null>(null);
+
+  private readonly treeList = viewChild<ElementRef<HTMLElement>>('treeList');
+
+  /** Measured once per drag: only the vertical layout moves while one runs. */
+  private strip: NestStrip | null = null;
+  /** The row translations CDK's sort applied, while they are suspended. */
+  private suspended: Map<HTMLElement, string> | null = null;
+  private stopTrackingPointer: (() => void) | null = null;
 
   protected readonly maxDepthMessage = MAX_DEPTH_MESSAGE;
   protected readonly deleteWithChildrenMessage = DELETE_WITH_CHILDREN_MESSAGE;
@@ -91,6 +110,11 @@ export class SectionsPage implements OnInit {
     void this.load();
   }
 
+  /** The pointer listeners outlive the view otherwise: they are on `window`. */
+  ngOnDestroy(): void {
+    this.stopTrackingPointer?.();
+  }
+
   protected title(row: SectionRow): string {
     return sectionTitle(row.section, this.defaultCode());
   }
@@ -105,37 +129,100 @@ export class SectionsPage implements OnInit {
     this.collapsed.set(next);
   }
 
-  /** The drop list id of a row's nest column, and the name the tree connects to. */
-  protected nestListId(row: SectionRow): string {
-    return `nest-${row.section.id}`;
-  }
-
   /** True for a row that travels with the drag: CDK moves only the dragged element. */
   protected travelsWithDrag(row: SectionRow): boolean {
     const id = this.dragging();
     return id !== null && row.section.ancestorIds.includes(id);
   }
 
-  // The four members below are the drop decisions, and they are public rather
-  // than protected because a spec calls them: jsdom gives every element a zero
-  // rect, so CDK's own sorting maths is meaningless there and a synthesised
-  // pointer sequence would assert nothing. They are driven directly instead.
+  // The members below are the drag's own decisions, and they are public rather
+  // than protected because a spec calls them: some are driven directly and the
+  // rest are read back after a synthesised gesture.
+
+  /**
+   * The rows the dragged section may legally become a child of, which is what
+   * the nest columns light up from. Empty while nothing is being dragged.
+   */
+  readonly nestable = computed<ReadonlySet<string>>(() => {
+    const id = this.dragging();
+    const moving = id === null ? null : findNode(this.tree(), id);
+    if (moving === null) {
+      return new Set<string>();
+    }
+    return new Set(
+      this.rows()
+        .filter((row) => canMoveInto(moving, row.section))
+        .map((row) => row.section.id),
+    );
+  });
 
   /**
    * Where the drag placeholder may go: a slot among the dragged row's own
    * siblings and nowhere else, so a plain vertical drag is always a reorder and
-   * never an accidental re-parent.
+   * never an accidental re-parent — and nowhere at all while the pointer is in
+   * the nest strip, where a release re-parents instead.
    */
   readonly sortPredicate = (index: number, drag: CdkDrag<SectionRow>): boolean =>
-    isSiblingSlot(this.rows(), drag.data.section.id, index);
+    !this.nesting() && isSiblingSlot(this.rows(), drag.data.section.id, index);
 
   /**
-   * Whether the dragged section may be dropped into `target`'s nest column.
-   * Refuses while a move is in flight, so a second drop cannot race the first
-   * one's rollback.
+   * Starts following the pointer for the whole gesture.
+   *
+   * On `window` and in the capture phase deliberately: CDK listens on
+   * `document`, also capturing, and asks `sortPredicate` from inside that
+   * handler. A capture listener one node higher is the only placement that is
+   * guaranteed to have read the new pointer position before the sort decides
+   * what to do with it.
    */
-  nestPredicate(target: SectionRow): (drag: CdkDrag<SectionRow>) => boolean {
-    return (drag) => !this.busy() && canMoveInto(drag.data.section, target.section);
+  beginDrag(row: SectionRow): void {
+    this.dragging.set(row.section.id);
+    this.nesting.set(false);
+    this.nestTargetId.set(null);
+    this.strip = this.measureNestStrip();
+
+    const options: AddEventListenerOptions = { capture: true, passive: true };
+    window.addEventListener('mousemove', this.trackPointer, options);
+    window.addEventListener('touchmove', this.trackPointer, options);
+    this.stopTrackingPointer = () => {
+      window.removeEventListener('mousemove', this.trackPointer, options);
+      window.removeEventListener('touchmove', this.trackPointer, options);
+    };
+  }
+
+  /**
+   * Ends the gesture's *visual* state only. What the drop decides is left
+   * standing, because CDK raises `ended` before it raises the drop.
+   */
+  endDrag(): void {
+    this.stopTrackingPointer?.();
+    this.stopTrackingPointer = null;
+    this.resumeSort();
+    this.strip = null;
+    this.dragging.set(null);
+  }
+
+  /**
+   * The one thing a release can mean, decided by where the pointer was: in the
+   * nest strip it re-parents onto the highlighted row and does nothing at all
+   * when no row is highlighted, and anywhere else it reorders to the slot the
+   * placeholder was holding. Never both, and never a reorder the strip did not
+   * show.
+   */
+  drop(event: CdkDragDrop<SectionRow[]>): void {
+    const targetId = this.nestTargetId();
+    const wasNesting = this.nesting();
+    this.nesting.set(false);
+    this.nestTargetId.set(null);
+
+    if (wasNesting) {
+      const target = this.rows().find((row) => row.section.id === targetId);
+      if (target !== undefined) {
+        this.nest(target, event.item.data.section);
+      }
+      return;
+    }
+
+    this.reorder(event);
   }
 
   /** A vertical drag: same parent, new position among its siblings. */
@@ -145,15 +232,121 @@ export class SectionsPage implements OnInit {
     void this.move(moving.id, moving.parentId, position);
   }
 
-  /** A drop on a row's nest column: the dragged section becomes its last child. */
-  nest(target: SectionRow, event: CdkDragDrop<SectionRow>): void {
-    const moving = event.item.data.section;
+  /** A release on a row's nest column: the dragged section becomes its last child. */
+  nest(target: SectionRow, moving: SectionTreeNode): void {
     // Unfold the target first, or the row lands somewhere the tree does not show.
     const next = new Set(this.collapsed());
     next.delete(target.section.id);
     this.collapsed.set(next);
 
     void this.move(moving.id, target.section.id, target.section.children.length);
+  }
+
+  /**
+   * Where a release would land, recomputed from the live layout on every move.
+   *
+   * Hit-tested here rather than by giving each row its own `cdkDropList`: CDK
+   * caches a receiving list's rectangle once, when the drag starts, and a row
+   * that its own sort has since translated is then in two places at once — the
+   * cached rectangle it no longer occupies and the one it does. A sibling of the
+   * dragged row is always translated, so it could never take a drop.
+   */
+  private readonly trackPointer = (event: MouseEvent | TouchEvent): void => {
+    const point = 'touches' in event ? event.touches[0] : event;
+    if (point === undefined) {
+      return;
+    }
+
+    if (!isInNestStrip(this.strip, point.clientX)) {
+      this.resumeSort();
+      this.nesting.set(false);
+      this.nestTargetId.set(null);
+      return;
+    }
+
+    this.suspendSort();
+    this.nesting.set(true);
+    const id = rowBandAt(this.rowBands(), point.clientY);
+    this.nestTargetId.set(id !== null && this.nestable().has(id) ? id : null);
+  };
+
+  /** The strip is where the nest columns are, taken from the columns themselves. */
+  private measureNestStrip(): NestStrip | null {
+    const list = this.treeList()?.nativeElement;
+    if (list === undefined) {
+      return null;
+    }
+
+    let left = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    for (const column of list.querySelectorAll<HTMLElement>('.sections-tree__nest')) {
+      const rect = column.getBoundingClientRect();
+      if (rect.width === 0) {
+        continue;
+      }
+      left = Math.min(left, rect.left);
+      right = Math.max(right, rect.right);
+    }
+    return right > left ? { left, right } : null;
+  }
+
+  private rowBands(): RowBand[] {
+    const list = this.treeList()?.nativeElement;
+    if (list === undefined) {
+      return [];
+    }
+
+    const bands: RowBand[] = [];
+    for (const item of list.querySelectorAll<HTMLElement>('li[data-section-id]')) {
+      // The dragged row itself is parked outside the list for the duration and
+      // a clone of it holds its slot. Neither is a target for its own drag.
+      if (item.classList.contains('cdk-drag-placeholder')) {
+        continue;
+      }
+      const id = item.getAttribute('data-section-id');
+      if (id === null) {
+        continue;
+      }
+      const rect = item.getBoundingClientRect();
+      bands.push({ id, top: rect.top, bottom: rect.bottom });
+    }
+    return bands;
+  }
+
+  /**
+   * Puts the tree back in its resting layout for as long as the pointer is in
+   * the strip.
+   *
+   * CDK sorts by translating the rows it is not dragging, and `sortPredicate`
+   * only stops it applying *new* translations. The ones already applied while
+   * the pointer travelled would leave every row a little away from where the
+   * tree draws it at rest, so the row under the pointer would not be the row the
+   * eye is aiming at. Restoring the offsets on the way out hands the sort back
+   * exactly the layout it had.
+   */
+  private suspendSort(): void {
+    const list = this.treeList()?.nativeElement;
+    if (list === undefined || this.suspended !== null) {
+      return;
+    }
+
+    const offsets = new Map<HTMLElement, string>();
+    for (const item of list.querySelectorAll<HTMLElement>('li')) {
+      offsets.set(item, item.style.transform);
+      item.style.transform = '';
+    }
+    this.suspended = offsets;
+  }
+
+  private resumeSort(): void {
+    const offsets = this.suspended;
+    if (offsets === null) {
+      return;
+    }
+    this.suspended = null;
+    for (const [item, transform] of offsets) {
+      item.style.transform = transform;
+    }
   }
 
   /**

@@ -195,6 +195,39 @@ export function isSiblingSlot(
   );
 }
 
+/** A rendered row's vertical span, in viewport coordinates. */
+export interface RowBand {
+  id: string;
+  top: number;
+  bottom: number;
+}
+
+/**
+ * The horizontal span the nest columns occupy. Every row shares it, and it does
+ * not move during a drag: the only thing a drag translates is vertical.
+ */
+export interface NestStrip {
+  left: number;
+  right: number;
+}
+
+/**
+ * Whether the pointer is over the column of nest targets rather than over the
+ * body of the tree — the horizontal half of "drop it on a row to nest inside".
+ */
+export function isInNestStrip(strip: NestStrip | null, x: number): boolean {
+  return strip !== null && x >= strip.left && x < strip.right;
+}
+
+/**
+ * The row the pointer is level with. A whole row's height, not the 40px box the
+ * icon is drawn in: the box says where the strip is, and the band is what has to
+ * be hit.
+ */
+export function rowBandAt(bands: readonly RowBand[], y: number): string | null {
+  return bands.find((band) => y >= band.top && y < band.bottom)?.id ?? null;
+}
+
 /**
  * The position among its siblings that dropping the moving row at flat index
  * `currentIndex` asks for — which is what a move body's `sortOrder` is.

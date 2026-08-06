@@ -19,40 +19,38 @@
   }
 
   <!--
-    Three things here are load-bearing, and each has a framework reason.
+    One drop list for the whole tree, and the re-parent half of the gesture is
+    hit-tested by the component rather than by a `cdkDropList` per row.
 
-    No `cdkDropListLockAxis`: CDK feeds the *constrained* pointer position to
-    its search for a sibling drop list, so locking the axis pins x at the drag
-    handle and no nest column is ever a candidate — the re-parent gesture stops
-    existing. `sortPredicate` is what keeps a vertical drag a reorder.
+    A nest column cannot be its own drop list. CDK caches a receiving list's
+    rectangle when the drag starts and never again, while its own sort keeps
+    translating the rows the drag passes; a translated row is then in two
+    places at once — the cached rectangle it has left and the one it now
+    occupies — and satisfies neither half of CDK's "is the pointer over this
+    list" test. Every sibling of the dragged row is translated, so no sibling
+    could ever take a drop, and the release fell through to a reorder instead.
 
-    The nest columns are wired by id rather than by a `cdkDropListGroup`
-    wrapper: a `cdkDropList` provides `CDK_DROP_LIST_GROUP: undefined` to its
-    own subtree, so a drop list nested inside this one silently never joins the
-    group and the tree ends up with no siblings to hand the drag to.
-
-    `cdkDropListHasAnchor` holds the dragged row's slot open while it sits in a
-    nest column. Without it the tree loses a row's height the instant the drag
-    enters a column, everything below slides up, the column moves out from
-    under the pointer, and the drag falls straight back out of it.
+    No `cdkDropListLockAxis` either: it pins x at the drag handle, and the
+    strip the columns live in is at the other end of the row.
   -->
   <ul
+    #treeList
     class="sections-tree"
     cdkDropList
-    cdkDropListHasAnchor
     [class.is-dragging]="dragging() !== null"
-    [cdkDropListConnectedTo]="nestListIds()"
+    [class.is-nesting]="nesting()"
     [cdkDropListSortPredicate]="sortPredicate"
-    (cdkDropListDropped)="reorder($event)"
+    (cdkDropListDropped)="drop($event)"
   >
     @for (row of rows(); track row.section.id) {
       <li
         class="sections-tree__row"
         cdkDrag
+        [attr.data-section-id]="row.section.id"
         [cdkDragData]="row"
         [cdkDragDisabled]="busy()"
-        (cdkDragStarted)="dragging.set(row.section.id)"
-        (cdkDragEnded)="dragging.set(null)"
+        (cdkDragStarted)="beginDrag(row)"
+        (cdkDragEnded)="endDrag()"
         [class.is-saved]="row.section.id === savedId()"
         [class.is-moving]="travelsWithDrag(row)"
         [style.padding-inline-start.px]="row.depth * 24"
@@ -98,17 +96,14 @@
           >
         }
 
-        <!-- Its own drop list rather than the whole row: a row that swallowed
-             the pointer would leave nowhere to drop for a plain reorder. The
-             hint is disabled while nothing is being dragged, so hovering the
-             blank space where the column will be says nothing. -->
+        <!-- A column of its own rather than the whole row: a row that took the
+             drop everywhere would leave nowhere to drop for a plain reorder.
+             The hint is disabled while nothing is being dragged, so hovering
+             the blank space where the column will be says nothing. -->
         <span
           class="sections-tree__nest"
-          cdkDropList
-          [id]="nestListId(row)"
-          [cdkDropListData]="row"
-          [cdkDropListEnterPredicate]="nestPredicate(row)"
-          (cdkDropListDropped)="nest(row, $event)"
+          [class.is-available]="nestable().has(row.section.id)"
+          [class.is-target]="nestTargetId() === row.section.id"
           [matTooltip]="nestHint"
           [matTooltipDisabled]="dragging() === null"
         >
