@@ -21,7 +21,42 @@ export const h5pContentSchema = z.object({
 });
 export type H5pContent = z.infer<typeof h5pContentSchema>;
 
+/** Input to the H5P content index; `audit` is stamped by the repository. */
+export const createH5pContentSchema = h5pContentSchema.omit({ audit: true });
+export type CreateH5pContentInput = z.infer<typeof createH5pContentSchema>;
+
 export const MAX_H5P_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Uploaded packages are identified by extension, not content type: browsers
+ * report a `.h5p` as `application/zip`, `application/octet-stream` or nothing
+ * at all depending on the operating system, so the declared type cannot be the
+ * gate.
+ */
+export const H5P_PACKAGE_EXTENSION = '.h5p';
+
+/** "100 MB". The limit is a whole number of megabytes. */
+export function formatMaxH5pUploadSize(): string {
+  return `${MAX_H5P_UPLOAD_BYTES / (1024 * 1024)} MB`;
+}
+
+/**
+ * The admin pre-checks an upload in the browser and the API rejects it, so both
+ * sides have to describe the same rule — the same reason
+ * `uploadTooLargeMessage` lives here.
+ */
+export function h5pUploadTooLargeMessage(): string {
+  return `H5P packages must be under ${formatMaxH5pUploadSize()}.`;
+}
+
+export function notAnH5pPackageMessage(filename: string): string {
+  return `${filename} is not an H5P package. Upload a file with the ${H5P_PACKAGE_EXTENSION} extension.`;
+}
+
+/** Case-insensitive, because Windows hands over `PACKAGE.H5P`. */
+export function isH5pPackageFilename(filename: string): boolean {
+  return filename.toLowerCase().endsWith(H5P_PACKAGE_EXTENSION);
+}
 
 /** Result of uploading or saving H5P content through the admin panel. */
 export const h5pSaveResultSchema = z.object({
