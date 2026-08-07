@@ -1,9 +1,9 @@
 import { UseInterceptors, applyDecorators } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes } from '@nestjs/swagger';
-import { type MediaKind } from '@speakukrainian/shared';
+import { uploadTooLargeMessage, type MediaKind } from '@speakukrainian/shared';
+import { UploadLimitInterceptor } from '../common/upload-limit.interceptor.js';
 import { mediaUploadOptions } from './media.multer.js';
-import { UploadLimitInterceptor } from './media.upload-limit.interceptor.js';
 
 /** OpenAPI shape of the multipart body; the field name matches `ApiService.upload`. */
 const FILE_BODY = {
@@ -32,7 +32,7 @@ const FILE_BODY = {
 export function MediaUpload(kind: MediaKind) {
   return applyDecorators(
     UseInterceptors(
-      new UploadLimitInterceptor(kind),
+      new UploadLimitInterceptor(uploadTooLargeMessage(kind)),
       FileInterceptor('file', mediaUploadOptions(kind)),
     ),
     ApiConsumes('multipart/form-data'),

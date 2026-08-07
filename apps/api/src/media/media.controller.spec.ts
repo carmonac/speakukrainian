@@ -3,13 +3,13 @@ import { Readable } from 'node:stream';
 import { BadRequestException } from '@nestjs/common';
 import { INTERCEPTORS_METADATA } from '@nestjs/common/constants.js';
 import { describe, expect, it } from 'vitest';
-import { MEDIA_UPLOAD_RULES } from '@speakukrainian/shared';
+import { MEDIA_UPLOAD_RULES, uploadTooLargeMessage } from '@speakukrainian/shared';
 import type { AssetRef, MediaKind, UserRole } from '@speakukrainian/shared';
 import { IS_PUBLIC_KEY } from '../auth/public.decorator.js';
 import { ROLES_KEY } from '../auth/roles.decorator.js';
+import { UploadLimitInterceptor } from '../common/upload-limit.interceptor.js';
 import { MediaController } from './media.controller.js';
 import type { MediaService } from './media.service.js';
-import { UploadLimitInterceptor } from './media.upload-limit.interceptor.js';
 
 const storedAsset: AssetRef = {
   path: 'images/2026/03/2f7d1f1c-0b3a-4b2e-9d31-8b5f0a1c2d3e.png',
@@ -170,7 +170,7 @@ describe('MediaController route metadata', () => {
       const [limit, upload, ...rest] = interceptors(handler);
 
       expect(limit).toBeInstanceOf(UploadLimitInterceptor);
-      expect((limit as UploadLimitInterceptor).kind).toBe(kind);
+      expect((limit as UploadLimitInterceptor).message).toBe(uploadTooLargeMessage(kind));
       expect(multerOf(upload).limits).toEqual({
         fileSize: MEDIA_UPLOAD_RULES[kind].maxBytes,
         files: 1,

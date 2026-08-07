@@ -5,7 +5,6 @@ import {
   type NestInterceptor,
 } from '@nestjs/common';
 import { catchError, throwError, type Observable } from 'rxjs';
-import { uploadTooLargeMessage, type MediaKind } from '@speakukrainian/shared';
 
 /**
  * Replaces multer's bare `File too large` with the wording the admin shows for
@@ -17,14 +16,14 @@ import { uploadTooLargeMessage, type MediaKind } from '@speakukrainian/shared';
  * the handler runs, and the exception surfaces out of `FileInterceptor`.
  * Listing this interceptor before `FileInterceptor` puts it upstream, where
  * `next.handle()` carries that rejection — which is why routes install it
- * through `MediaUpload` rather than ordering it themselves.
+ * through an upload decorator rather than ordering it themselves.
  *
  * Constructed per route rather than injected — it has no dependencies beyond
- * the kind of the route it guards. `kind` is public so a test can read the
- * pairing back off the route's interceptor metadata.
+ * the message of the route it guards. `message` is public so a test can read
+ * the pairing back off the route's interceptor metadata.
  */
 export class UploadLimitInterceptor implements NestInterceptor {
-  constructor(public readonly kind: MediaKind) {}
+  constructor(public readonly message: string) {}
 
   intercept(_context: ExecutionContext, next: CallHandler): Observable<unknown> {
     return next
@@ -33,7 +32,7 @@ export class UploadLimitInterceptor implements NestInterceptor {
         catchError((error: unknown) =>
           throwError(() =>
             error instanceof PayloadTooLargeException
-              ? new PayloadTooLargeException(uploadTooLargeMessage(this.kind))
+              ? new PayloadTooLargeException(this.message)
               : error,
           ),
         ),
