@@ -472,6 +472,26 @@ describe('PageFormPage', () => {
     expect(root(harness).querySelector('.page-form__status')?.textContent?.trim()).toBe('draft');
   });
 
+  it('calls the kept date the last one once the page is a draft again', async () => {
+    // The API keeps `publishedAt` through an unpublish, so the date outlives the
+    // status. Left as "Published …" beside a `draft` chip it reads as a
+    // contradiction, and an author cannot tell which of the two to believe.
+    const live = page('page-7', { status: 'published', publishedAt: '2026-03-01T09:00:00.000Z' });
+    setup({ pages: [live] });
+    const harness = await open('/pages/page-7');
+
+    const publishedAt = (): string =>
+      root(harness).querySelector('.page-form__published-at')?.textContent?.trim() ?? '';
+    expect(publishedAt()).toMatch(/^Published /);
+
+    root(harness).querySelector<HTMLButtonElement>('.page-form__unpublish')?.click();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(root(harness).querySelector('.page-form__status')?.textContent?.trim()).toBe('draft');
+    expect(publishedAt()).toMatch(/^Last published /);
+  });
+
   it('refuses to publish while the form has unsaved edits', async () => {
     // Publish patches `status` alone, so the unsaved body would not be written.
     const { calls } = setup({ pages: [STORED] });
@@ -610,6 +630,21 @@ describe('PageFormPage', () => {
     expect(recorded.dialogs).toBe(0);
     expect(TestBed.inject(Router).url).toBe('/pages?sectionId=grammar');
     expect(recorded.successes).toEqual(['Page saved.']);
+  });
+
+  it('cancels back to the same filtered list a save returns to', async () => {
+    // Both ways out of the form lead to the list; only one of them keeping the
+    // section the author arrived with would leave them among every page there is.
+    setup({ pages: [STORED] });
+    const harness = await open('/pages/page-1');
+
+    const cancel = root(harness).querySelector<HTMLAnchorElement>('.page-form__actions a');
+    expect(cancel?.getAttribute('href')).toBe('/pages?sectionId=grammar');
+
+    cancel?.click();
+    await harness.fixture.whenStable();
+
+    expect(TestBed.inject(Router).url).toBe('/pages?sectionId=grammar');
   });
 
   it('does not prompt when the form was never touched', async () => {

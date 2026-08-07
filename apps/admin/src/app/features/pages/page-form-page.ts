@@ -188,6 +188,21 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
     () => `${this.sectionPath()}/${this.slugValue() || '…'}`,
   );
 
+  /**
+   * Both ways out of this form lead to the same list: Cancel and a save on the
+   * edit route. Leaving Cancel unfiltered would drop the section the author
+   * arrived with and land them among every page in the site.
+   */
+  protected readonly listQueryParams = computed<Record<string, string>>(() => {
+    const { section, page } = this.formData();
+    const sectionId = section?.id ?? page?.sectionId ?? null;
+    const params: Record<string, string> = {};
+    if (sectionId !== null) {
+      params['sectionId'] = sectionId;
+    }
+    return params;
+  });
+
   protected readonly status = computed(() => this.page()?.status ?? 'draft');
   protected readonly publishedAt = computed(() => this.page()?.publishedAt ?? null);
 

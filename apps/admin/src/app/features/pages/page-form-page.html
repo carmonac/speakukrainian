@@ -55,8 +55,14 @@
           <legend>Status</legend>
           <p class="page-form__status-line">
             <span class="page-form__status">{{ status() }}</span>
+            <!-- The API keeps `publishedAt` through an unpublish, so a bare
+                 "Published …" would sit next to a `draft` chip and read as a
+                 contradiction. The date is worth keeping; the wording follows
+                 the status. -->
             @if (publishedAt(); as published) {
-              <span class="page-form__published-at">Published {{ published | date: 'medium' }}</span>
+              <span class="page-form__published-at"
+                >{{ status() === 'published' ? 'Published' : 'Last published' }} {{ published | date: 'medium' }}</span
+              >
             }
           </p>
 
@@ -128,7 +134,7 @@
         </mat-form-field>
 
         <div class="page-form__actions">
-          <a matButton type="button" routerLink="/pages">Cancel</a>
+          <a matButton type="button" routerLink="/pages" [queryParams]="listQueryParams()">Cancel</a>
           <button matButton="filled" type="submit" [disabled]="form.invalid || saving() || !canSave()">Save</button>
         </div>
       </form>
