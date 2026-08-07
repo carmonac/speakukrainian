@@ -18,7 +18,11 @@ import type {
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { SectionsApi } from '../sections/sections.api';
-import { PICK_SECTION_FIRST, SECTION_CANNOT_HOLD_PAGES } from './page-messages';
+import {
+  ALL_SECTIONS_OPTION,
+  PICK_SECTION_FIRST,
+  SECTION_CANNOT_HOLD_PAGES,
+} from './page-messages';
 import { PagesPage } from './pages-page';
 import { pagesListResolver } from './pages-list.resolver';
 import { PagesApi } from './pages.api';
@@ -200,6 +204,11 @@ function tooltip(harness: RouterTestingHarness): string {
   return hint.injector.get(MatTooltip).message;
 }
 
+/** What the closed filter says it is set to. */
+function filterTrigger(harness: RouterTestingHarness): string {
+  return root(harness).querySelector('.pages__section-filter')?.textContent?.trim() ?? '';
+}
+
 /** Drives the filter the way a pointer would, so `selectionChange` really runs. */
 async function chooseSection(harness: RouterTestingHarness, label: string): Promise<void> {
   const trigger = root(harness).querySelector<HTMLElement>(
@@ -223,6 +232,25 @@ async function chooseSection(harness: RouterTestingHarness, label: string): Prom
   harness.detectChanges();
   await harness.fixture.whenStable();
   harness.detectChanges();
+}
+
+async function openNewPageMenu(harness: RouterTestingHarness): Promise<void> {
+  const trigger = root(harness).querySelector<HTMLButtonElement>('button.pages__new');
+  if (!trigger) {
+    throw new Error('Expected a New page trigger');
+  }
+  trigger.click();
+  harness.detectChanges();
+  await harness.fixture.whenStable();
+  harness.detectChanges();
+}
+
+/** The menu renders into an overlay, outside the component's own element. */
+function newPageItems(): { label: string; href: string }[] {
+  return Array.from(document.querySelectorAll<HTMLAnchorElement>('a.pages__new-type'), (item) => ({
+    label: item.textContent?.trim() ?? '',
+    href: item.getAttribute('href') ?? '',
+  }));
 }
 
 describe('PagesPage', () => {
@@ -266,6 +294,25 @@ describe('PagesPage', () => {
     expect(TestBed.inject(Router).url).toBe('/pages');
     expect(queries.at(-1)?.sectionId).toBeUndefined();
     expect(titles(harness)).toEqual(['Present simple', 'Clips']);
+  });
+
+  it('says "All sections" on the filter rather than leaving it blank', async () => {
+    // That entry's value is `null` — the absence of a filter — and Material
+    // reads a null-valued option as "nothing selected" unless it is told
+    // otherwise, so the unfiltered list every author lands on showed an empty
+    // field. The same wart the body editor's source picker has.
+    setup();
+    const harness = await open('/pages');
+
+    expect(filterTrigger(harness)).toBe(ALL_SECTIONS_OPTION);
+
+    // And again after clearing a filter by hand, the other way to reach it.
+    await chooseSection(harness, 'Listening');
+    expect(filterTrigger(harness)).toBe('Listening');
+
+    await chooseSection(harness, ALL_SECTIONS_OPTION);
+
+    expect(filterTrigger(harness)).toBe(ALL_SECTIONS_OPTION);
   });
 
   it('sends no sectionId at all for a value that is not a document id', async () => {
@@ -323,7 +370,7 @@ describe('PagesPage', () => {
     expect(recorded).toHaveLength(2);
   });
 
-  it('offers New page only for a section that can hold one', async () => {
+  it('offers New page only for a section that can hold one, one item per authorable type', async () => {
     setup();
     const harness = await open('/pages');
 
@@ -334,19 +381,29 @@ describe('PagesPage', () => {
     expect(tooltip(harness)).toBe(PICK_SECTION_FIRST);
 
     await chooseSection(harness, 'Grammar points');
+    await openNewPageMenu(harness);
 
-    const link = root(harness).querySelector<HTMLAnchorElement>('a.pages__new');
-    expect(link?.getAttribute('href')).toBe('/pages/new?sectionId=grammar&type=rich_text');
+    expect(newPageItems()).toEqual([
+      { label: 'Rich text', href: '/pages/new?sectionId=grammar&type=rich_text' },
+      { label: 'Subsection list', href: '/pages/new?sectionId=grammar&type=subsection_list' },
+    ]);
+    // #13 adds this one; offering it now would open a form with no body editor.
+    expect(newPageItems().some((item) => item.href.includes('h5p_exercise'))).toBe(false);
   });
 
   it('refuses New page for a link section, which the API would reject', async () => {
     setup();
     const harness = await open('/pages?sectionId=docs');
 
-    expect(root(harness).querySelector<HTMLButtonElement>('button.pages__new')?.disabled).toBe(
-      true,
-    );
-    expect(root(harness).querySelector('a.pages__new')).toBeNull();
+    const trigger = root(harness).querySelector<HTMLButtonElement>('button.pages__new');
+    expect(trigger?.disabled).toBe(true);
+
+    // Pressing it anyway opens nothing, so there is no type to choose either.
+    trigger?.click();
+    harness.detectChanges();
+    await harness.fixture.whenStable();
+
+    expect(newPageItems()).toEqual([]);
     expect(tooltip(harness)).toBe(SECTION_CANNOT_HOLD_PAGES);
   });
 

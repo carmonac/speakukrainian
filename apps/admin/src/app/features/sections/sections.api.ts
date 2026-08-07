@@ -2,7 +2,9 @@ import { Injectable, inject } from '@angular/core';
 import type { Observable } from 'rxjs';
 import type {
   CreateSectionInput,
+  ListSectionsQuery,
   MoveSectionInput,
+  Page,
   Section,
   SectionTreeNode,
   UpdateSectionInput,
@@ -13,7 +15,10 @@ import { ApiService } from '../../core/http/api.service';
  * HTTP surface for `/api/sections`. Types only — a value import of the shared
  * barrel would pull Zod into the eager bundle, as `auth.service.ts` explains.
  *
- * The tree screen answers from `/sections/tree` whole, so there is no `list()`.
+ * The tree screen still answers from `/sections/tree` whole. {@link list} is for
+ * the subsection-list page preview, which needs one section's **published**
+ * children in `sortOrder` — a filter the tree does not carry, and the same query
+ * the public renderer will make.
  */
 @Injectable({ providedIn: 'root' })
 export class SectionsApi {
@@ -21,6 +26,15 @@ export class SectionsApi {
 
   tree(): Observable<SectionTreeNode[]> {
     return this.api.get<SectionTreeNode[]>('/sections/tree');
+  }
+
+  list(query: ListSectionsQuery): Observable<Page<Section>> {
+    return this.api.get<Page<Section>>('/sections', {
+      parentId: query.parentId,
+      status: query.status,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
   }
 
   get(id: string): Observable<Section> {

@@ -1,0 +1,159 @@
+<div class="subsection-body">
+  <fieldset class="subsection-body__config">
+    <legend>What this page lists</legend>
+
+    <mat-form-field appearance="outline">
+      <mat-label>Subsections of</mat-label>
+      <!-- `canSelectNullableOptions`, because the default entry's value is
+           `null` — the absence of a stored id — and Material otherwise treats a
+           null-valued option as "nothing selected": the picker would sit blank
+           on every page that keeps the default, which is most of them. -->
+      <mat-select
+        class="subsection-body__source"
+        [value]="sourceSectionId()"
+        [disabled]="disabled() || treeFailed()"
+        [canSelectNullableOptions]="true"
+        (selectionChange)="onSource($event.value)"
+      >
+        @for (option of options(); track option.id) {
+          <mat-option [value]="option.id" [style.padding-inline-start.px]="16 + option.depth * 12">
+            {{ option.label }}
+          </mat-option>
+        }
+      </mat-select>
+      <mat-hint>{{ ownSectionHint }}</mat-hint>
+    </mat-form-field>
+
+    <!-- A plain paragraph and not a `mat-error`: the picker is not a
+         `formControl`, so Material's error-state machinery has nothing to key
+         off and would project this only sometimes. -->
+    @if (sourceMessage(); as message) {
+      <p class="subsection-body__source-error">{{ message }}</p>
+    }
+    @if (treeFailed()) {
+      <p class="subsection-body__source-error">{{ sourceLoadFailed }}</p>
+    }
+
+    <mat-form-field appearance="outline">
+      <mat-label>Layout</mat-label>
+      <mat-select
+        class="subsection-body__layout"
+        [value]="layout()"
+        [disabled]="disabled()"
+        (selectionChange)="onLayout($event.value)"
+      >
+        <mat-option value="grid">Grid</mat-option>
+        <mat-option value="list">List</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <mat-checkbox
+      class="subsection-body__show-images"
+      [checked]="showImages()"
+      [disabled]="disabled()"
+      (change)="onShowImages($event.checked)"
+    >
+      Show each subsection’s image
+    </mat-checkbox>
+
+    <mat-checkbox
+      class="subsection-body__show-descriptions"
+      [checked]="showDescriptions()"
+      [disabled]="disabled()"
+      (change)="onShowDescriptions($event.checked)"
+    >
+      Show each subsection’s description
+    </mat-checkbox>
+
+    <p class="subsection-body__field-label">Intro</p>
+    <!-- Audio and images embedded here are recorded in the stored HTML and
+         nowhere else: `subsectionListPageBodySchema` has no asset arrays, which
+         is why the orphan-sweep rule in `docs/architecture.md` reads
+         `data-asset-path` out of the content rather than out of the body. -->
+    <app-localized-rich-text-editor
+      class="subsection-body__intro"
+      [locales]="locales()"
+      [disabled]="disabled()"
+      [ngModel]="intro()"
+      (ngModelChange)="onIntro($event)"
+    />
+  </fieldset>
+
+  <section class="subsection-preview">
+    <header class="subsection-preview__header">
+      <h3 class="subsection-preview__heading">Preview</h3>
+      <mat-form-field appearance="outline" class="subsection-preview__locale-field">
+        <mat-label>{{ previewLocaleLabel }}</mat-label>
+        <mat-select
+          class="subsection-preview__locale"
+          [value]="previewLocale()"
+          (selectionChange)="previewLocale.set($event.value)"
+        >
+          @for (locale of locales(); track locale) {
+            <mat-option [value]="locale">{{ locale.toUpperCase() }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+    </header>
+
+    @if (previewStatus() === 'loading') {
+      <mat-progress-bar mode="indeterminate" />
+    }
+
+    <!-- Every field below resolves against this locale, so there is nothing to
+         render without one. -->
+    @if (previewLocale() !== null) {
+      @if (introHtml(); as html) {
+        <!-- The only `[innerHTML]` here: the intro is rich text, sanitized by
+             the API on write and by Angular on the way in. -->
+        <div class="subsection-preview__intro" [innerHTML]="html"></div>
+      }
+
+      @switch (previewStatus()) {
+        @case ('failed') {
+          <p class="subsection-preview__failed">{{ previewFailed }}</p>
+        }
+        @case ('idle') {
+          <p class="subsection-preview__no-source">{{ previewNoSource }}</p>
+        }
+        @case ('ready') {
+          @if (rows().length === 0) {
+            <p class="subsection-preview__empty">{{ previewEmpty }}</p>
+          } @else {
+            <ul
+              class="subsection-preview__items"
+              [class.subsection-preview__items--grid]="layout() === 'grid'"
+              [class.subsection-preview__items--list]="layout() === 'list'"
+            >
+              @for (row of rows(); track row.id) {
+                <li class="subsection-preview__item">
+                  @if (row.imageUrl; as url) {
+                    <img class="subsection-preview__image" [src]="url" [alt]="row.imageAlt" />
+                  }
+                  <!-- The text is one block so that the list layout is always
+                       "[image] [text]": without it, a subsection with no image
+                       puts its excerpt in the column the image would have had,
+                       beside the title instead of under it. -->
+                  <div class="subsection-preview__text">
+                    <!-- Interpolated, never `[innerHTML]`: a section title is
+                         stored verbatim and an excerpt has had its tags
+                         stripped, so both may only reach an escaped context
+                         (ADR-003). -->
+                    <p class="subsection-preview__title">{{ row.title }}</p>
+                    @if (row.excerpt) {
+                      <p class="subsection-preview__excerpt">{{ row.excerpt }}</p>
+                    }
+                  </div>
+                </li>
+              }
+            </ul>
+          }
+
+          @if (truncated()) {
+            <p class="subsection-preview__truncated">{{ previewTruncated }}</p>
+          }
+        }
+      }
+    }
+  </section>
+</div>

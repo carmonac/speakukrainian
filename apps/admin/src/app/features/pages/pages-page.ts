@@ -4,14 +4,16 @@ import { Router, RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTableModule } from '@angular/material/table';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
-import type { ContentPage } from '@speakukrainian/shared';
+import type { ContentPage, PageType } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { navigationState } from '../../core/router/navigation-state';
+import { AUTHORABLE_PAGE_TYPES } from './page-body';
 import {
   ALL_SECTIONS_OPTION,
   PAGES_LOAD_FAILED,
@@ -35,6 +37,7 @@ import { PagesApi } from './pages.api';
     MatButtonModule,
     MatFormFieldModule,
     MatIconModule,
+    MatMenuModule,
     MatProgressBarModule,
     MatSelectModule,
     MatTableModule,
@@ -99,10 +102,16 @@ export class PagesPage {
     return section.canHoldPages ? '' : SECTION_CANNOT_HOLD_PAGES;
   });
 
-  protected readonly newPageParams = computed(() => ({
-    sectionId: this.selectedSection()?.id ?? '',
-    type: 'rich_text',
-  }));
+  /**
+   * "New page" is a menu over these rather than a shortcut to one type: a body
+   * type reachable only by hand-typing `?type=` in the address bar is not a type
+   * an author can create.
+   */
+  protected readonly authorableTypes = AUTHORABLE_PAGE_TYPES;
+
+  protected newPageParams(type: PageType): Record<string, string> {
+    return { sectionId: this.selectedSection()?.id ?? '', type };
+  }
 
   protected title(page: ContentPage): string {
     return pageTitle(page, this.defaultCode());
@@ -110,6 +119,11 @@ export class PagesPage {
 
   protected typeLabel(page: ContentPage): string {
     return PAGE_TYPE_LABELS[page.body.type];
+  }
+
+  /** The menu labels a type; {@link typeLabel} labels a stored page. */
+  protected pageTypeLabel(type: PageType): string {
+    return PAGE_TYPE_LABELS[type];
   }
 
   /** The filter lives in the URL, so choosing one is a navigation and re-resolves. */

@@ -109,7 +109,9 @@ inside a JSON string ends the block, and no sanitizer upstream will have removed
 
 _Why:_ this is a language-learning product — pronunciation clips are core content. A real node
 is selectable, deletable and serializable like any other block, and it carries the storage
-object path, which is what lets us find and collect orphaned uploads later.
+object path, which is what lets us find and collect orphaned uploads later. That path in the
+HTML — not the body's asset arrays — is what an orphan sweep may read; see "Data model" below
+for the rule and the fields it protects.
 
 ### ADR-005 — Admin state lives in the URL and `history.state`
 
@@ -326,6 +328,45 @@ the extension derived from the content type, never from the uploaded filename �
 cannot choose the name an object lands under, and two uploads of `intro.mp3` cannot collide.
 Nothing indexes these objects yet: the sweep for orphans that ADR-004 anticipates has to walk the
 prefix a month at a time and match paths against `data-asset-path` in published content.
+
+**The stored HTML is the source of truth for which assets a page references; `body.audioAssets`
+and `body.imageAssets` are a convenience index.** They exist to supply the metadata the HTML
+cannot carry — `contentType`, `sizeBytes`, the storage `path` behind an image `src` — and they
+are incomplete by construction: only `rich_text` bodies have them at all. The other two rich text
+fields, `subsection_list.intro` and `h5p_exercise.explanation`, live on `strictObject` bodies with
+**no asset array**, so a clip embedded in an intro is recorded nowhere but the content. A sweep
+that decides what is orphaned by reading `body.audioAssets` would therefore delete audio a
+published page still plays.
+
+The rule that replaces it is not about page bodies: **a sweep reads every rich text field and
+every `assetRef` of every page _and every section_**, and consults the index only for what those
+do not say. A section is not a body, which is what makes that half of it easy to miss. The stored
+fields that can hold a storage path today:
+
+- `pages` — `body.content` (`rich_text`), `body.intro` (`subsection_list`) and `body.explanation`
+  (`h5p_exercise`), all rich text; the `seo.ogImage` asset ref; and `body.audioAssets` /
+  `body.imageAssets`, the index over `content` alone.
+- `sections` — `description`, rich text edited with the same full-toolbar
+  `LocalizedRichTextEditor` an intro uses, so it carries embedded clips just the same; and the
+  `image` asset ref.
+
+That list is a snapshot. The definition is `richTextSchema` and `assetRefSchema` in
+`packages/shared/src`, and grepping for those two names is how to re-derive it — a new field of
+either type is a new place the sweep has to look. (`h5pContent.storagePath` is outside all of
+this: those files live under `h5p/` and belong to `@lumieducation/h5p-server`, not to the media
+uploader.)
+
+**Images degrade worse than audio, and worst where there is no index at all.** The tiptap `Image`
+node writes only `src` and no `data-asset-path`, so no scan of the HTML can see an embedded image
+anywhere. In a `rich_text` body that is still recoverable: `imageAssets` holds the path. In
+`intro`, `explanation` and `section.description` there is no index _and_ no path attribute, so
+nothing in the document states the path — the only trace left is a `src` URL, and turning that
+back into a path means reversing however the environment serves the bucket
+(`StorageService.publicUrl` answers differently under fake-gcs and in production). An image
+embedded in an intro is therefore findable by neither half of the rule above, which makes it the
+case a sweep deletes silently while a published page still displays it. Until the node gains its
+own path attribute (`page-assets.ts` describes the fix and why the sanitizer would let it
+through), no sweep should collect an image on the strength of the content alone.
 
 ## Local development
 

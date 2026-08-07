@@ -100,10 +100,19 @@
 
         <fieldset class="page-form__group">
           <legend>{{ typeLabel() }}</legend>
-          @if (formData().type === 'rich_text') {
-            <app-rich-text-page-body-editor formControlName="body" />
-          } @else {
-            <p class="page-form__body-unavailable">{{ bodyTypeUnavailable }}</p>
+          <!-- A `@switch` and not a compound `@if`: giving a body type an editor
+               is then an addition here, never an edit of a predicate that
+               restates which types have one. -->
+          @switch (formData().type) {
+            @case ('rich_text') {
+              <app-rich-text-page-body-editor formControlName="body" />
+            }
+            @case ('subsection_list') {
+              <app-subsection-list-page-body-editor formControlName="body" [ownSectionId]="ownSectionId()" />
+            }
+            @default {
+              <p class="page-form__body-unavailable">{{ bodyTypeUnavailable }}</p>
+            }
           }
         </fieldset>
 
