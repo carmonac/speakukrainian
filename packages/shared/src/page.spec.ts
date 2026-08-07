@@ -180,6 +180,30 @@ describe('createContentPageSchema', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects a sourceSectionId that is not a document id', () => {
+    // The other document id a page request carries: rendering a subsection list
+    // hands it to `collection.doc()`, so an unconstrained one stores with a 201
+    // and reads back as a 500.
+    const result = createContentPageSchema.safeParse({
+      sectionId: 'sec-1',
+      slug: 'intro',
+      title: { en: 'Introduction' },
+      body: { type: 'subsection_list', sourceSectionId: 'a/b/../c' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['body', 'sourceSectionId']);
+
+    expect(
+      createContentPageSchema.safeParse({
+        sectionId: 'sec-1',
+        slug: 'intro',
+        title: { en: 'Introduction' },
+        body: { type: 'subsection_list', sourceSectionId: 'sec-2' },
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe('listPagesQuerySchema', () => {

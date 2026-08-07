@@ -34,8 +34,15 @@ export const richTextPageBodySchema = z.strictObject({
  */
 export const subsectionListPageBodySchema = z.strictObject({
   type: z.literal('subsection_list'),
-  /** Defaults to the page's own parent section when omitted. */
-  sourceSectionId: z.string().min(1).optional(),
+  /**
+   * Defaults to the page's own parent section when omitted. Constrained to a
+   * document id for the same reason `createContentPageSchema.sectionId` is:
+   * rendering the list means handing this value to `collection.doc()`, where a
+   * nested path or `..` throws and turns a bad request into a 500. ADR-012's
+   * tightening exception does not apply, for the reason the block below gives —
+   * nothing has ever written a page document.
+   */
+  sourceSectionId: documentIdSchema.optional(),
   layout: z.enum(['grid', 'list']).default('grid'),
   showImages: z.boolean().default(true),
   showDescriptions: z.boolean().default(true),
@@ -83,10 +90,7 @@ export type RichTextPageBody = z.infer<typeof richTextPageBodySchema>;
 export type SubsectionListPageBody = z.infer<typeof subsectionListPageBodySchema>;
 export type H5pExercisePageBody = z.infer<typeof h5pExercisePageBodySchema>;
 
-/**
- * A Firestore document id. Constrained so a hand-crafted path segment cannot
- * reach `collection.doc()` as `..` or a nested path.
- */
+/** A page's own id: `documentIdSchema` under the name the routes use. */
 export const pageIdSchema = documentIdSchema;
 
 export const seoSchema = z.object({
