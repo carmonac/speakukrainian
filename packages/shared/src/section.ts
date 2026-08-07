@@ -141,6 +141,11 @@ export const editableSectionFields = {
    * table, so the href shape rule applies to every request carrying a target.
    */
   link: linkTargetSchema.optional(),
+  /**
+   * The number stored against the section, ordering it among its siblings.
+   * Create and update write it verbatim and renumber nothing else; only
+   * {@link moveSectionSchema} reads a `sortOrder` as a *position* instead.
+   */
   sortOrder: z.number().int(),
   status: publishStatusSchema,
 };
