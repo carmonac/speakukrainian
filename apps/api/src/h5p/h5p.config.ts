@@ -24,6 +24,26 @@ export function createH5pConfig(): H5PConfig {
     maxFileSize: MAX_H5P_UPLOAD_BYTES,
     maxTotalSize: MAX_H5P_UPLOAD_BYTES,
 
+    // The stock install-lock budget assumes a local filesystem; every library
+    // file here is an HTTP write to object storage. `PackageImporter` queues
+    // every library directory of a package at once — ~68 of them and ~1700
+    // objects for `H5P.CoursePresentation 1.22` — and `async-lock` starts an
+    // entry's occupation timer when it is *queued*, not when it takes the lock,
+    // so this budget has to cover the whole import rather than one library's
+    // share of it. Measured against fake-gcs-server, which answers a small
+    // write in ~10 ms, that import runs 16-20 s and the stock 10 s fails it
+    // about two cold runs in three; real Cloud Storage is roughly an order of
+    // magnitude slower per object. Five minutes is Cloud Run's own default
+    // request timeout, so a pathological import now ends because the request
+    // ended, rather than because a library budget expired mid-upload and threw
+    // away work the caller cannot see was nearly done.
+    installLibraryLockMaxOccupationTime: 300_000,
+
+    // Only bounds waiting behind *another* import of the same library. Kept
+    // above the occupation budget, the same way the library's own defaults are,
+    // so a waiter is never refused while the holder is still inside its budget.
+    installLibraryLockTimeout: 600_000,
+
     // `trackResults` is out of scope for Phase 1 and no
     // `IContentUserDataStorage` is wired, so the "finished" call would have
     // nowhere to land.

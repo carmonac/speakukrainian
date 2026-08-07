@@ -15,6 +15,22 @@ describe('createH5pConfig', () => {
     expect(config.maxFileSize).not.toBe(16 * 1024 * 1024);
   });
 
+  it('budgets a library install for object storage, not for a local disk', () => {
+    // The stock 10 s answers a cold install of a real content type with a 500
+    // about two runs in three: `PackageImporter` queues ~68 library directories
+    // at once and the occupation timer starts at queueing, so the budget has to
+    // cover the whole import.
+    const config = createH5pConfig();
+
+    expect(config.installLibraryLockMaxOccupationTime).toBe(300_000);
+    expect(config.installLibraryLockMaxOccupationTime).not.toBe(10_000);
+    // A waiter must not be refused while the holder is still inside its budget.
+    expect(config.installLibraryLockTimeout).toBe(600_000);
+    expect(config.installLibraryLockTimeout).toBeGreaterThan(
+      config.installLibraryLockMaxOccupationTime,
+    );
+  });
+
   it('leaves result tracking off, since nothing stores user data', () => {
     expect(createH5pConfig().setFinishedEnabled).toBe(false);
   });
