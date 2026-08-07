@@ -1,12 +1,14 @@
 import { ZipFile } from 'yazl';
+import { buildRawZip, type RawZipEntry } from '../../src/h5p/h5p.raw-zip.js';
 
 /**
  * Builds `.h5p` packages for the e2e suite.
  *
- * Generated rather than committed on purpose: the suite needs five variants
- * (valid, patched, downgraded, corrupt, missing `h5p.json`), and a committed
- * binary per variant would be five opaque blobs whose contents no reviewer can
- * read. Everything below is checked against the library's own
+ * Generated rather than committed on purpose: the suite needs a variant per
+ * case (valid, patched, downgraded, corrupt, missing `h5p.json`, and one per
+ * hostile entry name), and a committed binary per variant would be a dozen
+ * opaque blobs whose contents no reviewer can read. Everything below is
+ * checked against the library's own
  * `h5p-schema.json` and `library-schema.json`, whose patterns are stricter than
  * they look — `mainLibrary`, `machineName` and `language` all carry regexes.
  *
@@ -45,61 +47,90 @@ export interface PackageOptions {
   omitH5pJson?: boolean;
 }
 
-export function buildH5pPackage(options: PackageOptions = {}): Promise<Buffer> {
+function packageEntries(options: PackageOptions = {}): RawZipEntry[] {
   const { patchVersion = 1, title = 'Speak Ukrainian e2e drill', omitH5pJson = false } = options;
 
-  const zip = new ZipFile();
+  const entries: RawZipEntry[] = [];
 
   if (!omitH5pJson) {
-    zip.addBuffer(
-      json({
+    entries.push({
+      name: 'h5p.json',
+      content: json({
         title,
         language: 'en',
         mainLibrary: MAIN_LIBRARY.machineName,
         embedTypes: ['iframe'],
         preloadedDependencies: [MAIN_LIBRARY, DEP_LIBRARY],
       }),
-      'h5p.json',
-    );
+    });
   }
 
-  zip.addBuffer(json({ question: 'Have you ever been to Kyiv?' }), 'content/content.json');
-  zip.addBuffer(Buffer.from('a pronunciation clip would go here\n'), `content/${CONTENT_FILE}`);
-
-  zip.addBuffer(
-    json({
-      title: 'Speak Test Main',
-      machineName: MAIN_LIBRARY.machineName,
-      majorVersion: MAIN_LIBRARY.majorVersion,
-      minorVersion: MAIN_LIBRARY.minorVersion,
-      patchVersion,
-      runnable: 1,
-      // The validator checks that every declared file is actually in the
-      // package, so `main.js` below is not optional.
-      preloadedJs: [{ path: 'main.js' }],
-      preloadedDependencies: [DEP_LIBRARY],
-    }),
-    `${MAIN_LIBRARY_DIR}/library.json`,
+  entries.push(
+    { name: 'content/content.json', content: json({ question: 'Have you ever been to Kyiv?' }) },
+    { name: `content/${CONTENT_FILE}`, content: 'a pronunciation clip would go here\n' },
+    {
+      name: `${MAIN_LIBRARY_DIR}/library.json`,
+      content: json({
+        title: 'Speak Test Main',
+        machineName: MAIN_LIBRARY.machineName,
+        majorVersion: MAIN_LIBRARY.majorVersion,
+        minorVersion: MAIN_LIBRARY.minorVersion,
+        patchVersion,
+        runnable: 1,
+        // The validator checks that every declared file is actually in the
+        // package, so `main.js` below is not optional.
+        preloadedJs: [{ path: 'main.js' }],
+        preloadedDependencies: [DEP_LIBRARY],
+      }),
+    },
+    { name: `${MAIN_LIBRARY_DIR}/main.js`, content: 'window.SpeakTestMain = {};\n' },
+    {
+      name: `${DEP_LIBRARY_DIR}/library.json`,
+      content: json({
+        title: 'Speak Test Dep',
+        machineName: DEP_LIBRARY.machineName,
+        majorVersion: DEP_LIBRARY.majorVersion,
+        minorVersion: DEP_LIBRARY.minorVersion,
+        patchVersion,
+        runnable: 0,
+        preloadedJs: [{ path: 'dep.js' }],
+      }),
+    },
+    { name: `${DEP_LIBRARY_DIR}/dep.js`, content: 'window.SpeakTestDep = {};\n' },
   );
-  zip.addBuffer(Buffer.from('window.SpeakTestMain = {};\n'), `${MAIN_LIBRARY_DIR}/main.js`);
 
-  zip.addBuffer(
-    json({
-      title: 'Speak Test Dep',
-      machineName: DEP_LIBRARY.machineName,
-      majorVersion: DEP_LIBRARY.majorVersion,
-      minorVersion: DEP_LIBRARY.minorVersion,
-      patchVersion,
-      runnable: 0,
-      preloadedJs: [{ path: 'dep.js' }],
-    }),
-    `${DEP_LIBRARY_DIR}/library.json`,
-  );
-  zip.addBuffer(Buffer.from('window.SpeakTestDep = {};\n'), `${DEP_LIBRARY_DIR}/dep.js`);
+  return entries;
+}
 
+export function buildH5pPackage(options: PackageOptions = {}): Promise<Buffer> {
+  const zip = new ZipFile();
+  for (const entry of packageEntries(options)) {
+    zip.addBuffer(Buffer.from(entry.content), entry.name);
+  }
   zip.end();
 
   return collect(zip);
+}
+
+/**
+ * The same package written by the raw ZIP writer instead of `yazl`.
+ *
+ * It is the control for the hostile packages below: if a hostile upload is
+ * refused, this one proves the refusal is about the entry name and not about
+ * the writer, because the only difference between them is that name.
+ */
+export function buildRawH5pPackage(options: PackageOptions = {}): Buffer {
+  return buildRawZip(packageEntries(options));
+}
+
+/**
+ * A valid package carrying one extra entry whose name is not safe to unpack.
+ *
+ * `yazl` refuses to write such a name — correctly, and unhelpfully: without an
+ * archive that carries one, nothing can show what the API answers for it.
+ */
+export function buildHostileH5pPackage(entryName: string, marker: string): Buffer {
+  return buildRawZip([...packageEntries(), { name: entryName, content: marker }]);
 }
 
 function json(value: unknown): Buffer {

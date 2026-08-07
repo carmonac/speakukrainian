@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { access } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { INestApplication } from '@nestjs/common';
 import type { Firestore } from '@google-cloud/firestore';
 import type { Auth } from 'firebase-admin/auth';
@@ -20,6 +24,8 @@ import {
   DEP_LIBRARY_DIR,
   MAIN_LIBRARY_DIR,
   buildH5pPackage,
+  buildHostileH5pPackage,
+  buildRawH5pPackage,
 } from './fixtures/h5p-package.js';
 
 const LIBRARIES_PREFIX = 'h5p/libraries/';
@@ -32,6 +38,32 @@ interface ErrorBody {
   message: string;
   errors?: string[];
 }
+
+/** Unique per run, so a leftover from an earlier one cannot pass for a hit. */
+const ESCAPE_MARKER = `pwned-${randomUUID()}.txt`;
+
+/**
+ * Entry names that must never reach `path.join(tempDirectory, name)`.
+ *
+ * The importer extracts into a `tmp.dir()` under `os.tmpdir()`, so `../<name>`
+ * lands in `os.tmpdir()` itself and the six-deep one bottoms out at `/tmp`.
+ * Those two are the escape targets this suite watches; the rest cannot leave
+ * the temp directory but must still be refused by name rather than answered
+ * with a 500 raised from inside the library.
+ */
+const HOSTILE_ENTRY_NAMES = [
+  `content/../../../../../../tmp/${ESCAPE_MARKER}`,
+  `../${ESCAPE_MARKER}`,
+  `content/a/../../${ESCAPE_MARKER}`,
+  `/etc/${ESCAPE_MARKER}`,
+  `C:\\${ESCAPE_MARKER}`,
+  `content\\..\\..\\${ESCAPE_MARKER}`,
+  'content/..',
+  `content/./x/../../${ESCAPE_MARKER}`,
+];
+
+/** Where the two escaping shapes above would land if nothing stopped them. */
+const ESCAPE_TARGETS = [join(tmpdir(), ESCAPE_MARKER), join('/tmp', ESCAPE_MARKER)];
 
 describe('h5p (e2e)', () => {
   let app: INestApplication;
@@ -48,6 +80,14 @@ describe('h5p (e2e)', () => {
 
   const countObjects = async (prefix: string): Promise<number> =>
     (await storage.list(prefix)).length;
+
+  /**
+   * Every object in the bucket, not only the ones under `h5p/`: a containment
+   * test that only looks where the files are supposed to go cannot see a file
+   * that went somewhere else.
+   */
+  const bucketPaths = async (): Promise<string[]> =>
+    (await storage.list('')).map((object) => object.path).sort();
 
   const post = (token: string, body: Buffer, filename: string) =>
     request(server())
@@ -225,6 +265,42 @@ describe('h5p (e2e)', () => {
     expect(body.errors).toContain('invalid-h5p-json-file');
     await expect(countObjects(CONTENT_PREFIX)).resolves.toBe(before);
   });
+
+  it('installs a package written by the raw ZIP writer, so the writer is not the variable', async () => {
+    // The control for the hostile cases below: same bytes on every entry, same
+    // writer, one name different. Without this a 400 there could just as well
+    // mean the fixture is unreadable.
+    const saved = await upload(buildRawH5pPackage({ title: 'Raw writer control' }));
+
+    expect(saved.title).toBe('Raw writer control');
+    await expect(
+      storage.exists(`${CONTENT_PREFIX}${saved.contentId}/${CONTENT_FILE}`),
+    ).resolves.toBe(true);
+  });
+
+  it.each(HOSTILE_ENTRY_NAMES)(
+    'refuses the entry %j with a 400 and writes nothing anywhere',
+    async (name) => {
+      const before = await bucketPaths();
+
+      const response = await post(
+        editor.idToken,
+        buildHostileH5pPackage(name, 'this must never be written'),
+        'hostile.h5p',
+      ).expect(400);
+
+      const body = response.body as ErrorBody;
+      // Naming the problem, not "Internal server error" with a stack in the log.
+      expect(body.message).toBe('The package contains a file with an unusable path.');
+
+      // Nothing landed in the bucket at all — not under a content prefix, not
+      // under `h5p/libraries/`, not anywhere else.
+      await expect(bucketPaths()).resolves.toEqual(before);
+      for (const target of ESCAPE_TARGETS) {
+        await expect(access(target)).rejects.toThrow();
+      }
+    },
+  );
 
   it('answers 415 for a file that is not named .h5p', async () => {
     const response = await post(editor.idToken, await buildH5pPackage(), 'drill.zip').expect(415);
