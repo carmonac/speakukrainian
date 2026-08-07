@@ -80,8 +80,10 @@ export function referencedAssets(html: string): HtmlAssetRefs {
  * whose schemas have no asset array at all — a clip an author embeds in an intro
  * is referenced by the stored HTML and by nothing else. A sweep that decides
  * what is orphaned from `body.audioAssets` therefore deletes live content. It
- * has to read `data-asset-path` out of *every* rich text field of *every* body.
- * `docs/architecture.md` states that rule; this is the code it constrains.
+ * has to read `data-asset-path` out of every rich text field of every page *and
+ * section* — `section.description` is one such field, and no body contains it.
+ * `docs/architecture.md` states the rule with the full field list; this is the
+ * code it constrains.
  *
  * The two halves degrade differently, and the difference matters to whoever
  * writes the orphan sweep. **Audio** carries `data-asset-path` in the stored

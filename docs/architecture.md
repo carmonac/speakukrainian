@@ -336,11 +336,37 @@ are incomplete by construction: only `rich_text` bodies have them at all. The ot
 fields, `subsection_list.intro` and `h5p_exercise.explanation`, live on `strictObject` bodies with
 **no asset array**, so a clip embedded in an intro is recorded nowhere but the content. A sweep
 that decides what is orphaned by reading `body.audioAssets` would therefore delete audio a
-published page still plays. It must instead parse every rich text field of every body — `content`,
-`intro`, `explanation` — for `data-asset-path`, and consult the index only for what those
-attributes do not say. Images are the same rule one step worse: the tiptap `Image` node writes
-only `src`, so a path-based sweep cannot see an image until that node gains its own path
-attribute (`page-assets.ts` describes the fix and why the sanitizer would let it through).
+published page still plays.
+
+The rule that replaces it is not about page bodies: **a sweep reads every rich text field and
+every `assetRef` of every page _and every section_**, and consults the index only for what those
+do not say. A section is not a body, which is what makes that half of it easy to miss. The stored
+fields that can hold a storage path today:
+
+- `pages` — `body.content` (`rich_text`), `body.intro` (`subsection_list`) and `body.explanation`
+  (`h5p_exercise`), all rich text; the `seo.ogImage` asset ref; and `body.audioAssets` /
+  `body.imageAssets`, the index over `content` alone.
+- `sections` — `description`, rich text edited with the same full-toolbar
+  `LocalizedRichTextEditor` an intro uses, so it carries embedded clips just the same; and the
+  `image` asset ref.
+
+That list is a snapshot. The definition is `richTextSchema` and `assetRefSchema` in
+`packages/shared/src`, and grepping for those two names is how to re-derive it — a new field of
+either type is a new place the sweep has to look. (`h5pContent.storagePath` is outside all of
+this: those files live under `h5p/` and belong to `@lumieducation/h5p-server`, not to the media
+uploader.)
+
+**Images degrade worse than audio, and worst where there is no index at all.** The tiptap `Image`
+node writes only `src` and no `data-asset-path`, so no scan of the HTML can see an embedded image
+anywhere. In a `rich_text` body that is still recoverable: `imageAssets` holds the path. In
+`intro`, `explanation` and `section.description` there is no index _and_ no path attribute, so
+nothing in the document states the path — the only trace left is a `src` URL, and turning that
+back into a path means reversing however the environment serves the bucket
+(`StorageService.publicUrl` answers differently under fake-gcs and in production). An image
+embedded in an intro is therefore findable by neither half of the rule above, which makes it the
+case a sweep deletes silently while a published page still displays it. Until the node gains its
+own path attribute (`page-assets.ts` describes the fix and why the sanitizer would let it
+through), no sweep should collect an image on the strength of the content alone.
 
 ## Local development
 
