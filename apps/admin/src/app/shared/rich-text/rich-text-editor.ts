@@ -12,7 +12,7 @@ import {
 } from '@angular/core';
 import { NG_VALUE_ACCESSOR, type ControlValueAccessor } from '@angular/forms';
 import type { AssetRef } from '@speakukrainian/shared';
-import { Editor } from '@tiptap/core';
+import { Editor, isNodeSelection, type CommandProps } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
 import Link from '@tiptap/extension-link';
@@ -21,6 +21,33 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { Audio } from './audio.extension';
 import { MediaPickerService } from '../media/media-picker.service';
+
+/**
+ * Puts the caret in a text position after a just-inserted atom.
+ *
+ * ProseMirror leaves the fresh node as the current `NodeSelection`, so the
+ * author's very next keystroke replaces it: the clip or picture they just
+ * uploaded disappears without a word, while the object stays in Cloud Storage
+ * with nothing left referring to it. Inserting and then carrying on writing is
+ * the ordinary gesture, so the caret has to land after the node.
+ *
+ * An atom dropped at the end of a list item or a blockquote has no text
+ * position after it — the trailing paragraph the document keeps at its own end
+ * is out of reach there — so one is made. Chained onto the insert rather than
+ * dispatched afterwards, so a single undo takes the whole insertion back.
+ */
+function caretAfterAtom({ state, commands }: CommandProps): boolean {
+  const { selection } = state;
+  if (!isNodeSelection(selection)) {
+    return true;
+  }
+
+  const after = selection.to;
+  const next = state.doc.resolve(after).nodeAfter;
+  return next?.isTextblock === true
+    ? commands.setTextSelection(after + 1)
+    : commands.insertContentAt(after, { type: 'paragraph' });
+}
 
 /**
  * The rich text control used by every long-form field in the admin panel —
@@ -170,6 +197,7 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
       .chain()
       .focus()
       .setImage({ src: asset.url, alt: asset.alt?.['en'] ?? '' })
+      .command(caretAfterAtom)
       .run();
   }
 
@@ -185,6 +213,7 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
       .chain()
       .focus()
       .setAudio({ src: asset.url, title: asset.path, assetPath: asset.path })
+      .command(caretAfterAtom)
       .run();
   }
 
