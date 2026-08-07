@@ -3,6 +3,7 @@ import {
   contentPageSchema,
   createContentPageSchema,
   editableContentPageFields,
+  listPagesQuerySchema,
   pageBodySchema,
   updateContentPageSchema,
 } from './page.js';
@@ -58,6 +59,61 @@ describe('pageBodySchema', () => {
   });
 });
 
+describe('pageBodySchema strictness', () => {
+  // A plain `z.object` drops an unknown key and reports success, so each of
+  // these used to be a save that stored none of what it was sent.
+  it.each([
+    [
+      'a subsection list carrying rich text content',
+      { type: 'subsection_list', content: { en: '<p>x</p>' } },
+      'content',
+    ],
+    [
+      'a rich text body carrying an H5P id',
+      { type: 'rich_text', content: { en: '<p>x</p>' }, h5pContentId: 'h5p-1' },
+      'h5pContentId',
+    ],
+    [
+      'an H5P exercise carrying rich text content',
+      { type: 'h5p_exercise', content: { en: '<p>x</p>' } },
+      'content',
+    ],
+  ])('rejects %s', (_name, body, key) => {
+    const result = pageBodySchema.safeParse(body);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
+    expect(result.error?.issues[0]).toMatchObject({ keys: [key] });
+  });
+
+  it('paths the refusal at the body when the whole page is parsed', () => {
+    // The admin renders the issue against the body field, so the path has to
+    // survive the trip through the outer schema.
+    const result = createContentPageSchema.safeParse({
+      sectionId: 'sec-1',
+      slug: 'intro',
+      title: { en: 'Introduction' },
+      body: { type: 'rich_text', content: { en: '<p>x</p>' }, h5pContentId: 'h5p-1' },
+    });
+
+    expect(result.error?.issues[0]?.path).toEqual(['body']);
+  });
+
+  it.each([
+    [
+      'rich_text',
+      { type: 'rich_text', content: { en: '<p>x</p>' } },
+      { audioAssets: [], imageAssets: [] },
+    ],
+    ['subsection_list', { type: 'subsection_list' }, { layout: 'grid', showImages: true }],
+    ['h5p_exercise', { type: 'h5p_exercise' }, { h5pContentId: null, trackResults: false }],
+  ])('still parses a %s body with its optional fields omitted', (_name, body, defaults) => {
+    // Strictness must bite on unknown keys only: a variant that lost its own
+    // defaults would refuse every body the admin actually sends.
+    expect(pageBodySchema.parse(body)).toMatchObject(defaults);
+  });
+});
+
 describe('contentPageSchema', () => {
   it('refuses to publish an H5P page with no uploaded content', () => {
     // Publishing an empty exercise would render a blank frame to learners.
@@ -110,6 +166,58 @@ describe('createContentPageSchema', () => {
 
     expect(parsed.status).toBe('draft');
     expect(parsed.sortOrder).toBeUndefined();
+  });
+
+  it('rejects a sectionId that is not a document id', () => {
+    // `collection.doc('a/b')` throws for an odd number of segments, which would
+    // turn a bad request into a 500 instead of a 400.
+    expect(
+      createContentPageSchema.safeParse({
+        sectionId: 'a/b',
+        slug: 'intro',
+        title: { en: 'Introduction' },
+        body: { type: 'subsection_list' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a sourceSectionId that is not a document id', () => {
+    // The other document id a page request carries: rendering a subsection list
+    // hands it to `collection.doc()`, so an unconstrained one stores with a 201
+    // and reads back as a 500.
+    const result = createContentPageSchema.safeParse({
+      sectionId: 'sec-1',
+      slug: 'intro',
+      title: { en: 'Introduction' },
+      body: { type: 'subsection_list', sourceSectionId: 'a/b/../c' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['body', 'sourceSectionId']);
+
+    expect(
+      createContentPageSchema.safeParse({
+        sectionId: 'sec-1',
+        slug: 'intro',
+        title: { en: 'Introduction' },
+        body: { type: 'subsection_list', sourceSectionId: 'sec-2' },
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe('listPagesQuerySchema', () => {
+  it('coerces limit from the query string and defaults it', () => {
+    expect(listPagesQuerySchema.parse({ limit: '10' })).toMatchObject({ limit: 10 });
+    expect(listPagesQuerySchema.parse({})).toMatchObject({ limit: 25 });
+  });
+
+  it('accepts the three filters and refuses a type that is not a page type', () => {
+    expect(
+      listPagesQuerySchema.parse({ sectionId: 'sec-1', status: 'published', type: 'h5p_exercise' }),
+    ).toMatchObject({ sectionId: 'sec-1', status: 'published', type: 'h5p_exercise' });
+    expect(listPagesQuerySchema.safeParse({ type: 'video' }).success).toBe(false);
+    expect(listPagesQuerySchema.safeParse({ sectionId: 'a/b' }).success).toBe(false);
   });
 });
 

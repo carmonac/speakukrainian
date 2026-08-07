@@ -62,6 +62,24 @@ of one parent, so a gap orders nothing wrongly and `nextSortOrder` still appends
 highest. Renumbering it too would double the write budget of every re-parent for no observable
 difference.
 
+A page's `path` is derived from its section's, so the same transaction also rewrites `path` on
+every page under the subtree. A commit therefore spends `1 + descendants + changed siblings +
+pages`, and a section whose subtree holds more pages than the budget left over is refused with
+422 for the same reason an oversized subtree is: half the pages moved and half left behind is a
+set of broken public URLs with no way back. Rewriting them in a second write after the section
+transaction committed would produce exactly that state on any crash between the two, which is
+why it rides along instead.
+
+The pages are found with one range query on `path` — `>= '<sectionPath>/'` and
+`< '<sectionPath>0'`, the byte after `/` — which catches the descendant sections' pages too,
+and it is projected to `path` alone. Two things follow, both wanted: the rewrite drags no rich
+text bodies through the transaction's 10 MiB limit, and it never parses a page document, so one
+page whose body no longer satisfies its schema cannot make its section unrenameable. The write
+is a single-field `update` and it **does** stamp the audit, unlike a renumbered sibling: the
+page's public URL really did change, which is something an author can see, where a `sortOrder`
+is not. Deleting a section that still holds pages is refused with 409, as one with subsections
+already is.
+
 ### ADR-003 — Rich text is stored as sanitized HTML
 
 Not Markdown, not a portable-text JSON tree.
@@ -73,6 +91,17 @@ cannot express an audio node without falling back to raw HTML anyway.
 _Cost:_ HTML must be sanitized on write, server-side. The admin sanitizes for immediate
 feedback, but a compromised browser can post anything, so the API sanitizes again and that is
 the check that counts.
+
+Only the rich text fields are sanitized. Plain localized fields — a section's `title` and
+`menuLabel`, a page's `title`, `seo.metaTitle` and `seo.metaDescription` — are stored
+**verbatim**, because DOMPurify parses and re-serializes, so running plain text through it
+would store `Tom &amp; Jerry` and every editor and every renderer would show the escape.
+The obligation that buys is on the read side, and it is stricter than ADR-012's: these
+values may only ever reach an **escaped** context — Angular interpolation, or an attribute
+set through the DOM — never `[innerHTML]`, and never a `<script type="application/ld+json">`
+block without JSON string encoding. That last case is the one where the assumption stops
+holding: JSON-LD is a plausible feature on a site whose reason to exist is SEO, `</script>`
+inside a JSON string ends the block, and no sanitizer upstream will have removed it.
 
 ### ADR-004 — Audio is a first-class editor node
 

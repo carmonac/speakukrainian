@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   assetRefSchema,
   auditSchema,
+  documentIdSchema,
   localizedTextSchema,
   paginationQuerySchema,
   publishStatusSchema,
@@ -111,11 +112,7 @@ export const linkTargetSchema = storedLinkTargetSchema.refine(
  * A Firestore document id. Constrained so a hand-crafted path segment cannot
  * reach `collection.doc()` as `..` or a nested path.
  */
-export const sectionIdSchema = z
-  .string()
-  .min(1)
-  .max(128)
-  .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id');
+export const sectionIdSchema = documentIdSchema;
 
 /**
  * The fields an admin edits, without their defaults. A stored document and a

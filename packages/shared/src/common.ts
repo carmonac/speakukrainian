@@ -55,6 +55,18 @@ export type PublishStatus = z.infer<typeof publishStatusSchema>;
 export const isoDateTimeSchema = z.iso.datetime({ offset: true });
 
 /**
+ * A Firestore document id. Constrained so a hand-crafted path segment cannot
+ * reach `collection.doc()` as `..` or a nested path — a value carrying `/`
+ * makes `doc()` throw for an odd number of segments, which would turn a bad
+ * request into a 500.
+ */
+export const documentIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id');
+
+/**
  * URL-safe identifier used in public routes, unique among siblings.
  */
 export const slugSchema = z

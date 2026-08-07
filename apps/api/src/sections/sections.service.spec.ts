@@ -177,10 +177,12 @@ describe('SectionsService failure mapping', () => {
     [{ reason: 'parent-not-found', parentId: 'gone' }, NotFoundException, 404],
     [{ reason: 'slug-taken', slug: 'duplicate' }, ConflictException, 409],
     [{ reason: 'has-children' }, ConflictException, 409],
+    [{ reason: 'has-pages' }, ConflictException, 409],
     [{ reason: 'depth-exceeded', depth: 5 }, UnprocessableEntityException, 422],
     [{ reason: 'move-into-descendant' }, UnprocessableEntityException, 422],
     [{ reason: 'subtree-too-large', limit: 499 }, UnprocessableEntityException, 422],
     [{ reason: 'move-too-large', limit: 500 }, UnprocessableEntityException, 422],
+    [{ reason: 'pages-too-large', limit: 500 }, UnprocessableEntityException, 422],
     [{ reason: 'invalid', issues: [] }, UnprocessableEntityException, 422],
   ];
 
@@ -207,6 +209,12 @@ describe('SectionsService failure mapping', () => {
     const { service } = createService({ remove: { ok: false, reason: 'has-children' } });
 
     await expect(service.remove('root-id')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('names the pages when a delete is refused because the section still holds some', async () => {
+    const { service } = createService({ remove: { ok: false, reason: 'has-pages' } });
+
+    await expect(service.remove('root-id')).rejects.toThrow(/pages/);
   });
 
   it('passes the zod issues through on the errors key', async () => {

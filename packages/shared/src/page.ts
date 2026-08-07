@@ -2,7 +2,9 @@ import { z } from 'zod';
 import {
   assetRefSchema,
   auditSchema,
+  documentIdSchema,
   localizedTextSchema,
+  paginationQuerySchema,
   publishStatusSchema,
   richTextSchema,
   slugSchema,
@@ -15,7 +17,7 @@ export type PageType = z.infer<typeof pageTypeSchema>;
  * A free-form article. The rich text may embed images and `<audio>` players —
  * audio is a first-class part of the learning content, not a decoration.
  */
-export const richTextPageBodySchema = z.object({
+export const richTextPageBodySchema = z.strictObject({
   type: z.literal('rich_text'),
   content: richTextSchema,
   /**
@@ -30,10 +32,17 @@ export const richTextPageBodySchema = z.object({
  * An index page that lists the child sections of its parent — this is what
  * produces pages like `/grammar-points/`.
  */
-export const subsectionListPageBodySchema = z.object({
+export const subsectionListPageBodySchema = z.strictObject({
   type: z.literal('subsection_list'),
-  /** Defaults to the page's own parent section when omitted. */
-  sourceSectionId: z.string().min(1).optional(),
+  /**
+   * Defaults to the page's own parent section when omitted. Constrained to a
+   * document id for the same reason `createContentPageSchema.sectionId` is:
+   * rendering the list means handing this value to `collection.doc()`, where a
+   * nested path or `..` throws and turns a bad request into a 500. ADR-012's
+   * tightening exception does not apply, for the reason the block below gives —
+   * nothing has ever written a page document.
+   */
+  sourceSectionId: documentIdSchema.optional(),
   layout: z.enum(['grid', 'list']).default('grid'),
   showImages: z.boolean().default(true),
   showDescriptions: z.boolean().default(true),
@@ -46,7 +55,7 @@ export const subsectionListPageBodySchema = z.object({
  * is uploaded through the admin panel and can be re-edited in place via the
  * H5P authoring widget.
  */
-export const h5pExercisePageBodySchema = z.object({
+export const h5pExercisePageBodySchema = z.strictObject({
   type: z.literal('h5p_exercise'),
   /** H5P content id assigned by the H5P server. Null until the first upload. */
   h5pContentId: z.string().min(1).nullable().default(null),
@@ -59,6 +68,18 @@ export const h5pExercisePageBodySchema = z.object({
   trackResults: z.boolean().default(false),
 });
 
+/**
+ * The three variants are `strictObject` rather than `object` because zod strips
+ * an unrecognized key from a plain object *silently*: a body posted as
+ * `{ type: 'subsection_list', content: {…} }` would parse, store none of the
+ * content and answer 200, which is a save reporting success for a write that
+ * did not happen. Strict members turn the same body into an
+ * `unrecognized_keys` issue pathed at `body`.
+ *
+ * Nothing has ever written a page document, so no stored body can fail the
+ * stricter rule and ADR-012's stored/input split buys nothing here — the rule
+ * lives on this one schema, which the stored and the request shapes share.
+ */
 export const pageBodySchema = z.discriminatedUnion('type', [
   richTextPageBodySchema,
   subsectionListPageBodySchema,
@@ -68,6 +89,9 @@ export type PageBody = z.infer<typeof pageBodySchema>;
 export type RichTextPageBody = z.infer<typeof richTextPageBodySchema>;
 export type SubsectionListPageBody = z.infer<typeof subsectionListPageBodySchema>;
 export type H5pExercisePageBody = z.infer<typeof h5pExercisePageBodySchema>;
+
+/** A page's own id: `documentIdSchema` under the name the routes use. */
+export const pageIdSchema = documentIdSchema;
 
 export const seoSchema = z.object({
   metaTitle: localizedTextSchema.optional(),
@@ -121,7 +145,13 @@ export const contentPageSchema = z
 export type ContentPage = z.infer<typeof contentPageSchema>;
 
 export const createContentPageSchema = z.object({
-  sectionId: z.string().min(1),
+  /**
+   * ADR-012: the document-id rule guards a value arriving on a request, so it
+   * lives here and not on `contentPageSchema.sectionId` — a stored id written
+   * before the rule existed must stay readable, and this value goes straight
+   * into `collection.doc()`.
+   */
+  sectionId: documentIdSchema,
   slug: editableContentPageFields.slug,
   title: editableContentPageFields.title,
   body: editableContentPageFields.body,
@@ -138,3 +168,15 @@ export type CreateContentPageInput = z.infer<typeof createContentPageSchema>;
  */
 export const updateContentPageSchema = z.object(editableContentPageFields).partial();
 export type UpdateContentPageInput = z.infer<typeof updateContentPageSchema>;
+
+/**
+ * Query for `GET /api/pages`. `type` filters the body variant, which the
+ * document stores at `body.type` — the repository is what knows that; a caller
+ * says `type`.
+ */
+export const listPagesQuerySchema = paginationQuerySchema.extend({
+  sectionId: documentIdSchema.optional(),
+  status: publishStatusSchema.optional(),
+  type: pageTypeSchema.optional(),
+});
+export type ListPagesQuery = z.infer<typeof listPagesQuerySchema>;

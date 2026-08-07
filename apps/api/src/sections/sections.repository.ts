@@ -15,6 +15,9 @@ import {
 } from '@speakukrainian/shared';
 import { BaseRepository, deepConvertTimestamps } from '../infra/firestore/base.repository.js';
 import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
+// A value import, not `import type`: Nest resolves constructor injection from
+// `emitDecoratorMetadata`, which a type-only import is erased before.
+import { SectionPagesRepository, type PagePathRow } from '../pages/section-pages.repository.js';
 import {
   buildPath,
   deepestAfterMove,
@@ -38,6 +41,11 @@ export const MAX_TRANSACTION_WRITES = 500;
  * spends the same budget on the node, its descendants and the destination's
  * renumbered siblings together, and two constants that could drift apart would
  * let a move be accepted that the commit then refuses.
+ *
+ * The budget is shared with the pages under the subtree as well: a rename
+ * commits `1 + descendants + pages`, a move `1 + descendants + changed
+ * siblings + pages`, and whatever is left after the sections have claimed
+ * their share is what the page scan may spend.
  */
 export const MAX_DESCENDANT_REWRITES = MAX_TRANSACTION_WRITES - 1;
 
@@ -58,8 +66,10 @@ export type SectionWriteFailure =
   | { reason: 'has-children' }
   | { reason: 'depth-exceeded'; depth: number }
   | { reason: 'move-into-descendant' }
+  | { reason: 'has-pages' }
   | { reason: 'subtree-too-large'; limit: number }
   | { reason: 'move-too-large'; limit: number }
+  | { reason: 'pages-too-large'; limit: number }
   | { reason: 'invalid'; issues: z.core.$ZodIssue[] };
 
 export type SectionWriteRejection = { ok: false } & SectionWriteFailure;
@@ -73,7 +83,10 @@ type DescendantsResult = { ok: true; sections: Section[] } | SectionWriteRejecti
 
 @Injectable()
 export class SectionsRepository extends BaseRepository<Section> {
-  constructor(@Inject(FIRESTORE) firestore: Firestore) {
+  constructor(
+    @Inject(FIRESTORE) firestore: Firestore,
+    private readonly pages: SectionPagesRepository,
+  ) {
     super(firestore, COLLECTIONS.sections);
   }
 
@@ -212,6 +225,7 @@ export class SectionsRepository extends BaseRepository<Section> {
       }
 
       let descendants: Section[] = [];
+      let pages: PagePathRow[] = [];
       let moved: { oldPath: string; next: Placement } | null = null;
 
       if (merged.slug !== existing.slug) {
@@ -239,6 +253,21 @@ export class SectionsRepository extends BaseRepository<Section> {
           return found;
         }
         descendants = found.sections;
+
+        // The node and its descendants have already claimed their share of the
+        // commit, so what is left is what the pages beneath them may spend.
+        // Their paths are rewritten in *this* transaction (ADR-002): a second
+        // write afterwards would leave live URLs pointing nowhere if a crash
+        // landed between the two.
+        const scanned = await this.pages.scanUnder(
+          tx,
+          existing.path,
+          MAX_TRANSACTION_WRITES - (1 + descendants.length),
+        );
+        if (!scanned.ok) {
+          return { ok: false, reason: 'pages-too-large', limit: MAX_TRANSACTION_WRITES };
+        }
+        pages = scanned.pages;
       }
 
       const parsed = sectionSchema.safeParse({
@@ -252,6 +281,7 @@ export class SectionsRepository extends BaseRepository<Section> {
       tx.set(ref, toDocumentData(parsed.data));
       if (moved) {
         this.writeDescendants(tx, descendants, { id, ...moved }, actorId);
+        this.pages.rewrite(tx, pages, moved.oldPath, moved.next.path, actorId);
       }
       return { ok: true, section: parsed.data };
     });
@@ -343,6 +373,27 @@ export class SectionsRepository extends BaseRepository<Section> {
         return { ok: false, reason: 'move-too-large', limit: MAX_TRANSACTION_WRITES };
       }
 
+      // A pure reorder changes no path, so it scans nothing and spends nothing
+      // — the short-circuit above is what keeps a reorder cheap.
+      //
+      // Refusal order is load-bearing and is the same in `update`: the cheapest
+      // read refuses first, so an oversized subtree is reported as
+      // `subtree-too-large` and never scanned for pages. Moving this scan above
+      // the descendant read or the `move-too-large` check would spend a range
+      // query to answer a request already known to be refused.
+      let pages: PagePathRow[] = [];
+      if (reparented) {
+        const scanned = await this.pages.scanUnder(
+          tx,
+          existing.path,
+          MAX_TRANSACTION_WRITES - (1 + descendants.length + changed.length),
+        );
+        if (!scanned.ok) {
+          return { ok: false, reason: 'pages-too-large', limit: MAX_TRANSACTION_WRITES };
+        }
+        pages = scanned.pages;
+      }
+
       const parsed = sectionSchema.safeParse({
         ...existing,
         ...placement,
@@ -361,6 +412,7 @@ export class SectionsRepository extends BaseRepository<Section> {
           { id, oldPath: existing.path, next: placement },
           actorId,
         );
+        this.pages.rewrite(tx, pages, existing.path, placement.path, actorId);
       }
       // `update` of the one field, and no audit stamp: `sortOrder` is a plain
       // int that cannot invalidate a document, and stamping `updatedBy` on
@@ -375,8 +427,8 @@ export class SectionsRepository extends BaseRepository<Section> {
   }
 
   /**
-   * Checking for children inside the transaction is what stops a child created
-   * concurrently from being orphaned in the common case.
+   * Checking for children and pages inside the transaction is what stops one
+   * created concurrently from being orphaned in the common case.
    */
   async remove(id: string): Promise<SectionDeleteResult> {
     return this.firestore.runTransaction(async (tx) => {
@@ -389,6 +441,10 @@ export class SectionsRepository extends BaseRepository<Section> {
       const children = await tx.get(this.collection.where('parentId', '==', id).limit(1));
       if (!children.empty) {
         return { ok: false, reason: 'has-children' };
+      }
+
+      if (await this.pages.hasPages(tx, id)) {
+        return { ok: false, reason: 'has-pages' };
       }
 
       tx.delete(ref);
