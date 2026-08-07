@@ -62,6 +62,24 @@ of one parent, so a gap orders nothing wrongly and `nextSortOrder` still appends
 highest. Renumbering it too would double the write budget of every re-parent for no observable
 difference.
 
+A page's `path` is derived from its section's, so the same transaction also rewrites `path` on
+every page under the subtree. A commit therefore spends `1 + descendants + changed siblings +
+pages`, and a section whose subtree holds more pages than the budget left over is refused with
+422 for the same reason an oversized subtree is: half the pages moved and half left behind is a
+set of broken public URLs with no way back. Rewriting them in a second write after the section
+transaction committed would produce exactly that state on any crash between the two, which is
+why it rides along instead.
+
+The pages are found with one range query on `path` — `>= '<sectionPath>/'` and
+`< '<sectionPath>0'`, the byte after `/` — which catches the descendant sections' pages too,
+and it is projected to `path` alone. Two things follow, both wanted: the rewrite drags no rich
+text bodies through the transaction's 10 MiB limit, and it never parses a page document, so one
+page whose body no longer satisfies its schema cannot make its section unrenameable. The write
+is a single-field `update` and it **does** stamp the audit, unlike a renumbered sibling: the
+page's public URL really did change, which is something an author can see, where a `sortOrder`
+is not. Deleting a section that still holds pages is refused with 409, as one with subsections
+already is.
+
 ### ADR-003 — Rich text is stored as sanitized HTML
 
 Not Markdown, not a portable-text JSON tree.
