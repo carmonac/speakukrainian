@@ -6,11 +6,13 @@ import {
   forwardRef,
   inject,
   input,
+  output,
   signal,
   viewChild,
 } from '@angular/core';
 import { NG_VALUE_ACCESSOR, type ControlValueAccessor } from '@angular/forms';
-import { Editor } from '@tiptap/core';
+import type { AssetRef } from '@speakukrainian/shared';
+import { Editor, isNodeSelection, type CommandProps } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
 import Link from '@tiptap/extension-link';
@@ -19,6 +21,33 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { Audio } from './audio.extension';
 import { MediaPickerService } from '../media/media-picker.service';
+
+/**
+ * Puts the caret in a text position after a just-inserted atom.
+ *
+ * ProseMirror leaves the fresh node as the current `NodeSelection`, so the
+ * author's very next keystroke replaces it: the clip or picture they just
+ * uploaded disappears without a word, while the object stays in Cloud Storage
+ * with nothing left referring to it. Inserting and then carrying on writing is
+ * the ordinary gesture, so the caret has to land after the node.
+ *
+ * An atom dropped at the end of a list item or a blockquote has no text
+ * position after it — the trailing paragraph the document keeps at its own end
+ * is out of reach there — so one is made. Chained onto the insert rather than
+ * dispatched afterwards, so a single undo takes the whole insertion back.
+ */
+function caretAfterAtom({ state, commands }: CommandProps): boolean {
+  const { selection } = state;
+  if (!isNodeSelection(selection)) {
+    return true;
+  }
+
+  const after = selection.to;
+  const next = state.doc.resolve(after).nodeAfter;
+  return next?.isTextblock === true
+    ? commands.setTextSelection(after + 1)
+    : commands.insertContentAt(after, { type: 'paragraph' });
+}
 
 /**
  * The rich text control used by every long-form field in the admin panel —
@@ -49,6 +78,18 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
   readonly placeholder = input('');
   /** Hides the image and audio buttons for short fields like a menu label. */
   readonly inlineOnly = input(false);
+
+  /**
+   * The asset the picker just returned, for a form that has to record it
+   * somewhere other than in the HTML.
+   *
+   * The serialized content keeps only a `src` and, for audio, a
+   * `data-asset-path` — the API sanitizer's `ALLOW_DATA_ATTR: false` stops
+   * anything else riding along — so `contentType` and `sizeBytes` exist nowhere
+   * else once the insert has run. A form that ignores this output loses
+   * nothing but those two fields.
+   */
+  readonly assetInserted = output<AssetRef>();
 
   protected readonly disabled = signal(false);
   protected readonly active = signal<Record<string, boolean>>({});
@@ -140,24 +181,40 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
 
   protected async insertImage(): Promise<void> {
     const asset = await this.mediaPicker.pickImage();
-    if (asset) {
-      this.editor
-        ?.chain()
-        .focus()
-        .setImage({ src: asset.url, alt: asset.alt?.['en'] ?? '' })
-        .run();
+    const editor = this.editor;
+    if (asset === null || editor === null) {
+      // Cancelled, a failed upload the picker has already reported, or a view
+      // torn down while the file dialog was open.
+      return;
     }
+
+    // Announced *before* the insert. ProseMirror dispatches the transaction
+    // synchronously, so `onUpdate` — and any HTML the listener derives from —
+    // arrives during `.run()`. Emitting afterwards would hand a listener content
+    // that already refers to an asset it has not been told about yet.
+    this.assetInserted.emit(asset);
+    editor
+      .chain()
+      .focus()
+      .setImage({ src: asset.url, alt: asset.alt?.['en'] ?? '' })
+      .command(caretAfterAtom)
+      .run();
   }
 
   protected async insertAudio(): Promise<void> {
     const asset = await this.mediaPicker.pickAudio();
-    if (asset) {
-      this.editor
-        ?.chain()
-        .focus()
-        .setAudio({ src: asset.url, title: asset.path, assetPath: asset.path })
-        .run();
+    const editor = this.editor;
+    if (asset === null || editor === null) {
+      return;
     }
+
+    this.assetInserted.emit(asset);
+    editor
+      .chain()
+      .focus()
+      .setAudio({ src: asset.url, title: asset.path, assetPath: asset.path })
+      .command(caretAfterAtom)
+      .run();
   }
 
   protected async setLink(): Promise<void> {

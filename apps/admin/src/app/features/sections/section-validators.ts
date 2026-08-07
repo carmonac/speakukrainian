@@ -1,17 +1,11 @@
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
-import {
-  editableSectionFields,
-  linkTargetSchema,
-  slugSchema,
-  type LinkTarget,
-} from '@speakukrainian/shared';
+import { editableSectionFields, linkTargetSchema, type LinkTarget } from '@speakukrainian/shared';
 
 // The form's own copy of what the API would refuse, so the author is pointed at
 // the field rather than at an anonymous toast quoting Zod. Each one delegates to
-// the schema it mirrors; no rule is restated here (rule 1).
-
-export const slugValidator: ValidatorFn = (control: AbstractControl): ValidationErrors | null =>
-  slugSchema.safeParse(control.value).success ? null : { slug: true };
+// the schema it mirrors; no rule is restated here (rule 1). The slug rule is not
+// here: it mentions nothing about a section, so it lives in `shared/forms/slug`
+// with `slugify`.
 
 /**
  * Emptiness is `Validators.required`'s business — the create route leaves the

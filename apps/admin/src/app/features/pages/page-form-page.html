@@ -1,0 +1,143 @@
+<section class="page-form">
+  <mat-card class="page-form__card">
+    @if (saving()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+
+    <mat-card-header>
+      <mat-card-title>{{ isEdit() ? 'Edit page' : 'New page' }}</mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content>
+      <p class="page-form__section">
+        In <strong>{{ sectionLabel() }}</strong>
+        <code>{{ sectionPath() }}</code>
+      </p>
+      <!-- `updateContentPageSchema` omits `sectionId`, so this is stated rather
+           than offered as a field the API would ignore. -->
+      <p class="page-form__hint">A page cannot be moved to another section after it is created.</p>
+      <p class="page-form__path">
+        Public path: <code>{{ derivedPath() }}</code>
+      </p>
+
+      <form [formGroup]="form" (ngSubmit)="submit()" class="page-form__form">
+        <fieldset class="page-form__group">
+          <legend>Title</legend>
+          <app-localized-rich-text-editor formControlName="title" [locales]="locales()" [inlineOnly]="true" />
+          <p class="page-form__hint">{{ plainTitleHint }}</p>
+          <!-- The one field that states its requirement before it is edited,
+               rather than under the form's `showOnceEdited` policy: it has no
+               hint of its own, and it is what disables Save on a pristine
+               create form. -->
+          @if (form.controls.title.invalid) {
+            <p class="page-form__error">Give the page a title in the default locale.</p>
+          }
+        </fieldset>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Slug</mat-label>
+          <input matInput formControlName="slug" autocomplete="off" placeholder="present-simple" />
+          <mat-hint>Lowercase words joined by hyphens.</mat-hint>
+          <!-- Which message, never whether: `showOnceEdited` owns when an error
+               is displayed, and Material projects a `mat-error` only then. -->
+          @if (slugConflict(); as conflict) {
+            <mat-error class="page-form__slug-conflict">{{ conflict }}</mat-error>
+          } @else {
+            <mat-error class="page-form__slug-error">{{
+              form.controls.slug.hasError('required')
+                ? 'Give the page a slug.'
+                : 'Use lowercase words joined by hyphens.'
+            }}</mat-error>
+          }
+        </mat-form-field>
+
+        <fieldset class="page-form__group page-form__status-panel">
+          <legend>Status</legend>
+          <p class="page-form__status-line">
+            <span class="page-form__status">{{ status() }}</span>
+            <!-- The API keeps `publishedAt` through an unpublish, so a bare
+                 "Published …" would sit next to a `draft` chip and read as a
+                 contradiction. The date is worth keeping; the wording follows
+                 the status. -->
+            @if (publishedAt(); as published) {
+              <span class="page-form__published-at"
+                >{{ status() === 'published' ? 'Published' : 'Last published' }} {{ published | date: 'medium' }}</span
+              >
+            }
+          </p>
+
+          @if (isEdit()) {
+            <span class="page-form__publish-hint" [matTooltip]="form.dirty ? publishNeedsSave : ''">
+              @if (status() === 'published') {
+                <button
+                  matButton
+                  type="button"
+                  class="page-form__unpublish"
+                  [disabled]="form.dirty || saving()"
+                  (click)="setPublished(false)"
+                >
+                  Unpublish
+                </button>
+              } @else {
+                <button
+                  matButton="filled"
+                  type="button"
+                  class="page-form__publish"
+                  [disabled]="form.dirty || saving()"
+                  (click)="setPublished(true)"
+                >
+                  Publish
+                </button>
+              }
+            </span>
+            @if (form.dirty) {
+              <p class="page-form__publish-blocked">{{ publishNeedsSave }}</p>
+            }
+          } @else {
+            <p class="page-form__hint">A new page is saved as a draft. Publish it once it reads the way you want.</p>
+          }
+        </fieldset>
+
+        <fieldset class="page-form__group">
+          <legend>{{ typeLabel() }}</legend>
+          @if (formData().type === 'rich_text') {
+            <app-rich-text-page-body-editor formControlName="body" />
+          } @else {
+            <p class="page-form__body-unavailable">{{ bodyTypeUnavailable }}</p>
+          }
+        </fieldset>
+
+        <fieldset class="page-form__group" formGroupName="seo">
+          <legend>Search engines</legend>
+          <p class="page-form__hint">{{ plainSeoHint }}</p>
+
+          <p class="page-form__field-label">Meta title</p>
+          <app-localized-rich-text-editor formControlName="metaTitle" [locales]="locales()" [inlineOnly]="true" />
+
+          <p class="page-form__field-label">Meta description</p>
+          <app-localized-rich-text-editor formControlName="metaDescription" [locales]="locales()" [inlineOnly]="true" />
+
+          <mat-checkbox formControlName="noIndex" class="page-form__no-index">
+            Ask search engines not to index this page
+          </mat-checkbox>
+        </fieldset>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Sort order</mat-label>
+          <input matInput type="number" formControlName="sortOrder" />
+          @if (!isEdit()) {
+            <mat-hint>Left empty, the page is appended after the last page in this section.</mat-hint>
+          }
+          <mat-error class="page-form__sort-order-error">{{
+            form.controls.sortOrder.hasError('required') ? 'Give the page a position.' : 'Whole numbers only.'
+          }}</mat-error>
+        </mat-form-field>
+
+        <div class="page-form__actions">
+          <a matButton type="button" routerLink="/pages" [queryParams]="listQueryParams()">Cancel</a>
+          <button matButton="filled" type="submit" [disabled]="form.invalid || saving() || !canSave()">Save</button>
+        </div>
+      </form>
+    </mat-card-content>
+  </mat-card>
+</section>

@@ -43,24 +43,9 @@ import {
 import type { SectionFormData } from './section-form.resolver';
 import { sectionTitle } from './sections.model';
 import { SectionsApi } from './sections.api';
-import { linkHrefValidator, slugValidator, sortOrderValidator } from './section-validators';
-import { slugify } from './slug';
-
-/**
- * When a field on this form shows its error — one answer for all of them, so a
- * field added later inherits the policy instead of inventing a third variant.
- *
- * Material's default matcher waits for a blur or a submit, and this form offers
- * neither: Save is disabled while the form is invalid, so `ngSubmit` never
- * fires, and clicking a disabled button does not move focus, so an author who
- * types `1.5` or a slug with spaces and reaches for Save would be left with a
- * dead button and no reason for it. `dirty || touched` is what keeps a pristine
- * `/sections/new` from opening painted red with its hints replaced by errors.
- */
-const showOnceEdited: ErrorStateMatcher = {
-  isErrorState: (control) =>
-    control !== null && control.invalid && (control.dirty || control.touched),
-};
+import { linkHrefValidator, sortOrderValidator } from './section-validators';
+import { showOnceEdited } from '../../shared/forms/show-once-edited';
+import { slugValidator, slugify } from '../../shared/forms/slug';
 
 /** The form's raw value, which the two payload builders read. */
 interface SectionFormValue {

@@ -4,8 +4,9 @@ import { By } from '@angular/platform-browser';
 import { FormsModule, NgModel } from '@angular/forms';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { LocaleCode, RichText } from '@speakukrainian/shared';
+import type { AssetRef, LocaleCode, RichText } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
+import { MediaPickerService } from '../media/media-picker.service';
 import { LocalizedRichTextEditor } from './localized-rich-text-editor';
 import { RichTextEditor } from './rich-text-editor';
 
@@ -19,8 +20,10 @@ import { RichTextEditor } from './rich-text-editor';
   template: `
     <app-localized-rich-text-editor
       [locales]="store.codes()"
+      [disabled]="locked()"
       [ngModel]="value()"
       (ngModelChange)="emitted.set($event)"
+      (assetInserted)="inserted.set($event)"
     />
   `,
 })
@@ -28,7 +31,16 @@ class EditorHost {
   protected readonly store = inject(LocalesStore);
   readonly value = signal<RichText>({});
   readonly emitted = signal<RichText | null>(null);
+  readonly inserted = signal<AssetRef | null>(null);
+  readonly locked = signal(false);
 }
+
+const CLIP: AssetRef = {
+  path: 'audio/2026/01/hello.mp3',
+  url: 'https://cdn.test/audio/2026/01/hello.mp3',
+  contentType: 'audio/mpeg',
+  sizeBytes: 12_345,
+};
 
 function tabLabels(fixture: ComponentFixture<EditorHost>): string[] {
   const root = fixture.nativeElement as HTMLElement;
@@ -48,6 +60,13 @@ describe('LocalizedRichTextEditor', () => {
       providers: [
         provideNoopAnimations(),
         { provide: LocalesStore, useValue: { codes } as unknown as LocalesStore },
+        {
+          provide: MediaPickerService,
+          useValue: {
+            pickAudio: () => Promise.resolve(CLIP),
+            pickImage: () => Promise.resolve(null),
+          } as unknown as MediaPickerService,
+        },
       ],
     });
     fixture = TestBed.createComponent(EditorHost);
@@ -82,5 +101,44 @@ describe('LocalizedRichTextEditor', () => {
     fixture.detectChanges();
 
     expect(fixture.componentInstance.emitted()).toEqual({ en: '<p>Hi</p>', es: 'Hola' });
+  });
+
+  it('forwards the inserted asset out of the tab that inserted it', async () => {
+    // `contentType` and `sizeBytes` exist nowhere in the serialized HTML, so a
+    // form that has to record them has only this output to learn them from.
+    // Without the forwarding every newly inserted clip is dropped on save.
+    const root = fixture.nativeElement as HTMLElement;
+    // The tooltip is not in the DOM until the button is hovered, so the Insert
+    // audio button is found by the icon ligature it renders.
+    const audio = Array.from(root.querySelectorAll<HTMLButtonElement>('.rte__toolbar button')).find(
+      (entry) => entry.textContent?.trim() === 'volume_up',
+    );
+    if (audio === undefined) {
+      throw new Error('Expected an Insert audio button in the toolbar');
+    }
+
+    audio.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.inserted()).toEqual(CLIP);
+  });
+
+  it('passes a disabled control down to the tab’s editor', async () => {
+    // The wrapper is the only value accessor the form sees, so a
+    // `setDisabledState` it swallows would leave a disabled control typeable.
+    const contentEditable = (): string | null =>
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.rte__content .ProseMirror')
+        ?.getAttribute('contenteditable') ?? null;
+
+    expect(contentEditable()).toBe('true');
+
+    fixture.componentInstance.locked.set(true);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(contentEditable()).toBe('false');
   });
 });

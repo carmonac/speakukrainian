@@ -127,6 +127,36 @@
           </fieldset>
         }
 
+        <!-- Edit only, and content only: a page needs a saved section to hang
+             off, and `PagesRepository.create` refuses a link section with a
+             422. Leaving a dirty form through either link prompts through
+             `unsavedChangesGuard` already. -->
+        @if (isEdit() && kindValue() === 'content') {
+          <fieldset class="section-form__group">
+            <legend>Pages</legend>
+            <div class="section-form__pages-links">
+              <a
+                matButton
+                class="section-form__pages"
+                routerLink="/pages"
+                [queryParams]="{ sectionId: formData().section?.id }"
+              >
+                <mat-icon>description</mat-icon>
+                Pages in this section
+              </a>
+              <a
+                matButton
+                class="section-form__add-page"
+                routerLink="/pages/new"
+                [queryParams]="{ sectionId: formData().section?.id, type: 'rich_text' }"
+              >
+                <mat-icon>add</mat-icon>
+                Add page
+              </a>
+            </div>
+          </fieldset>
+        }
+
         <fieldset class="section-form__group">
           <legend>Menu</legend>
           <mat-checkbox formControlName="showInMenu" class="section-form__show-in-menu"> Show in menu </mat-checkbox>

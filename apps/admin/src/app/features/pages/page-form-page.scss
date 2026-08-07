@@ -1,13 +1,13 @@
-.section-form {
+.page-form {
   display: block;
   padding: 24px;
 
   &__card {
-    width: min(760px, 100%);
+    width: min(880px, 100%);
     overflow: hidden;
   }
 
-  &__parent,
+  &__section,
   &__path {
     margin: 4px 0 0;
     color: var(--mat-sys-on-surface-variant, #49454f);
@@ -36,29 +36,48 @@
     }
   }
 
-  &__hint {
+  &__hint,
+  &__field-label {
     margin: 4px 0 0;
     font-size: 12px;
     opacity: 0.7;
   }
 
-  &__error {
+  &__error,
+  &__publish-blocked {
     margin: 4px 0 0;
     font-size: 12px;
     color: var(--mat-sys-error, #b3261e);
   }
 
-  &__image-actions,
-  &__pages-links {
+  &__status-line {
     display: flex;
-    gap: 8px;
+    align-items: center;
+    gap: 12px;
+    margin: 4px 0 8px;
   }
 
-  &__image-preview {
-    max-width: 320px;
-    max-height: 200px;
-    margin-top: 8px;
-    object-fit: contain;
+  &__status {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    background: var(--mat-sys-secondary-container, #e8def8);
+    font-size: 0.75rem;
+    text-transform: capitalize;
+  }
+
+  &__published-at {
+    font-size: 12px;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__publish-hint {
+    align-self: flex-start;
+  }
+
+  &__body-unavailable {
+    margin: 8px 0;
+    color: var(--mat-sys-on-surface-variant, #49454f);
   }
 
   &__actions {

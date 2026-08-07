@@ -1,7 +1,7 @@
-import { Component, forwardRef, input, signal } from '@angular/core';
+import { Component, forwardRef, input, output, signal } from '@angular/core';
 import { FormsModule, NG_VALUE_ACCESSOR, type ControlValueAccessor } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
-import type { LocaleCode, RichText } from '@speakukrainian/shared';
+import type { AssetRef, LocaleCode, RichText } from '@speakukrainian/shared';
 import { RichTextEditor } from './rich-text-editor';
 
 /**
@@ -29,8 +29,10 @@ import { RichTextEditor } from './rich-text-editor';
           <app-rich-text-editor
             [placeholder]="placeholder()"
             [inlineOnly]="inlineOnly()"
+            [disabled]="disabled()"
             [ngModel]="valueFor(locale)"
             (ngModelChange)="updateLocale(locale, $event)"
+            (assetInserted)="assetInserted.emit($event)"
           />
         </mat-tab>
       }
@@ -43,8 +45,17 @@ export class LocalizedRichTextEditor implements ControlValueAccessor {
   readonly placeholder = input('');
   readonly inlineOnly = input(false);
 
+  /**
+   * Forwarded from whichever tab's editor inserted it. The locale is
+   * deliberately not carried: an asset is identified by its storage path or its
+   * URL, and a form deriving what the content references reads every locale
+   * anyway.
+   */
+  readonly assetInserted = output<AssetRef>();
+
   protected readonly selectedIndex = signal(0);
   protected readonly value = signal<RichText>({});
+  protected readonly disabled = signal(false);
 
   private onChange: (value: RichText) => void = () => {};
   private onTouched: () => void = () => {};
@@ -68,6 +79,20 @@ export class LocalizedRichTextEditor implements ControlValueAccessor {
 
   registerOnTouched(fn: () => void): void {
     this.onTouched = fn;
+  }
+
+  /**
+   * Forwarded to every tab's editor. Without this a disabled control would
+   * still be typeable — the wrapper is the only value accessor the form sees,
+   * so a `setDisabledState` it swallows never reaches ProseMirror.
+   *
+   * The `[disabled]` binding in the template above is not an input of
+   * {@link RichTextEditor}, which declares none: it is `NgModel`'s own
+   * `disabled` input, on the same element as `[ngModel]`, and that is what calls
+   * the editor's `setDisabledState` in turn.
+   */
+  setDisabledState(isDisabled: boolean): void {
+    this.disabled.set(isDisabled);
   }
 
   protected updateLocale(locale: LocaleCode, content: string): void {

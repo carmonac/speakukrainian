@@ -1020,6 +1020,48 @@ describe('SectionFormPage', () => {
     expect(await renderedIn(harness, 'menuLabel', EN)).toBe('Grammar');
   });
 
+  it('offers the pages of a saved content section', async () => {
+    // The entry point AC1 starts from: "from a section, Add page creates a rich
+    // text page".
+    setup({ sections: [STORED] });
+    const harness = await open('/sections/sec-1');
+
+    expect(root(harness).querySelector<HTMLAnchorElement>('.section-form__pages')?.href).toContain(
+      '/pages?sectionId=sec-1',
+    );
+    expect(
+      root(harness).querySelector<HTMLAnchorElement>('.section-form__add-page')?.href,
+    ).toContain('/pages/new?sectionId=sec-1&type=rich_text');
+  });
+
+  it('offers no pages link on a section that has not been created yet', async () => {
+    // A page needs a saved section to hang off.
+    setup();
+    const harness = await open('/sections/new');
+
+    expect(root(harness).querySelector('.section-form__pages')).toBeNull();
+    expect(root(harness).querySelector('.section-form__add-page')).toBeNull();
+  });
+
+  it('offers no pages link on a link section, which the API would refuse', async () => {
+    // `PagesRepository.create` answers a page under a link section with a 422.
+    const linkSection = section('link-2', {
+      kind: 'link',
+      link: { type: 'external', href: 'https://example.com', openInNewTab: false },
+      sortOrder: 1,
+    });
+    setup({ sections: [linkSection] });
+    const harness = await open('/sections/link-2');
+
+    expect(root(harness).querySelector('.section-form__pages')).toBeNull();
+    expect(root(harness).querySelector('.section-form__add-page')).toBeNull();
+
+    // And it comes back the moment the kind does.
+    await selectOption(harness, 'section-form__kind', 'Content');
+
+    expect(root(harness).querySelector('.section-form__add-page')).not.toBeNull();
+  });
+
   it('sends a deep link to a missing section back to the tree', async () => {
     setup({ sections: [] });
 
