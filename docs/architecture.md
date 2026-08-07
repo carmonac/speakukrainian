@@ -92,6 +92,17 @@ _Cost:_ HTML must be sanitized on write, server-side. The admin sanitizes for im
 feedback, but a compromised browser can post anything, so the API sanitizes again and that is
 the check that counts.
 
+Only the rich text fields are sanitized. Plain localized fields — a section's `title` and
+`menuLabel`, a page's `title`, `seo.metaTitle` and `seo.metaDescription` — are stored
+**verbatim**, because DOMPurify parses and re-serializes, so running plain text through it
+would store `Tom &amp; Jerry` and every editor and every renderer would show the escape.
+The obligation that buys is on the read side, and it is stricter than ADR-012's: these
+values may only ever reach an **escaped** context — Angular interpolation, or an attribute
+set through the DOM — never `[innerHTML]`, and never a `<script type="application/ld+json">`
+block without JSON string encoding. That last case is the one where the assumption stops
+holding: JSON-LD is a plausible feature on a site whose reason to exist is SEO, `</script>`
+inside a JSON string ends the block, and no sanitizer upstream will have removed it.
+
 ### ADR-004 — Audio is a first-class editor node
 
 `audio.extension.ts` defines an atom node rather than letting authors paste raw `<audio>` HTML.
