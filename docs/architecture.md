@@ -231,6 +231,54 @@ _Cost:_ a value the write path refuses can still be read back and re-saved by an
 other field, so tightening a rule does not clean up existing data on its own. A migration is what
 does that; the rule only stops new ones arriving.
 
+### ADR-013 — The section tree owns its drag gesture; CDK only sorts
+
+The admin's section tree is **one** `cdkDropList` — the `<ul>` — and CDK is left in charge of one
+thing: sliding rows apart to show where a vertical drop would land. The other half of the gesture,
+re-parenting by dragging a row into the narrow nest strip along the right-hand edge, is hit-tested
+by `SectionsPage` itself: a **capturing** `mousemove`/`touchmove` listener on `window` reads the
+pointer before CDK's own document-level handler does, and the pointer is tested against the rows'
+**live** rectangles, so the row that highlights is the row the tree is drawing under the pointer.
+While the pointer is in the strip, `sortPredicate` refuses every slot and the translations the sort
+has already written are cleared, so the tree stands still in its resting layout for as long as the
+pointer hunts along the strip. A release therefore means exactly one of three things: re-parent onto
+the highlighted row, reorder to the slot the placeholder was holding, or — in the strip with no
+legal row under the pointer — nothing at all, with no request and no toast.
+
+Every decision in that gesture is a pure function in `sections.model.ts` with its own unit tests
+(`isInNestStrip`, `rowBandAt`, `isSiblingSlot`, `siblingPositionAt`, `canMoveInto`, `applyMove`).
+The component measures the DOM and dispatches; it decides nothing itself.
+
+_Why not the obvious arrangement_ — a `cdkDropList` per row, connected through a
+`cdkDropListGroup`, which is what the CDK docs point at for connected lists and what this issue
+planned and tried first. It cannot be made to work, for three independent reasons. All three are
+`@angular/cdk` **22.1.0** internals, so they are pinned to that version and are worth re-checking on
+an upgrade rather than assumed permanent:
+
+- `CdkDropList` declares `{ provide: CDK_DROP_LIST_GROUP, useValue: undefined }`, so a drop list
+  rendered inside another one resolves no group, joins no sibling set, and silently never receives.
+- `cdkDropListLockAxis="y"` — the natural way to stop a tree row wandering sideways — freezes the x
+  coordinate CDK searches sibling containers at, at the drag handle. The strip is at the other end
+  of the row, so no column is ever a candidate.
+- `DropListRef._canReceive` tests the pointer against a `_domRect` cached once at drag start. CDK's
+  own sort translates every sibling of the dragged row, and a translated row is then in two places
+  at once — the cached rectangle it has left and the one it now occupies — satisfying neither half
+  of that test. The rows an author most wants to nest under, the dragged row's own siblings, were
+  precisely the ones that could never be entered.
+
+_What is not covered:_ the third cause has a reflow variant that only a real browser produces.
+Entering a per-row list pulls the dragged row out of the tree, the tree loses a row's height,
+everything below slides up, and the column moves out from under the pointer — at some viewport
+widths and not others. The admin suite does drive real CDK, over a supplied layout that re-measures
+each row through the transforms the sort writes, and that reproduces the cached-rectangle failure
+and the axis lock; it cannot model reflow, because jsdom lays nothing out. So a green suite is not
+evidence that this gesture works end to end, and the manual checks the issue's plan names stay
+manual.
+
+_The rule for the next tree UI:_ copy this shape, not `cdkDropListGroup`. The strip machinery lives
+inside `SectionsPage` only because it has one consumer; the second one is the trigger to lift it
+out, along with the pointer geometry in `sections.model.ts`, rather than to copy it.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
