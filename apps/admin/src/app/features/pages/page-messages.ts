@@ -49,3 +49,44 @@ export const ALL_SECTIONS_OPTION = 'All sections';
 
 /** Distinguished from "no pages yet" so an outage never reads as an empty section. */
 export const PAGES_LOAD_FAILED = 'Could not load pages.';
+
+// The subsection-list body editor's wording.
+
+/**
+ * The source picker's first entry, which stores no section id at all; the model
+ * appends the section's own title in brackets when it can resolve one.
+ */
+export const OWN_SECTION_OPTION = 'This page’s own section';
+
+export const OWN_SECTION_HINT =
+  'Kept as it is, no section is stored — the page lists whichever section it lives in, even if that section is later moved.';
+
+/** A section shown in the picker that has no subsections to list. */
+export const LINK_SECTION_SUFFIX = ' (link section)';
+
+/** The label for a stored source id that is nowhere in the tree. */
+export const MISSING_SECTION_OPTION = '(section no longer exists)';
+
+export const SOURCE_MUST_BE_CONTENT =
+  'A link section has no subsections of its own. Choose a content section.';
+
+export const SOURCE_SECTION_MISSING = 'That section no longer exists. Choose another one.';
+
+/** The tree behind the picker could not be read; the interceptor has toasted. */
+export const SUBSECTION_SOURCE_LOAD_FAILED = 'Could not load the list of sections.';
+
+/** Both remedies, because neither is obvious from an empty panel. */
+export const SUBSECTION_PREVIEW_EMPTY =
+  'This section has no published subsections yet. Publish one, or point this page at another section.';
+
+/** Distinguished from the empty state, the reason `PAGES_LOAD_FAILED` gives. */
+export const SUBSECTION_PREVIEW_FAILED = 'Could not load the subsections to preview.';
+
+/** There is no section to list — the preview has nothing to ask the API for. */
+export const SUBSECTION_PREVIEW_NO_SOURCE = 'Choose a section above to preview its subsections.';
+
+/** Shown only when the API answers with a cursor; paging the preview is out of scope. */
+export const SUBSECTION_PREVIEW_TRUNCATED =
+  'This section has more published subsections than are previewed here.';
+
+export const PREVIEW_LOCALE_LABEL = 'Preview language';

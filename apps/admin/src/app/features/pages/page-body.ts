@@ -34,3 +34,14 @@ const SEEDS: { [T in PageType]: PageBodySeed<T> } = {
 export function emptyBodyFor(type: PageType): PageBody {
   return pageBodySchema.parse(SEEDS[type]);
 }
+
+/**
+ * The body types this release can author: the list the "New page" menu offers
+ * and the list the page form will enable Save for. Stated once, so the two
+ * cannot disagree about which types are reachable.
+ *
+ * #13 gives `h5p_exercise` an editor and then this constant,
+ * `PageFormPage.bodyEditorAvailable`, the `@default` branch in
+ * `page-form-page.html` and `BODY_TYPE_UNAVAILABLE` all go away together.
+ */
+export const AUTHORABLE_PAGE_TYPES: readonly PageType[] = ['rich_text', 'subsection_list'];
