@@ -1,6 +1,6 @@
 /**
  * `yauzl-promise` ships no type declarations and DefinitelyTyped has no package
- * for v4, so the two members `h5p.package-scan.ts` uses are declared here.
+ * for v4, so the members `h5p.package-scan.ts` uses are declared here.
  *
  * Read off the installed v4 sources rather than recalled. A declaration that
  * does not match the runtime is a lie the compiler cannot catch, so the scan's
@@ -8,9 +8,21 @@
  * only a review.
  */
 declare module 'yauzl-promise' {
-  interface ZipEntry {
+  export interface ZipEntry {
     /** The decoded entry name. A directory entry ends in `/`. */
     readonly filename: string;
+    /**
+     * The ZIP compression method from the central directory. `0` is stored and
+     * `8` is deflate; `openReadStream` asserts it is one of those two.
+     */
+    readonly compressionMethod: number;
+    /** Whether the entry's data is encrypted, which the reader cannot decrypt. */
+    isEncrypted(): boolean;
+    /**
+     * The entry's data, decompressed and checked against the checksum the
+     * archive declares for it. The stream fails when either does not hold.
+     */
+    openReadStream(): Promise<import('node:stream').Readable>;
   }
 
   interface ZipReader extends AsyncIterable<ZipEntry> {

@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus, InternalServerErrorException, Logger } from '@nestjs/common';
 import { AggregateH5pError, H5pError } from '@lumieducation/h5p-server';
+import { formatMaxH5pUploadSize } from '@speakukrainian/shared';
 
 const logger = new Logger('H5pErrors');
 
@@ -9,9 +10,10 @@ const logger = new Logger('H5pErrors');
  * falls through to a message that at least names the id.
  */
 const UNUSABLE_PATH = 'The package contains a file with an unusable path.';
+const UNREADABLE_ARCHIVE = 'The file is not a readable ZIP archive, so it is not an H5P package.';
 
 const MESSAGES: Record<string, string> = {
-  'unable-to-unzip': 'The file is not a readable ZIP archive, so it is not an H5P package.',
+  'unable-to-unzip': UNREADABLE_ARCHIVE,
   'package-validation-failed': 'The package is not a valid H5P package.',
   'unable-to-parse-package': 'The package contains a JSON file that could not be parsed.',
   'install-missing-libraries':
@@ -27,6 +29,11 @@ const MESSAGES: Record<string, string> = {
   'package-scan:filename-too-long': 'The package contains a file whose name is too long to unpack.',
   'package-scan:not-a-library-folder':
     'Every folder in the package other than "content" must be a library folder containing a library.json.',
+  'package-scan:encrypted-entry':
+    'The package is password-protected. Upload it again without encryption.',
+  'package-scan:unsupported-compression':
+    'The package uses a ZIP compression method that cannot be read. Save it again with standard deflate compression.',
+  'package-scan:unpacks-too-large': `The package unpacks to more than ${formatMaxH5pUploadSize()}.`,
 };
 
 /**
@@ -48,6 +55,31 @@ const YAUZL_FILENAME_ERRORS = [
 ];
 
 /**
+ * How `yauzl-promise` rejects an entry's *data* once it starts reading it: the
+ * same shape, a plain `Error` from an assertion or from a validating stream.
+ *
+ * `assertSafePackageEntries` reads every entry the importer would, so a package
+ * that produces one of these is refused before the importer opens it — the
+ * same relationship the list above has with the scan's name rules. This stays
+ * as the backstop for a read that only fails the second time, and because
+ * without it such a failure is not merely a 500 but a request that never
+ * answers at all.
+ *
+ * Patterns rather than prefixes because two of the messages are complete as
+ * written: an unanchored `Unexpected end of file` would also swallow a storage
+ * read that failed with those words, which is a server fault and must stay a
+ * 500.
+ */
+const YAUZL_DATA_ERRORS = [
+  /^CRC32 validation failed\. /,
+  /^File data overflows file bounds: /,
+  /^Not enough bytes in the stream\. /,
+  /^Too many bytes in the stream\. /,
+  /^Invalid Local File Header signature$/,
+  /^Unexpected end of file$/,
+];
+
+/**
  * Maps an `H5pError` onto an HTTP response, or returns `null` for anything
  * else.
  *
@@ -59,7 +91,7 @@ const YAUZL_FILENAME_ERRORS = [
  */
 export function toHttpException(error: unknown): HttpException | null {
   if (!(error instanceof H5pError)) {
-    return unusablePathException(error);
+    return unreadableArchiveException(error);
   }
 
   const status = error.httpStatusCode;
@@ -87,22 +119,30 @@ export function toHttpException(error: unknown): HttpException | null {
   );
 }
 
-function unusablePathException(error: unknown): HttpException | null {
+/** The backstop for the two families of plain `Error` the zip reader raises. */
+function unreadableArchiveException(error: unknown): HttpException | null {
   if (!(error instanceof Error)) {
     return null;
   }
-  if (!YAUZL_FILENAME_ERRORS.some((prefix) => error.message.startsWith(prefix))) {
-    return null;
+
+  // Both messages name the offending entry, which came from the uploaded file
+  // and not from this server, but they are logged rather than returned: the
+  // client is told the rule, in the same words the same problem already gets
+  // when it is caught earlier.
+  if (YAUZL_FILENAME_ERRORS.some((prefix) => error.message.startsWith(prefix))) {
+    logger.warn(`A package entry name was rejected by the zip reader: ${error.message}`);
+    return badRequest(UNUSABLE_PATH);
+  }
+  if (YAUZL_DATA_ERRORS.some((pattern) => pattern.test(error.message))) {
+    logger.warn(`A package entry could not be read: ${error.message}`);
+    return badRequest(UNREADABLE_ARCHIVE);
   }
 
-  // The message names the offending entry, which came from the uploaded file
-  // and not from this server, but it is logged rather than returned: the client
-  // is told the rule, in the same words a rejected path already gets.
-  logger.warn(`A package entry name was rejected by the zip reader: ${error.message}`);
-  return new HttpException(
-    { statusCode: HttpStatus.BAD_REQUEST, message: UNUSABLE_PATH },
-    HttpStatus.BAD_REQUEST,
-  );
+  return null;
+}
+
+function badRequest(message: string): HttpException {
+  return new HttpException({ statusCode: HttpStatus.BAD_REQUEST, message }, HttpStatus.BAD_REQUEST);
 }
 
 /**

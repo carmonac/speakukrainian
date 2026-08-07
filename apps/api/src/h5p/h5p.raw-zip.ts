@@ -1,4 +1,4 @@
-import { crc32 } from 'node:zlib';
+import { crc32, deflateRawSync } from 'node:zlib';
 
 /**
  * A minimal ZIP writer for tests, which exists because every real one refuses
@@ -26,6 +26,26 @@ export interface RawZipEntry {
    * unpack to somewhere other than the name a plain reader would report.
    */
   unicodeName?: string;
+  /**
+   * Written into both headers. `8` deflates the data for real, since that is
+   * the method every archiver writes and the only one a reader will decode;
+   * any other value is written verbatim over stored data, because the rule
+   * those exist for reads the method out of the central directory and refuses
+   * the entry before anything opens it — and Node can write neither
+   * Deflate64 (9), BZip2 (12) nor LZMA (14) anyway.
+   */
+  compressionMethod?: number;
+  /**
+   * Sets the traditional-encryption flag and prepends the 12-byte header such
+   * an entry carries, which is what the reader checks a stored entry's sizes
+   * against.
+   */
+  encrypted?: boolean;
+  /**
+   * Flips a byte of the data *after* its checksum is written — a corrupt byte
+   * on disk, as the reader sees it.
+   */
+  corruptData?: boolean;
 }
 
 const LOCAL_HEADER_SIGNATURE = 0x04034b50;
@@ -37,8 +57,13 @@ const END_OF_CENTRAL_DIRECTORY_SIZE = 22;
 
 /** Names are written UTF-8, so the general purpose flag says so (bit 11). */
 const UTF8_NAMES = 0x0800;
+/** Traditional PKWARE encryption (bit 0). */
+const ENCRYPTED = 0x0001;
+/** The header traditional encryption prefixes the data with. */
+const ENCRYPTION_HEADER_SIZE = 12;
 const VERSION = 20;
 const STORED = 0;
+const DEFLATE = 8;
 
 /** A fixed, valid DOS timestamp: 2026-01-01 00:00:00. */
 const DOS_DATE = ((2026 - 1980) << 9) | (1 << 5) | 1;
@@ -55,16 +80,19 @@ export function buildRawZip(entries: RawZipEntry[]): Buffer {
       ? entry.content
       : Buffer.from(entry.content, 'utf-8');
     const checksum = crc32(body);
+    const method = entry.compressionMethod ?? STORED;
+    const data = entryData(body, method, entry);
+    const flag = UTF8_NAMES | (entry.encrypted ? ENCRYPTED : 0);
 
     const local = Buffer.alloc(LOCAL_HEADER_SIZE);
     local.writeUInt32LE(LOCAL_HEADER_SIGNATURE, 0);
     local.writeUInt16LE(VERSION, 4);
-    local.writeUInt16LE(UTF8_NAMES, 6);
-    local.writeUInt16LE(STORED, 8);
+    local.writeUInt16LE(flag, 6);
+    local.writeUInt16LE(method, 8);
     local.writeUInt16LE(DOS_TIME, 10);
     local.writeUInt16LE(DOS_DATE, 12);
     local.writeUInt32LE(checksum, 14);
-    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(data.length, 18);
     local.writeUInt32LE(body.length, 22);
     local.writeUInt16LE(name.length, 26);
     local.writeUInt16LE(0, 28);
@@ -75,12 +103,12 @@ export function buildRawZip(entries: RawZipEntry[]): Buffer {
     header.writeUInt32LE(CENTRAL_HEADER_SIGNATURE, 0);
     header.writeUInt16LE(VERSION, 4);
     header.writeUInt16LE(VERSION, 6);
-    header.writeUInt16LE(UTF8_NAMES, 8);
-    header.writeUInt16LE(STORED, 10);
+    header.writeUInt16LE(flag, 8);
+    header.writeUInt16LE(method, 10);
     header.writeUInt16LE(DOS_TIME, 12);
     header.writeUInt16LE(DOS_DATE, 14);
     header.writeUInt32LE(checksum, 16);
-    header.writeUInt32LE(body.length, 20);
+    header.writeUInt32LE(data.length, 20);
     header.writeUInt32LE(body.length, 24);
     header.writeUInt16LE(name.length, 28);
     header.writeUInt16LE(extra.length, 30);
@@ -90,9 +118,9 @@ export function buildRawZip(entries: RawZipEntry[]): Buffer {
     header.writeUInt32LE(0, 38);
     header.writeUInt32LE(offset, 42);
 
-    parts.push(local, name, body);
+    parts.push(local, name, data);
     central.push(header, name, extra);
-    offset += local.length + name.length + body.length;
+    offset += local.length + name.length + data.length;
   }
 
   const directory = Buffer.concat(central);
@@ -107,6 +135,21 @@ export function buildRawZip(entries: RawZipEntry[]): Buffer {
   end.writeUInt16LE(0, 20);
 
   return Buffer.concat([...parts, directory, end]);
+}
+
+/** What actually goes on the wire for an entry, once it has been damaged. */
+function entryData(body: Buffer, method: number, entry: RawZipEntry): Buffer {
+  let data = method === DEFLATE ? deflateRawSync(body) : body;
+
+  if (entry.corruptData && data.length > 0) {
+    data = Buffer.from(data);
+    data.writeUInt8(data.readUInt8(0) ^ 0xff, 0);
+  }
+  if (entry.encrypted) {
+    data = Buffer.concat([Buffer.alloc(ENCRYPTION_HEADER_SIZE), data]);
+  }
+
+  return data;
 }
 
 /**

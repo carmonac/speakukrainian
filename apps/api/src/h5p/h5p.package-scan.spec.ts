@@ -178,6 +178,116 @@ describe('assertSafePackageEntries', () => {
     });
   });
 
+  describe('data the reader could not decode', () => {
+    // The damaged entry is the last one, so a scan that stopped at the first
+    // problem-free entry would let it through.
+    const damaged = (entry: Partial<RawZipEntry>): RawZipEntry[] => [
+      ...ORDINARY_ENTRIES,
+      { name: 'SpeakTest.Main-1.0/main.js', content: 'window.x = 1;', ...entry },
+    ];
+
+    it('refuses an encrypted entry, which the reader cannot decrypt', async () => {
+      const path = await write(buildRawZip(damaged({ encrypted: true })));
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:encrypted-entry');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    // What 7-Zip writes for a `.zip` at anything but its Deflate default.
+    it.each([
+      ['Deflate64', 9],
+      ['BZip2', 12],
+      ['LZMA', 14],
+    ])('refuses an entry compressed with %s', async (_name, compressionMethod) => {
+      const path = await write(buildRawZip(damaged({ compressionMethod })));
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:unsupported-compression');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    it('accepts deflate, which is what every ordinary package is written with', async () => {
+      // The other side of the boundary: a rule that refused this would refuse
+      // essentially every real `.h5p`.
+      const deflated = ORDINARY_ENTRIES.map((entry) => ({ ...entry, compressionMethod: 8 }));
+
+      await expect(
+        assertSafePackageEntries(await write(buildRawZip(deflated))),
+      ).resolves.toBeUndefined();
+    });
+
+    it('refuses an entry whose data no longer matches its checksum', async () => {
+      // The shape acceptance criterion 4 calls a corrupt archive. It cannot be
+      // decided from the headers, so it is the read that catches it — and if it
+      // is not caught here, `extractPackage` pipes the failing entry to disk and
+      // the pipe never settles, which is a request that never answers.
+      const path = await write(buildRawZip(damaged({ compressionMethod: 8, corruptData: true })));
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('unable-to-unzip');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    describe('the budget for that read', () => {
+      // A few kilobytes of zip can declare gigabytes of data, so the read needs
+      // a ceiling of its own: the library's size rule only runs once it has
+      // extracted, which is after this. The budget is passed in here rather
+      // than filled with 100 MB of zeros, so both sides of it can be pinned.
+      const entriesUnpackingTo = (bytes: number): RawZipEntry[] => [
+        ...ORDINARY_ENTRIES,
+        {
+          name: 'SpeakTest.Main-1.0/big.js',
+          content: Buffer.alloc(bytes),
+          compressionMethod: 8,
+        },
+      ];
+
+      /** What `ORDINARY_ENTRIES` unpacks to, so the budgets below are exact. */
+      const ordinaryBytes = ORDINARY_ENTRIES.reduce(
+        (total, entry) => total + Buffer.byteLength(entry.content),
+        0,
+      );
+
+      it('refuses a package that unpacks past it', async () => {
+        const path = await write(buildRawZip(entriesUnpackingTo(1024)));
+
+        const error = await assertSafePackageEntries(path, ordinaryBytes + 1023).catch(
+          (thrown: unknown) => thrown,
+        );
+
+        expect(error).toBeInstanceOf(H5pError);
+        expect((error as H5pError).errorId).toBe('package-scan:unpacks-too-large');
+        expect((error as H5pError).httpStatusCode).toBe(400);
+      });
+
+      it('accepts a package that unpacks to exactly it', async () => {
+        const path = await write(buildRawZip(entriesUnpackingTo(1024)));
+
+        await expect(assertSafePackageEntries(path, ordinaryBytes + 1024)).resolves.toBeUndefined();
+      });
+    });
+
+    it('ignores an entry the extractor would never open', async () => {
+      // `extractPackage` skips a basename starting with `.`, so this one never
+      // reaches `openReadStream` and cannot fail there.
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: 'content/.DS_Store', content: 'x', compressionMethod: 12 },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
+  });
+
   describe('top-level folders', () => {
     it('refuses a folder that carries no library.json', async () => {
       // `PackageValidator` reads `<folder>/library.json` for every top-level

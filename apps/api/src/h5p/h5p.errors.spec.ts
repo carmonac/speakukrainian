@@ -51,6 +51,15 @@ describe('toHttpException', () => {
       'package-scan:not-a-library-folder',
       'Every folder in the package other than "content" must be a library folder containing a library.json.',
     ],
+    [
+      'package-scan:encrypted-entry',
+      'The package is password-protected. Upload it again without encryption.',
+    ],
+    [
+      'package-scan:unsupported-compression',
+      'The package uses a ZIP compression method that cannot be read. Save it again with standard deflate compression.',
+    ],
+    ['package-scan:unpacks-too-large', 'The package unpacks to more than 100 MB.'],
   ])('words %s as a rule the uploader can act on', (errorId, message) => {
     // Without wording of its own each of these falls through to the generic
     // "could not be imported (<id>)", which names an id nobody outside this
@@ -107,6 +116,26 @@ describe('toHttpException', () => {
     );
   });
 
+  it.each([
+    ['CRC32 validation failed. Expected 958480011, received 3978791044.'],
+    ['File data overflows file bounds: 4096 + 512 > 4210'],
+    ['Invalid Local File Header signature'],
+    ['Unexpected end of file'],
+  ])('turns a data rejection from the zip reader (%j) into a 400', (message) => {
+    // These come out of `entry.openReadStream()` and the streams it returns,
+    // from inside `PackageImporter.extractPackage` — long after the scan has
+    // finished, because a checksum and a truncation are facts about the bytes
+    // rather than about the central directory. A one-bit corruption of a real
+    // package is what acceptance criterion 4 calls a corrupt archive, and it
+    // used to answer 500.
+    const exception = toHttpException(new Error(message));
+
+    expect(exception?.getStatus()).toBe(400);
+    expect(bodyOf(exception!)['message']).toBe(
+      'The file is not a readable ZIP archive, so it is not an H5P package.',
+    );
+  });
+
   it('keeps the rejected entry name out of the response body', () => {
     const exception = toHttpException(new Error('Relative path: content/../../pwned.txt'));
 
@@ -118,6 +147,11 @@ describe('toHttpException', () => {
     expect(toHttpException(new Error('ECONNRESET'))).toBeNull();
     // Close enough to read like one of yauzl's, and still a server fault.
     expect(toHttpException(new Error('Absolute paths are unsupported by this bucket'))).toBeNull();
+    // Yauzl's own message is exactly `Unexpected end of file`, which is why
+    // that one is matched whole: a bucket read that ended early is ours.
+    expect(
+      toHttpException(new Error('Unexpected end of file reading the object from the bucket')),
+    ).toBeNull();
     expect(toHttpException('boom')).toBeNull();
     expect(toHttpException(undefined)).toBeNull();
   });
