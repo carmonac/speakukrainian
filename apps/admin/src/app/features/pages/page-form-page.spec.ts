@@ -340,7 +340,7 @@ function conflictError(message: string): HttpErrorResponse {
 
 const TITLE = 'app-localized-rich-text-editor[formControlName="title"]';
 const META_TITLE = 'app-localized-rich-text-editor[formControlName="metaTitle"]';
-const BODY = 'app-rich-text-page-body';
+const BODY = 'app-rich-text-page-body-editor';
 
 describe('PageFormPage', () => {
   beforeEach(() => {
@@ -667,7 +667,7 @@ describe('PageFormPage', () => {
     expect(root(harness).querySelector('.page-form__body-unavailable')?.textContent?.trim()).toBe(
       BODY_TYPE_UNAVAILABLE,
     );
-    expect(root(harness).querySelector('app-rich-text-page-body')).toBeNull();
+    expect(root(harness).querySelector(BODY)).toBeNull();
 
     await typeInto(harness, TITLE, EN, '<p>An exercise</p>');
 

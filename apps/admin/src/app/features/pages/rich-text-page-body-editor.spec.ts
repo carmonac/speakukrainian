@@ -8,7 +8,7 @@ import type { AssetRef, LocaleCode, PageBody } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { RichTextEditor } from '../../shared/rich-text/rich-text-editor';
-import { RichTextPageBody, emptyRichTextBody } from './rich-text-page-body';
+import { RichTextPageBodyEditor, emptyRichTextBody } from './rich-text-page-body-editor';
 
 const EN = 0;
 const UK = 1;
@@ -28,14 +28,14 @@ const audioHtml = `<audio src="${CLIP.url}" data-asset-path="${CLIP.path}" contr
  */
 @Component({
   selector: 'app-body-host',
-  imports: [ReactiveFormsModule, RichTextPageBody],
-  template: `<app-rich-text-page-body [formControl]="body" />`,
+  imports: [ReactiveFormsModule, RichTextPageBodyEditor],
+  template: `<app-rich-text-page-body-editor [formControl]="body" />`,
 })
 class BodyHost {
   readonly body = new FormControl<PageBody>(emptyRichTextBody(), { nonNullable: true });
 }
 
-describe('RichTextPageBody', () => {
+describe('RichTextPageBodyEditor', () => {
   let fixture: ComponentFixture<BodyHost>;
   let picked: AssetRef | null;
 

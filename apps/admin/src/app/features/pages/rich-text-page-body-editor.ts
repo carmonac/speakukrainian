@@ -27,19 +27,24 @@ import { PageAssetTracker } from './page-assets';
  * derived asset arrays, and what makes this body invalid — stays behind that one
  * control. The shell decides *whether* Save is enabled; this decides *why* its
  * own value is not valid.
+ *
+ * `…Editor` rather than `RichTextPageBody`: that name belongs to the shared
+ * domain type this component edits, which `page-assets.ts` imports two files
+ * away. #10 and #13 own `SubsectionListPageBody` and `H5pExercisePageBody`,
+ * which are shared type names too.
  */
 @Component({
-  selector: 'app-rich-text-page-body',
+  selector: 'app-rich-text-page-body-editor',
   imports: [FormsModule, LocalizedRichTextEditor],
   providers: [
     {
       provide: NG_VALUE_ACCESSOR,
-      useExisting: forwardRef(() => RichTextPageBody),
+      useExisting: forwardRef(() => RichTextPageBodyEditor),
       multi: true,
     },
     {
       provide: NG_VALIDATORS,
-      useExisting: forwardRef(() => RichTextPageBody),
+      useExisting: forwardRef(() => RichTextPageBodyEditor),
       multi: true,
     },
   ],
@@ -54,7 +59,7 @@ import { PageAssetTracker } from './page-assets';
     />
   `,
 })
-export class RichTextPageBody implements ControlValueAccessor, Validator {
+export class RichTextPageBodyEditor implements ControlValueAccessor, Validator {
   /**
    * Injected rather than taken as an input: one less prop for the other body
    * editors (#10, #13) to keep in sync with the shell.

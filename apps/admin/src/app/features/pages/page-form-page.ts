@@ -54,7 +54,7 @@ import {
 import type { PageFormData } from './page-form.resolver';
 import { sortOrderValidator } from './page-validators';
 import { sectionPathOfPage } from './pages.model';
-import { RichTextPageBody, emptyRichTextBody } from './rich-text-page-body';
+import { RichTextPageBodyEditor, emptyRichTextBody } from './rich-text-page-body-editor';
 import { PagesApi, type CreatePageBody } from './pages.api';
 
 /** The form's raw value, which the two payload builders read. */
@@ -90,7 +90,7 @@ interface PageFormValue {
     MatProgressBarModule,
     MatTooltipModule,
     LocalizedRichTextEditor,
-    RichTextPageBody,
+    RichTextPageBodyEditor,
   ],
   templateUrl: './page-form-page.html',
   styleUrl: './page-form-page.scss',
