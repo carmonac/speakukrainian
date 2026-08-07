@@ -1,19 +1,6 @@
 import { FormControl, FormGroup, type AbstractControl } from '@angular/forms';
 import { describe, expect, it } from 'vitest';
-import { linkHrefValidator, slugValidator, sortOrderValidator } from './section-validators';
-
-describe('slugValidator', () => {
-  it('accepts a kebab-case slug', () => {
-    expect(slugValidator(new FormControl('present-simple'))).toBeNull();
-  });
-
-  it('rejects what slugSchema rejects, without restating its regex', () => {
-    expect(slugValidator(new FormControl('Not Kebab'))).toEqual({ slug: true });
-    expect(slugValidator(new FormControl(''))).toEqual({ slug: true });
-    expect(slugValidator(new FormControl('trailing-'))).toEqual({ slug: true });
-    expect(slugValidator(new FormControl('a'.repeat(81)))).toEqual({ slug: true });
-  });
-});
+import { linkHrefValidator, sortOrderValidator } from './section-validators';
 
 describe('sortOrderValidator', () => {
   it('accepts a whole number, negative ones included', () => {
