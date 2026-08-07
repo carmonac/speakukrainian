@@ -364,6 +364,19 @@ describe('SubsectionListPageBodyEditor', () => {
     expect(titles()).toEqual(['Tenses']);
   });
 
+  it('omits an untouched intro instead of storing an empty record', async () => {
+    // The other key the emit leaves out. `intro: {}` parses and stores, so
+    // nothing downstream would reject it — it would just put a lead-in on the
+    // document that every renderer has to test for before resolving it, on
+    // every page whose author never opened the field. This edit is a body edit,
+    // so the emitted value is the one a save would post.
+    await setup({ children: { grammar: [TENSES] } });
+
+    await choose('.subsection-body__layout', 'List');
+
+    expect('intro' in value()).toBe(false);
+  });
+
   it('refuses a link section on the picker, and asks the API nothing about it', async () => {
     // AC5. The option is offered, and says what it is, so the refusal is a thing
     // the author can provoke and read.
