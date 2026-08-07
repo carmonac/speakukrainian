@@ -24,7 +24,7 @@ import {
   DEP_LIBRARY_DIR,
   MAIN_LIBRARY_DIR,
   buildH5pPackage,
-  buildHostileH5pPackage,
+  buildH5pPackageWithEntry,
   buildRawH5pPackage,
 } from './fixtures/h5p-package.js';
 
@@ -64,6 +64,29 @@ const HOSTILE_ENTRY_NAMES = [
 
 /** Where the two escaping shapes above would land if nothing stopped them. */
 const ESCAPE_TARGETS = [join(tmpdir(), ESCAPE_MARKER), join('/tmp', ESCAPE_MARKER)];
+
+/**
+ * Packages that are malformed rather than hostile: nothing escapes, and the
+ * caller still has to be told which rule their file broke instead of being
+ * shown a server fault they cannot act on.
+ */
+const MALFORMED_PACKAGES: [shape: string, entry: string, message: string][] = [
+  [
+    'carrying a zero-length entry name',
+    '',
+    'The file is not a readable ZIP archive, so it is not an H5P package.',
+  ],
+  [
+    'whose path has a segment past the filesystem limit',
+    `${'a'.repeat(256)}/x.txt`,
+    'The package contains a file whose name is too long to unpack.',
+  ],
+  [
+    'with a top-level folder that is not a library',
+    'notes/scratch.txt',
+    'Every folder in the package other than "content" must be a library folder containing a library.json.',
+  ],
+];
 
 describe('h5p (e2e)', () => {
   let app: INestApplication;
@@ -285,7 +308,7 @@ describe('h5p (e2e)', () => {
 
       const response = await post(
         editor.idToken,
-        buildHostileH5pPackage(name, 'this must never be written'),
+        buildH5pPackageWithEntry(name, 'this must never be written'),
         'hostile.h5p',
       ).expect(400);
 
@@ -299,6 +322,27 @@ describe('h5p (e2e)', () => {
       for (const target of ESCAPE_TARGETS) {
         await expect(access(target)).rejects.toThrow();
       }
+    },
+  );
+
+  it.each(MALFORMED_PACKAGES)(
+    'answers 400 naming the problem for a package %s',
+    async (_shape, entry, message) => {
+      // Each of these used to escape as `500 Internal server error` with an
+      // `Unhandled POST` stack in the log: the library raises a plain `Error`
+      // for them — from `Buffer.allocUnsafe`, from `mkdir`, from an assertion
+      // inside `PackageValidator` — and a plain `Error` is a server fault
+      // everywhere else, correctly.
+      const before = await countObjects(CONTENT_PREFIX);
+
+      const response = await post(
+        editor.idToken,
+        buildH5pPackageWithEntry(entry, 'x'),
+        'malformed.h5p',
+      ).expect(400);
+
+      expect((response.body as ErrorBody).message).toBe(message);
+      await expect(countObjects(CONTENT_PREFIX)).resolves.toBe(before);
     },
   );
 

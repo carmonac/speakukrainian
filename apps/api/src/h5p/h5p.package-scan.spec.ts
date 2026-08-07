@@ -96,6 +96,26 @@ describe('assertSafePackageEntries', () => {
     expect((error as H5pError).httpStatusCode).toBe(400);
   });
 
+  // The third class, and the one a "is it an archive at all?" case cannot
+  // reach: an archive structured well enough for the reader to act on it, whose
+  // contents then make *Node itself* throw. A zero-length entry name reaches
+  // `Buffer.allocUnsafe(undefined)` in yauzl's reader and raises
+  // `TypeError [ERR_INVALID_ARG_TYPE]`, which carries a string `code` like
+  // every Node built-in error does — so a predicate that reads a `code` as
+  // "the filesystem refused" hands it straight back and the route answers 500.
+  it.each([
+    ['while the central directory is located', [{ name: '', content: 'x' }]],
+    ['while the entries are iterated', [...ORDINARY_ENTRIES, { name: '', content: 'x' }]],
+  ])('reports an archive that makes Node throw %s as a 400', async (_where, entries) => {
+    const path = await write(buildRawZip(entries));
+
+    const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(H5pError);
+    expect((error as H5pError).errorId).toBe('unable-to-unzip');
+    expect((error as H5pError).httpStatusCode).toBe(400);
+  });
+
   it('passes a filesystem failure through untouched, so it stays a 500', async () => {
     // An upload that is not there is this server's problem, not the caller's.
     const error = await assertSafePackageEntries(join(directory, 'absent.h5p')).catch(
@@ -104,5 +124,111 @@ describe('assertSafePackageEntries', () => {
 
     expect(error).not.toBeInstanceOf(H5pError);
     expect((error as NodeJS.ErrnoException).code).toBe('ENOENT');
+  });
+
+  describe('names too long to unpack', () => {
+    it('refuses a path segment past the filesystem limit', async () => {
+      // 256 bytes is the first length `mkdir` answers with `ENAMETOOLONG`,
+      // which the importer raises halfway through extraction.
+      const path = await write(
+        buildRawZip([...ORDINARY_ENTRIES, { name: `${'a'.repeat(256)}/x.txt`, content: 'x' }]),
+      );
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:filename-too-long');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    it('measures a segment in bytes, not in characters', async () => {
+      // 200 three-byte characters is 600 bytes, and it is the byte count the
+      // filesystem counts.
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: `content/${'ф'.repeat(200)}.txt`, content: 'x' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).rejects.toBeInstanceOf(H5pError);
+    });
+
+    it('accepts a segment at the limit', async () => {
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: `${'a'.repeat(255)}/library.json`, content: '{}' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
+
+    it('refuses a path too long to store, however short its segments are', async () => {
+      const deep = `${'ab/'.repeat(400)}x.txt`;
+      const path = await write(
+        buildRawZip([...ORDINARY_ENTRIES, { name: `content/${deep}`, content: 'x' }]),
+      );
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect((error as H5pError).errorId).toBe('package-scan:filename-too-long');
+    });
+  });
+
+  describe('top-level folders', () => {
+    it('refuses a folder that carries no library.json', async () => {
+      // `PackageValidator` reads `<folder>/library.json` for every top-level
+      // folder but `content`, and throws a plain `Error` when it is absent.
+      const path = await write(
+        buildRawZip([...ORDINARY_ENTRIES, { name: 'notes/scratch.txt', content: 'x' }]),
+      );
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:not-a-library-folder');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    it('refuses the folder a macOS archiver adds beside the real ones', async () => {
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: '__MACOSX/SpeakTest.Main-1.0/library.json', content: '{}' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).rejects.toBeInstanceOf(H5pError);
+    });
+
+    it('ignores a folder the extractor would never create', async () => {
+      // Every entry under it is skipped by `extractPackage` — a directory entry
+      // and a basename starting with `_` — so no such folder reaches the
+      // validator and refusing the package would be refusing nothing.
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: 'notes/', content: '' },
+          { name: 'notes/_scratch.txt', content: 'x' },
+          { name: 'notes/.hidden', content: 'x' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
+
+    it('matches library.json case-insensitively, as the validator does', async () => {
+      const path = await write(
+        buildRawZip([
+          { name: 'h5p.json', content: '{"title":"drill"}' },
+          { name: 'content/content.json', content: '{}' },
+          { name: 'SpeakTest.Main-1.0/LIBRARY.JSON', content: '{}' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
   });
 });

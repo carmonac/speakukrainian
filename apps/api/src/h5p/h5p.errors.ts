@@ -20,6 +20,13 @@ const MESSAGES: Record<string, string> = {
   'storage-file-implementations:illegal-relative-filename': UNUSABLE_PATH,
   'storage-file-implementations:illegal-absolute-filename': UNUSABLE_PATH,
   'storage-file-implementations:illegal-character': UNUSABLE_PATH,
+  // The two ids `h5p.package-scan.ts` raises for a package that is malformed
+  // rather than hostile. Both name a rule the uploader can act on, which is the
+  // whole reason they are refused up front instead of surfacing as the plain
+  // `Error` the library raises mid-import.
+  'package-scan:filename-too-long': 'The package contains a file whose name is too long to unpack.',
+  'package-scan:not-a-library-folder':
+    'Every folder in the package other than "content" must be a library folder containing a library.json.',
 };
 
 /**

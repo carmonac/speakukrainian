@@ -124,13 +124,16 @@ export function buildRawH5pPackage(options: PackageOptions = {}): Buffer {
 }
 
 /**
- * A valid package carrying one extra entry whose name is not safe to unpack.
+ * A valid package carrying one extra entry with the given name.
  *
- * `yazl` refuses to write such a name — correctly, and unhelpfully: without an
- * archive that carries one, nothing can show what the API answers for it.
+ * That entry is the only difference from `buildRawH5pPackage`, so whatever the
+ * API answers is about the name and nothing else. It is built by hand because
+ * `yazl` refuses to write most of the names worth asking about — correctly, and
+ * unhelpfully: without an archive that carries one, nothing can show what the
+ * API answers for it.
  */
-export function buildHostileH5pPackage(entryName: string, marker: string): Buffer {
-  return buildRawZip([...packageEntries(), { name: entryName, content: marker }]);
+export function buildH5pPackageWithEntry(entryName: string, content: string): Buffer {
+  return buildRawZip([...packageEntries(), { name: entryName, content }]);
 }
 
 function json(value: unknown): Buffer {

@@ -42,6 +42,25 @@ describe('toHttpException', () => {
     expect(bodyOf(toHttpException(aggregate)!)['errors']).toBeUndefined();
   });
 
+  it.each([
+    [
+      'package-scan:filename-too-long',
+      'The package contains a file whose name is too long to unpack.',
+    ],
+    [
+      'package-scan:not-a-library-folder',
+      'Every folder in the package other than "content" must be a library folder containing a library.json.',
+    ],
+  ])('words %s as a rule the uploader can act on', (errorId, message) => {
+    // Without wording of its own each of these falls through to the generic
+    // "could not be imported (<id>)", which names an id nobody outside this
+    // repo has ever seen.
+    const exception = toHttpException(new H5pError(errorId, { filename: 'x' }, 400));
+
+    expect(exception?.getStatus()).toBe(400);
+    expect(bodyOf(exception!)['message']).toBe(message);
+  });
+
   it('names the id for a 4xx it has no wording for, rather than saying nothing', () => {
     const exception = toHttpException(new H5pError('some-future-error-id', {}, 403));
 
