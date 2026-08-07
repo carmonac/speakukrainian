@@ -139,7 +139,7 @@ export class SectionsService {
         );
       case 'pages-too-large':
         throw new UnprocessableEntityException(
-          `Renaming or moving this section would rewrite its subtree and the pages under it in more than ${failure.limit} writes, which one transaction cannot commit. Move some of its pages or subsections out first.`,
+          `Renaming or moving this section would rewrite its subtree and the pages under it in more than ${failure.limit} writes, which one transaction cannot commit. Delete some of its pages, or move some of its subsections out, first.`,
         );
       case 'invalid':
         // The `errors` key matches what `ZodValidationPipe` produces, so a

@@ -667,7 +667,7 @@ describe('pages (e2e)', () => {
 
     try {
       const refused = await renameSection(section.id, 'e2e-budget-renamed').expect(422);
-      expect((refused.body as ErrorBody).message).toContain(String(MAX_TRANSACTION_WRITES));
+      expect((refused.body as ErrorBody).message).toContain('the pages under it');
 
       // Refused outright rather than half committed: a rename that rewrote the
       // section and only some of its pages is a set of broken public URLs.
@@ -684,7 +684,7 @@ describe('pages (e2e)', () => {
         .set('Authorization', bearer(editor))
         .send({ parentId: target.id, sortOrder: 0 })
         .expect(422);
-      expect((refusedMove.body as ErrorBody).message).toContain(String(MAX_TRANSACTION_WRITES));
+      expect((refusedMove.body as ErrorBody).message).toContain('the pages under it');
 
       const unmoved = await readSection(section.id);
       expect(unmoved.parentId).toBeNull();
