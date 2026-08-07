@@ -18,7 +18,11 @@ import type {
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { SectionsApi } from '../sections/sections.api';
-import { PICK_SECTION_FIRST, SECTION_CANNOT_HOLD_PAGES } from './page-messages';
+import {
+  ALL_SECTIONS_OPTION,
+  PICK_SECTION_FIRST,
+  SECTION_CANNOT_HOLD_PAGES,
+} from './page-messages';
 import { PagesPage } from './pages-page';
 import { pagesListResolver } from './pages-list.resolver';
 import { PagesApi } from './pages.api';
@@ -200,6 +204,11 @@ function tooltip(harness: RouterTestingHarness): string {
   return hint.injector.get(MatTooltip).message;
 }
 
+/** What the closed filter says it is set to. */
+function filterTrigger(harness: RouterTestingHarness): string {
+  return root(harness).querySelector('.pages__section-filter')?.textContent?.trim() ?? '';
+}
+
 /** Drives the filter the way a pointer would, so `selectionChange` really runs. */
 async function chooseSection(harness: RouterTestingHarness, label: string): Promise<void> {
   const trigger = root(harness).querySelector<HTMLElement>(
@@ -285,6 +294,25 @@ describe('PagesPage', () => {
     expect(TestBed.inject(Router).url).toBe('/pages');
     expect(queries.at(-1)?.sectionId).toBeUndefined();
     expect(titles(harness)).toEqual(['Present simple', 'Clips']);
+  });
+
+  it('says "All sections" on the filter rather than leaving it blank', async () => {
+    // That entry's value is `null` — the absence of a filter — and Material
+    // reads a null-valued option as "nothing selected" unless it is told
+    // otherwise, so the unfiltered list every author lands on showed an empty
+    // field. The same wart the body editor's source picker has.
+    setup();
+    const harness = await open('/pages');
+
+    expect(filterTrigger(harness)).toBe(ALL_SECTIONS_OPTION);
+
+    // And again after clearing a filter by hand, the other way to reach it.
+    await chooseSection(harness, 'Listening');
+    expect(filterTrigger(harness)).toBe('Listening');
+
+    await chooseSection(harness, ALL_SECTIONS_OPTION);
+
+    expect(filterTrigger(harness)).toBe(ALL_SECTIONS_OPTION);
   });
 
   it('sends no sectionId at all for a value that is not a document id', async () => {
