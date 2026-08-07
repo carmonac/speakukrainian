@@ -12,14 +12,15 @@ import { MediaModule } from './media/media.module.js';
 import { SectionsModule } from './sections/sections.module.js';
 import { PagesModule } from './pages/pages.module.js';
 import { MenuModule } from './menu/menu.module.js';
+import { H5pModule } from './h5p/h5p.module.js';
 import { FirebaseAuthGuard } from './auth/firebase-auth.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { HttpExceptionFilter } from './common/http-exception.filter.js';
 import { HealthController } from './health/health.controller.js';
 
 /**
- * Root module. Feature modules (schedule, h5p) are added here as they land —
- * see the GitHub milestones for the order.
+ * Root module. Feature modules (schedule) are added here as they land — see the
+ * GitHub milestones for the order.
  *
  * Authentication is global-by-default: every route requires a valid Firebase
  * token unless it is explicitly marked `@Public()`.
@@ -41,6 +42,7 @@ import { HealthController } from './health/health.controller.js';
     SectionsModule,
     PagesModule,
     MenuModule,
+    H5pModule,
   ],
   controllers: [HealthController],
   providers: [

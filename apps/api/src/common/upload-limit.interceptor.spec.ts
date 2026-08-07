@@ -8,11 +8,12 @@ import {
 import { firstValueFrom, of, throwError } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 import {
-  uploadTooLargeMessage,
+  MAX_H5P_UPLOAD_BYTES,
   MAX_IMAGE_UPLOAD_BYTES,
-  type MediaKind,
+  h5pUploadTooLargeMessage,
+  uploadTooLargeMessage,
 } from '@speakukrainian/shared';
-import { UploadLimitInterceptor } from './media.upload-limit.interceptor.js';
+import { UploadLimitInterceptor } from './upload-limit.interceptor.js';
 
 const context = {} as unknown as ExecutionContext;
 
@@ -20,14 +21,14 @@ function handlerThrowing(error: unknown): CallHandler {
   return { handle: () => throwError(() => error) };
 }
 
-async function run(kind: MediaKind, next: CallHandler): Promise<unknown> {
-  return firstValueFrom(new UploadLimitInterceptor(kind).intercept(context, next));
+async function run(message: string, next: CallHandler): Promise<unknown> {
+  return firstValueFrom(new UploadLimitInterceptor(message).intercept(context, next));
 }
 
 /** Resolves with whatever the interceptor rejected with. */
-async function rejection(kind: MediaKind, next: CallHandler): Promise<unknown> {
+async function rejection(message: string, next: CallHandler): Promise<unknown> {
   try {
-    await run(kind, next);
+    await run(message, next);
   } catch (error) {
     return error;
   }
@@ -38,7 +39,7 @@ describe('UploadLimitInterceptor', () => {
   it('replaces multer bare 413 with a message naming the image limit', async () => {
     // `File too large` is what multer produces, and it never mentions 10 MB.
     const error = await rejection(
-      'image',
+      uploadTooLargeMessage('image'),
       handlerThrowing(new PayloadTooLargeException('File too large')),
     );
 
@@ -52,22 +53,34 @@ describe('UploadLimitInterceptor', () => {
 
   it('names the audio limit on the audio route', async () => {
     const error = await rejection(
-      'audio',
+      uploadTooLargeMessage('audio'),
       handlerThrowing(new PayloadTooLargeException('File too large')),
     );
 
     expect((error as PayloadTooLargeException).message).toBe('Audio files must be under 50 MB.');
   });
 
+  it('carries wording that is not about media at all', async () => {
+    // The interceptor moved out of `media/` because the limit it names is the
+    // route's, not a media kind's; H5P is the first non-media caller.
+    const error = await rejection(
+      h5pUploadTooLargeMessage(),
+      handlerThrowing(new PayloadTooLargeException('File too large')),
+    );
+
+    expect((error as PayloadTooLargeException).message).toBe('H5P packages must be under 100 MB.');
+    expect(MAX_H5P_UPLOAD_BYTES).toBe(100 * 1024 * 1024);
+  });
+
   it('passes any other failure through untouched', async () => {
     const original = new ForbiddenException('Requires one of: editor');
 
-    expect(await rejection('image', handlerThrowing(original))).toBe(original);
+    expect(await rejection('unused', handlerThrowing(original))).toBe(original);
   });
 
   it('passes a successful upload through untouched', async () => {
     const asset = { path: 'images/2026/03/a.png' };
 
-    await expect(run('image', { handle: () => of(asset) })).resolves.toBe(asset);
+    await expect(run('unused', { handle: () => of(asset) })).resolves.toBe(asset);
   });
 });

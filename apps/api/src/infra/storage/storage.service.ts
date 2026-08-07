@@ -1,6 +1,13 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Storage } from '@google-cloud/storage';
+import type { Readable } from 'node:stream';
+import type {
+  Bucket,
+  File,
+  GetFilesOptions,
+  GetFilesResponse,
+  Storage,
+} from '@google-cloud/storage';
 import type { AssetRef } from '@speakukrainian/shared';
 import type { Env } from '../../config/configuration.js';
 import { CLOUD_STORAGE } from './storage.tokens.js';
@@ -11,6 +18,36 @@ export interface UploadOptions {
   contentType: string;
   /** Objects served to the public site are cached aggressively at the CDN. */
   cacheControl?: string;
+}
+
+export interface PutOptions {
+  contentType?: string;
+  cacheControl?: string;
+}
+
+export interface StoredObject {
+  path: string;
+  sizeBytes: number;
+  createdAt: Date;
+}
+
+/**
+ * Hard ceiling on one listing. A prefix wider than this is a caller bug — an
+ * unbounded enumeration of the whole bucket — not a page to fetch.
+ */
+export const MAX_STORAGE_LIST_RESULTS = 10_000;
+
+/** Objects per API call. GCS caps a page at 1000 whatever we ask for. */
+const LIST_PAGE_SIZE = 1_000;
+
+/** The listing response's `prefixes`, which the SDK types as `unknown`. */
+interface ObjectListResponse {
+  prefixes?: string[];
+}
+
+function prefixesOf(apiResponse: unknown): string[] {
+  const prefixes = (apiResponse as ObjectListResponse | null | undefined)?.prefixes;
+  return Array.isArray(prefixes) ? prefixes : [];
 }
 
 @Injectable()
@@ -28,15 +65,16 @@ export class StorageService {
   }
 
   async upload(body: Buffer | NodeJS.ReadableStream, options: UploadOptions): Promise<AssetRef> {
-    const file = this.storage.bucket(this.bucketName).file(options.path);
-
-    await file.save(body as Buffer, {
+    // Media is served straight from the bucket, so the CDN may hold it for a
+    // year. The default belongs here and not in `put`: H5P objects are streamed
+    // through the API and are deleted with their exercise, and a CDN holding a
+    // deleted exercise's files for a year is not what we want.
+    await this.put(options.path, body, {
       contentType: options.contentType,
-      metadata: { cacheControl: options.cacheControl ?? 'public, max-age=31536000, immutable' },
-      resumable: false,
+      cacheControl: options.cacheControl ?? 'public, max-age=31536000, immutable',
     });
 
-    const [metadata] = await file.getMetadata();
+    const [metadata] = await this.bucket.file(options.path).getMetadata();
     this.logger.log(`Uploaded ${options.path} (${metadata.size ?? 0} bytes)`);
 
     return {
@@ -47,17 +85,125 @@ export class StorageService {
     };
   }
 
+  /** Writes an object without `upload`'s metadata round trip. */
+  async put(
+    path: string,
+    body: Buffer | NodeJS.ReadableStream,
+    options: PutOptions = {},
+  ): Promise<void> {
+    await this.bucket.file(path).save(body as Buffer, {
+      ...(options.contentType ? { contentType: options.contentType } : {}),
+      ...(options.cacheControl ? { metadata: { cacheControl: options.cacheControl } } : {}),
+      resumable: false,
+    });
+  }
+
   async delete(path: string): Promise<void> {
-    await this.storage.bucket(this.bucketName).file(path).delete({ ignoreNotFound: true });
+    await this.bucket.file(path).delete({ ignoreNotFound: true });
   }
 
   async exists(path: string): Promise<boolean> {
-    const [exists] = await this.storage.bucket(this.bucketName).file(path).exists();
+    const [exists] = await this.bucket.file(path).exists();
     return exists;
   }
 
-  createReadStream(path: string): NodeJS.ReadableStream {
-    return this.storage.bucket(this.bucketName).file(path).createReadStream();
+  /** Size and creation time, or null if the object is absent. */
+  async stat(path: string): Promise<{ sizeBytes: number; createdAt: Date } | null> {
+    const file = this.bucket.file(path);
+    const [exists] = await file.exists();
+    if (!exists) {
+      return null;
+    }
+
+    const [metadata] = await file.getMetadata();
+    return { sizeBytes: Number(metadata.size ?? 0), createdAt: createdAtOf(metadata.timeCreated) };
+  }
+
+  /**
+   * Every object under `prefix`, paged internally. Throws past `limit` rather
+   * than truncating: a caller that silently gets half a listing deletes half a
+   * piece of content, or reinstalls a library it already has.
+   *
+   * The ceiling is a cliff and not a slope — past it this raises a plain
+   * `Error`, which no route maps, so the caller gets a 500 and no listing. That
+   * is the right trade for a caller that wants the objects, because a partial
+   * answer is worse than none; a caller that only wants to *act* on every
+   * object should page for itself the way `deleteByPrefix` does, rather than
+   * materialising the listing first.
+   *
+   * Sizes come back in the listing itself, so a caller that needs the total
+   * size of a prefix does not need one `stat` per object.
+   */
+  async list(prefix: string, limit = MAX_STORAGE_LIST_RESULTS): Promise<StoredObject[]> {
+    const objects: StoredObject[] = [];
+
+    await this.eachPage({ prefix }, (files) => {
+      for (const file of files) {
+        objects.push({
+          path: file.name,
+          sizeBytes: Number(file.metadata.size ?? 0),
+          createdAt: createdAtOf(file.metadata.timeCreated),
+        });
+      }
+      if (objects.length > limit) {
+        throw new Error(`Listing "${prefix}" returned more than ${limit} objects.`);
+      }
+    });
+
+    return objects;
+  }
+
+  /**
+   * Immediate pseudo-directories under `prefix`, without the trailing slash —
+   * `h5p/libraries/` → `['H5P.Foo-1.0', 'H5P.Bar-1.2']`.
+   */
+  async listSubdirectories(prefix: string, limit = MAX_STORAGE_LIST_RESULTS): Promise<string[]> {
+    const directories = new Set<string>();
+
+    await this.eachPage({ prefix, delimiter: '/' }, (_files, apiResponse) => {
+      for (const found of prefixesOf(apiResponse)) {
+        const name = found.slice(prefix.length).replace(/\/$/, '');
+        if (name !== '') {
+          directories.add(name);
+        }
+      }
+      if (directories.size > limit) {
+        throw new Error(`Listing "${prefix}" returned more than ${limit} directories.`);
+      }
+    });
+
+    return [...directories];
+  }
+
+  /**
+   * Deletes every object under `prefix`, which must end in `/`.
+   *
+   * The trailing slash is asserted rather than appended, so a caller that built
+   * the prefix by hand fails loudly: deleting `h5p/content/abc` without it
+   * would also take out `h5p/content/abcdef/…`.
+   *
+   * Deletes page by page rather than over `list()`, which keeps the listing
+   * ceiling out of the delete path: a prefix too wide to enumerate in one go is
+   * still a prefix that has to be removable, and a content that cannot be
+   * deleted is a content nothing can clean up after.
+   */
+  async deleteByPrefix(prefix: string): Promise<void> {
+    if (!prefix.endsWith('/')) {
+      throw new Error(`A delete prefix must end in "/", got "${prefix}".`);
+    }
+
+    await this.eachPage({ prefix }, async (files) => {
+      await Promise.all(files.map((file) => this.delete(file.name)));
+    });
+  }
+
+  /**
+   * The SDK types this as the wider `NodeJS.ReadableStream`, but it genuinely
+   * returns a `Readable` and H5P's `IContentStorage.getFileStream` requires
+   * one; narrowing here keeps the cast out of the adapters.
+   */
+  createReadStream(path: string, range?: { start?: number; end?: number }): Readable {
+    return this.bucket.file(path).createReadStream(range ? { ...range } : undefined);
   }
 
   /**
@@ -74,4 +220,44 @@ export class StorageService {
       ? `${this.apiEndpoint}/storage/v1/b/${this.bucketName}/o/${encodeURIComponent(path)}?alt=media`
       : `https://storage.googleapis.com/${this.bucketName}/${encoded}`;
   }
+
+  /**
+   * Walks a listing one page at a time.
+   *
+   * Both public listings page by hand, for two reasons the SDK does not make
+   * obvious. Passing `maxResults` silently switches auto-pagination *off* — so
+   * `getFiles({ prefix, maxResults })` returns one page and no indication that
+   * more exist, which is a truncated listing wearing a limit's clothing. And
+   * with auto-pagination on, the SDK concatenates `File[]` across pages but
+   * hands back only the *last* page's `apiResponse`, where the common prefixes
+   * live, so every directory but the final page's is dropped. Driving
+   * `nextQuery` ourselves is the only way to get both the whole listing and
+   * every page's prefixes.
+   */
+  private async eachPage(
+    query: GetFilesOptions,
+    onPage: (files: File[], apiResponse: unknown) => void | Promise<void>,
+  ): Promise<void> {
+    let next: GetFilesOptions | null = {
+      ...query,
+      autoPaginate: false,
+      maxResults: LIST_PAGE_SIZE,
+    };
+
+    while (next) {
+      const page: GetFilesResponse = await this.bucket.getFiles(next);
+      const [files, nextQuery, apiResponse] = page;
+      await onPage(files, apiResponse);
+      next = (nextQuery as GetFilesOptions | null) ?? null;
+    }
+  }
+
+  private get bucket(): Bucket {
+    return this.storage.bucket(this.bucketName);
+  }
+}
+
+/** Epoch when the object predates the field, so callers never see `Invalid Date`. */
+function createdAtOf(timeCreated: string | undefined): Date {
+  return timeCreated ? new Date(timeCreated) : new Date(0);
 }

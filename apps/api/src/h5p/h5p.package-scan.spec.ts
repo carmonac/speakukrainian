@@ -1,0 +1,371 @@
+import { createRequire } from 'node:module';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { H5pError } from '@lumieducation/h5p-server';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { assertSafePackageEntries } from './h5p.package-scan.js';
+import { buildRawZip, type RawZipEntry } from './h5p.raw-zip.js';
+
+/**
+ * The shapes an attacker has to reach `path.join(tempDirectory, name)` with.
+ * Each one is a name no zip writer will emit, which is why the archives here
+ * are assembled byte by byte.
+ */
+const HOSTILE_NAMES = [
+  'content/../../../../../../tmp/pwned.txt',
+  '../pwned.txt',
+  'content/a/../../anchor.txt',
+  '/etc/pwned.txt',
+  'C:\\pwned.txt',
+  'content\\..\\..\\pwned.txt',
+  'content/..',
+  'content/./x/../../pwned.txt',
+];
+
+const ORDINARY_ENTRIES: RawZipEntry[] = [
+  { name: 'h5p.json', content: '{"title":"drill"}' },
+  // A directory entry, which is a legitimate name ending in `/`.
+  { name: 'content/', content: '' },
+  { name: 'content/content.json', content: '{}' },
+  { name: 'content/media/clip.txt', content: 'a clip' },
+  { name: 'SpeakTest.Main-1.0/library.json', content: '{}' },
+];
+
+describe('assertSafePackageEntries', () => {
+  let directory: string;
+  let index = 0;
+
+  const write = async (bytes: Buffer): Promise<string> => {
+    const path = join(directory, `package-${(index += 1)}.h5p`);
+    await writeFile(path, bytes);
+    return path;
+  };
+
+  beforeEach(async () => {
+    directory = await mkdtemp(join(tmpdir(), 'h5p-scan-spec-'));
+  });
+
+  afterEach(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it('accepts a package whose entry names are all ordinary', async () => {
+    await expect(
+      assertSafePackageEntries(await write(buildRawZip(ORDINARY_ENTRIES))),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(HOSTILE_NAMES)('refuses a package carrying the entry %j', async (name) => {
+    const path = await write(buildRawZip([...ORDINARY_ENTRIES, { name, content: 'pwned' }]));
+
+    const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(H5pError);
+    expect((error as H5pError).httpStatusCode).toBe(400);
+    // The three ids `h5p.errors.ts` words as "an unusable path".
+    expect((error as H5pError).errorId).toMatch(
+      /^storage-file-implementations:illegal-(relative-filename|absolute-filename|character)$/,
+    );
+  });
+
+  it('refuses a name carrying a NUL, which would truncate the path in the syscall', async () => {
+    const path = await write(buildRawZip([{ name: 'content/clip\u0000.txt', content: 'x' }]));
+
+    await expect(assertSafePackageEntries(path)).rejects.toBeInstanceOf(H5pError);
+  });
+
+  it('refuses the name the extractor would use, not the one the header advertises', async () => {
+    // Yauzl prefers an Info-ZIP Unicode Path extra field over the header name,
+    // so a scan that parsed the central directory itself would check `safe.txt`
+    // while the importer wrote `../pwned.txt`. Reading the archive with the same
+    // reader the importer uses is what closes that gap.
+    const path = await write(
+      buildRawZip([{ name: 'safe.txt', unicodeName: '../pwned.txt', content: 'x' }]),
+    );
+
+    await expect(assertSafePackageEntries(path)).rejects.toBeInstanceOf(H5pError);
+  });
+
+  it('reports a file that is not an archive as a 400, not as a server fault', async () => {
+    const path = await write(Buffer.from('not a zip at all'));
+
+    const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(H5pError);
+    expect((error as H5pError).errorId).toBe('unable-to-unzip');
+    expect((error as H5pError).httpStatusCode).toBe(400);
+  });
+
+  // The third class, and the one a "is it an archive at all?" case cannot
+  // reach: an archive structured well enough for the reader to act on it, whose
+  // contents then make *Node itself* throw. A zero-length entry name reaches
+  // `Buffer.allocUnsafe(undefined)` in yauzl's reader and raises
+  // `TypeError [ERR_INVALID_ARG_TYPE]`, which carries a string `code` like
+  // every Node built-in error does — so a predicate that reads a `code` as
+  // "the filesystem refused" hands it straight back and the route answers 500.
+  it.each([
+    ['while the central directory is located', [{ name: '', content: 'x' }]],
+    ['while the entries are iterated', [...ORDINARY_ENTRIES, { name: '', content: 'x' }]],
+  ])('reports an archive that makes Node throw %s as a 400', async (_where, entries) => {
+    const path = await write(buildRawZip(entries));
+
+    const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(H5pError);
+    expect((error as H5pError).errorId).toBe('unable-to-unzip');
+    expect((error as H5pError).httpStatusCode).toBe(400);
+  });
+
+  it('passes a filesystem failure through untouched, so it stays a 500', async () => {
+    // An upload that is not there is this server's problem, not the caller's.
+    const error = await assertSafePackageEntries(join(directory, 'absent.h5p')).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(error).not.toBeInstanceOf(H5pError);
+    expect((error as NodeJS.ErrnoException).code).toBe('ENOENT');
+  });
+
+  describe('names too long to unpack', () => {
+    it('refuses a path segment past the filesystem limit', async () => {
+      // 256 bytes is the first length `mkdir` answers with `ENAMETOOLONG`,
+      // which the importer raises halfway through extraction.
+      const path = await write(
+        buildRawZip([...ORDINARY_ENTRIES, { name: `${'a'.repeat(256)}/x.txt`, content: 'x' }]),
+      );
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:filename-too-long');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    it('measures a segment in bytes, not in characters', async () => {
+      // 200 three-byte characters is 600 bytes, and it is the byte count the
+      // filesystem counts.
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: `content/${'ф'.repeat(200)}.txt`, content: 'x' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).rejects.toBeInstanceOf(H5pError);
+    });
+
+    it('accepts a segment at the limit', async () => {
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: `${'a'.repeat(255)}/library.json`, content: '{}' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
+
+    it('refuses a path too long to store, however short its segments are', async () => {
+      const deep = `${'ab/'.repeat(400)}x.txt`;
+      const path = await write(
+        buildRawZip([...ORDINARY_ENTRIES, { name: `content/${deep}`, content: 'x' }]),
+      );
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect((error as H5pError).errorId).toBe('package-scan:filename-too-long');
+    });
+  });
+
+  describe('data the reader could not decode', () => {
+    // The damaged entry is the last one, so a scan that stopped at the first
+    // problem-free entry would let it through.
+    const damaged = (entry: Partial<RawZipEntry>): RawZipEntry[] => [
+      ...ORDINARY_ENTRIES,
+      { name: 'SpeakTest.Main-1.0/main.js', content: 'window.x = 1;', ...entry },
+    ];
+
+    it('refuses an encrypted entry, which the reader cannot decrypt', async () => {
+      const path = await write(buildRawZip(damaged({ encrypted: true })));
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:encrypted-entry');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    // What 7-Zip writes for a `.zip` at anything but its Deflate default.
+    it.each([
+      ['Deflate64', 9],
+      ['BZip2', 12],
+      ['LZMA', 14],
+    ])('refuses an entry compressed with %s', async (_name, compressionMethod) => {
+      const path = await write(buildRawZip(damaged({ compressionMethod })));
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:unsupported-compression');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    it('accepts deflate, which is what every ordinary package is written with', async () => {
+      // The other side of the boundary: a rule that refused this would refuse
+      // essentially every real `.h5p`.
+      const deflated = ORDINARY_ENTRIES.map((entry) => ({ ...entry, compressionMethod: 8 }));
+
+      await expect(
+        assertSafePackageEntries(await write(buildRawZip(deflated))),
+      ).resolves.toBeUndefined();
+    });
+
+    // The shape acceptance criterion 4 calls a corrupt archive. It cannot be
+    // decided from the headers, so it is the read that catches it — and if it
+    // is not caught here, `extractPackage` pipes the failing entry to disk and
+    // the pipe never settles, which is a request that never answers. Both
+    // storage methods, because they fail differently: the deflated one comes
+    // out of zlib, the stored one out of yauzl's checksum stream, and the
+    // stored one is the shape that hangs.
+    it.each([
+      ['stored', 0],
+      ['deflated', 8],
+    ])(
+      'refuses a %s entry whose data no longer matches its checksum',
+      async (_method, compressionMethod) => {
+        const path = await write(buildRawZip(damaged({ compressionMethod, corruptData: true })));
+
+        const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+        expect(error).toBeInstanceOf(H5pError);
+        expect((error as H5pError).errorId).toBe('unable-to-unzip');
+        expect((error as H5pError).httpStatusCode).toBe(400);
+      },
+    );
+
+    describe('the budget for that read', () => {
+      // A few kilobytes of zip can declare gigabytes of data, so the read needs
+      // a ceiling of its own: the library's size rule only runs once it has
+      // extracted, which is after this. The budget is passed in here rather
+      // than filled with 100 MB of zeros, so both sides of it can be pinned.
+      const entriesUnpackingTo = (bytes: number): RawZipEntry[] => [
+        ...ORDINARY_ENTRIES,
+        {
+          name: 'SpeakTest.Main-1.0/big.js',
+          content: Buffer.alloc(bytes),
+          compressionMethod: 8,
+        },
+      ];
+
+      /** What `ORDINARY_ENTRIES` unpacks to, so the budgets below are exact. */
+      const ordinaryBytes = ORDINARY_ENTRIES.reduce(
+        (total, entry) => total + Buffer.byteLength(entry.content),
+        0,
+      );
+
+      it('refuses a package that unpacks past it', async () => {
+        const path = await write(buildRawZip(entriesUnpackingTo(1024)));
+
+        const error = await assertSafePackageEntries(path, ordinaryBytes + 1023).catch(
+          (thrown: unknown) => thrown,
+        );
+
+        expect(error).toBeInstanceOf(H5pError);
+        expect((error as H5pError).errorId).toBe('package-scan:unpacks-too-large');
+        expect((error as H5pError).httpStatusCode).toBe(400);
+      });
+
+      it('accepts a package that unpacks to exactly it', async () => {
+        const path = await write(buildRawZip(entriesUnpackingTo(1024)));
+
+        await expect(assertSafePackageEntries(path, ordinaryBytes + 1024)).resolves.toBeUndefined();
+      });
+    });
+
+    it('ignores an entry the extractor would never open', async () => {
+      // `extractPackage` skips a basename starting with `.`, so this one never
+      // reaches `openReadStream` and cannot fail there.
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: 'content/.DS_Store', content: 'x', compressionMethod: 12 },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('top-level folders', () => {
+    it('refuses a folder that carries no library.json', async () => {
+      // `PackageValidator` reads `<folder>/library.json` for every top-level
+      // folder but `content`, and throws a plain `Error` when it is absent.
+      const path = await write(
+        buildRawZip([...ORDINARY_ENTRIES, { name: 'notes/scratch.txt', content: 'x' }]),
+      );
+
+      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(H5pError);
+      expect((error as H5pError).errorId).toBe('package-scan:not-a-library-folder');
+      expect((error as H5pError).httpStatusCode).toBe(400);
+    });
+
+    it('refuses the folder a macOS archiver adds beside the real ones', async () => {
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: '__MACOSX/SpeakTest.Main-1.0/library.json', content: '{}' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).rejects.toBeInstanceOf(H5pError);
+    });
+
+    it('ignores a folder the extractor would never create', async () => {
+      // Every entry under it is skipped by `extractPackage` — a directory entry
+      // and a basename starting with `_` — so no such folder reaches the
+      // validator and refusing the package would be refusing nothing.
+      const path = await write(
+        buildRawZip([
+          ...ORDINARY_ENTRIES,
+          { name: 'notes/', content: '' },
+          { name: 'notes/_scratch.txt', content: 'x' },
+          { name: 'notes/.hidden', content: 'x' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
+
+    it('matches library.json case-insensitively, as the validator does', async () => {
+      const path = await write(
+        buildRawZip([
+          { name: 'h5p.json', content: '{"title":"drill"}' },
+          { name: 'content/content.json', content: '{}' },
+          { name: 'SpeakTest.Main-1.0/LIBRARY.JSON', content: '{}' },
+        ]),
+      );
+
+      await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('the zip reader the scan shares with the importer', () => {
+  it('is the same installed copy `@lumieducation/h5p-server` resolves', async () => {
+    // The scan is only sound while both read the same archive. They agree today
+    // because pnpm hoists one `yauzl-promise@4` for both; a future
+    // `@lumieducation/h5p-server` major that moves off `^4` without this
+    // package following would split them, and the two could then disagree about
+    // which entries an archive has — an entry the scan never saw is an entry it
+    // never checked. This turns that from silent into a failing test.
+    const here = createRequire(import.meta.url);
+    const importer = createRequire(here.resolve('@lumieducation/h5p-server'));
+
+    await expect(realpath(importer.resolve('yauzl-promise'))).resolves.toBe(
+      await realpath(here.resolve('yauzl-promise')),
+    );
+  });
+});

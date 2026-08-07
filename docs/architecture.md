@@ -137,6 +137,24 @@ authoring widget — which the requirement to _edit_ uploaded H5P, not merely ho
 mandatory. Its storage interfaces are pluggable, so content and libraries live in Cloud
 Storage rather than on a container filesystem that Cloud Run will discard.
 
+_Object layout._ The adapters mirror the library's own `FileContentStorage` and
+`FileLibraryStorage` exactly, so its path assumptions hold: `h5p/content/<contentId>/h5p.json`,
+`content.json` and the package's content files with their `content/` prefix stripped, and
+`h5p/libraries/<Machine.Name-major.minor>/…`. `h5pContent.storagePath` stores
+`h5p/content/<contentId>` without a trailing slash. Everything is under `h5p/`, which the media
+orphan sweep does not look at.
+
+_Temporary files._ `h5p/temp/` is reserved for the Cloud Storage `ITemporaryFileStorage` the
+authoring widget needs — a temp file written by one Cloud Run instance is invisible to the
+next. Phase 1 uses a local directory under `H5P_TEMP_DIR` for it, which is safe only because
+nothing on the import path touches temporary storage: the package importer writes straight to
+permanent storage. The editor's save flow must not ship before that placeholder is replaced.
+
+_IAM._ These adapters are the first code in the repo that calls `storage.objects.list` and
+deletes objects in bulk, so the Cloud Run service account needs `roles/storage.objectAdmin`
+(or `objectViewer` + `objectCreator` + `objectUser`), not merely create-and-read.
+fake-gcs-server has no permissions model, so no local test can catch a missing grant.
+
 ### ADR-008 — The API is ESM
 
 _Why:_ `packages/shared` is ESM, and CommonJS consuming it would need a dual build. TypeScript
