@@ -631,7 +631,7 @@ describe('pages (e2e)', () => {
     expect((response.body as ErrorBody).message).toContain(UNKNOWN_ID);
   });
 
-  it('refuses a rename that would rewrite more pages than one transaction commits', async () => {
+  it('refuses a rename or a move that would rewrite more pages than one transaction commits', async () => {
     const section = await createSection({ slug: 'e2e-budget-section', title: { en: 'Budget' } });
     const seed = await create({
       sectionId: section.id,
@@ -672,6 +672,23 @@ describe('pages (e2e)', () => {
       // Refused outright rather than half committed: a rename that rewrote the
       // section and only some of its pages is a set of broken public URLs.
       expect((await readSection(section.id)).path).toBe('/e2e-budget-section');
+      expect((await read(seed.id)).path).toBe('/e2e-budget-section/e2e-budget-0');
+
+      // A move spends its budget on its own arithmetic — the subtree and the
+      // renumbered destination siblings come out of the same 500 writes — and
+      // guards the scan behind `reparented`, so the rename above proves nothing
+      // about this branch.
+      const target = await createSection({ slug: 'e2e-budget-target', title: { en: 'Target' } });
+      const refusedMove = await request(server())
+        .patch(`/api/sections/${section.id}/move`)
+        .set('Authorization', bearer(editor))
+        .send({ parentId: target.id, sortOrder: 0 })
+        .expect(422);
+      expect((refusedMove.body as ErrorBody).message).toContain(String(MAX_TRANSACTION_WRITES));
+
+      const unmoved = await readSection(section.id);
+      expect(unmoved.parentId).toBeNull();
+      expect(unmoved.path).toBe('/e2e-budget-section');
       expect((await read(seed.id)).path).toBe('/e2e-budget-section/e2e-budget-0');
     } finally {
       // The teardown purge reads one bounded page, and these would crowd out
