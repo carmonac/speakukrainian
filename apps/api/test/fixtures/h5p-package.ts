@@ -136,6 +136,43 @@ export function buildH5pPackageWithEntry(entryName: string, content: string): Bu
   return buildRawZip([...packageEntries(), { name: entryName, content }]);
 }
 
+/** How one entry's data can be something the zip reader refuses to read. */
+export type PackageDamage = Pick<RawZipEntry, 'compressionMethod' | 'encrypted' | 'corruptData'>;
+
+const DEFLATE = 8;
+
+/**
+ * The same package with every entry deflated, which is how every archiver
+ * writes a `.zip`.
+ *
+ * The control the damaged packages below need: it shows the import path reads
+ * compressed entries, so a 400 for a package whose only difference is a flipped
+ * bit or a compression method cannot mean the fixture was unreadable to begin
+ * with.
+ */
+export function buildDeflatedH5pPackage(options: PackageOptions = {}): Buffer {
+  return buildRawZip(
+    packageEntries(options).map((entry) => ({ ...entry, compressionMethod: DEFLATE })),
+  );
+}
+
+/**
+ * The same package with `damage` applied to its last entry.
+ *
+ * One entry rather than all of them, and the last one, because the rule is per
+ * entry: a scan that checked only the first would let this through. The rest of
+ * the archive is byte-identical to `buildRawH5pPackage`, so whatever the API
+ * answers is about the damage and nothing else.
+ */
+export function buildDamagedH5pPackage(damage: PackageDamage): Buffer {
+  const entries = packageEntries();
+  const last = entries.length - 1;
+
+  return buildRawZip(
+    entries.map((entry, index) => (index === last ? { ...entry, ...damage } : entry)),
+  );
+}
+
 function json(value: unknown): Buffer {
   return Buffer.from(JSON.stringify(value, null, 2), 'utf-8');
 }

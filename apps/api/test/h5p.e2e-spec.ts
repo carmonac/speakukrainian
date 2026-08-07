@@ -23,9 +23,12 @@ import {
   CONTENT_FILE,
   DEP_LIBRARY_DIR,
   MAIN_LIBRARY_DIR,
+  buildDamagedH5pPackage,
+  buildDeflatedH5pPackage,
   buildH5pPackage,
   buildH5pPackageWithEntry,
   buildRawH5pPackage,
+  type PackageDamage,
 } from './fixtures/h5p-package.js';
 
 const LIBRARIES_PREFIX = 'h5p/libraries/';
@@ -70,12 +73,39 @@ const ESCAPE_TARGETS = [join(tmpdir(), ESCAPE_MARKER), join('/tmp', ESCAPE_MARKE
  * caller still has to be told which rule their file broke instead of being
  * shown a server fault they cannot act on.
  */
-const MALFORMED_PACKAGES: [shape: string, entry: string, message: string][] = [
+const UNREADABLE_ARCHIVE = 'The file is not a readable ZIP archive, so it is not an H5P package.';
+
+const UNSUPPORTED_COMPRESSION =
+  'The package uses a ZIP compression method that cannot be read. Save it again with standard deflate compression.';
+
+/**
+ * Packages whose entry *data* the zip reader refuses, which no rule about entry
+ * names can see. Every one of them used to answer `500 Internal server error`
+ * with an `Unhandled POST` stack — except the last, which was worse: the pipe
+ * that writes a failing entry to disk never settles, so the request never
+ * answered at all.
+ */
+const UNREADABLE_PACKAGES: [shape: string, damage: PackageDamage, message: string][] = [
   [
-    'carrying a zero-length entry name',
-    '',
-    'The file is not a readable ZIP archive, so it is not an H5P package.',
+    'that is password-protected',
+    { encrypted: true },
+    'The package is password-protected. Upload it again without encryption.',
   ],
+  ['compressed with Deflate64', { compressionMethod: 9 }, UNSUPPORTED_COMPRESSION],
+  ['compressed with BZip2', { compressionMethod: 12 }, UNSUPPORTED_COMPRESSION],
+  ['compressed with LZMA', { compressionMethod: 14 }, UNSUPPORTED_COMPRESSION],
+  [
+    'with a flipped bit in a deflated entry',
+    { compressionMethod: 8, corruptData: true },
+    UNREADABLE_ARCHIVE,
+  ],
+  // The same corruption in a stored entry is the shape that hangs: nothing
+  // reads it before extraction does, and that is the pipe that never settles.
+  ['with a flipped bit in a stored entry', { corruptData: true }, UNREADABLE_ARCHIVE],
+];
+
+const MALFORMED_PACKAGES: [shape: string, entry: string, message: string][] = [
+  ['carrying a zero-length entry name', '', UNREADABLE_ARCHIVE],
   [
     'whose path has a segment past the filesystem limit',
     `${'a'.repeat(256)}/x.txt`,
@@ -266,9 +296,7 @@ describe('h5p (e2e)', () => {
     const body = response.body as ErrorBody;
     expect(body.statusCode).toBe(400);
     // Not a 500 escaping from inside the library.
-    expect(body.message).toBe(
-      'The file is not a readable ZIP archive, so it is not an H5P package.',
-    );
+    expect(body.message).toBe(UNREADABLE_ARCHIVE);
     await expect(countObjects(CONTENT_PREFIX)).resolves.toBe(before);
   });
 
@@ -345,6 +373,53 @@ describe('h5p (e2e)', () => {
       await expect(countObjects(CONTENT_PREFIX)).resolves.toBe(before);
     },
   );
+
+  it('installs a package whose entries are deflated, as every archiver writes them', async () => {
+    // The control for the damaged packages below, and for the scan reading each
+    // entry: same writer, same entries, compressed the ordinary way.
+    const saved = await upload(buildDeflatedH5pPackage({ title: 'Deflate control' }), 'zipped.h5p');
+
+    expect(saved.title).toBe('Deflate control');
+    await expect(
+      storage.exists(`${CONTENT_PREFIX}${saved.contentId}/${CONTENT_FILE}`),
+    ).resolves.toBe(true);
+  });
+
+  it.each(UNREADABLE_PACKAGES)(
+    'answers 400 naming the problem for a package %s',
+    async (_shape, damage, message) => {
+      // The two controls above upload this same archive, from the same writer,
+      // stored and deflated, with the last entry undamaged — so a 400 here
+      // cannot mean the fixture is unreadable for some other reason.
+      const before = await countObjects(CONTENT_PREFIX);
+
+      const response = await post(
+        editor.idToken,
+        buildDamagedH5pPackage(damage),
+        'unreadable.h5p',
+      ).expect(400);
+
+      expect((response.body as ErrorBody).message).toBe(message);
+      await expect(countObjects(CONTENT_PREFIX)).resolves.toBe(before);
+    },
+  );
+
+  it('installs a package carrying a folder the extractor would never create', async () => {
+    // The boundary the layout rule has to hold: `__MACOSX/` is what a macOS
+    // archiver adds beside the real folders, every child of it has a basename
+    // starting with `._`, and `extractPackage` skips those — so the folder is
+    // never created and the validator never sees it. Refusing this package
+    // would be refusing one the library imports fine, which is what a false
+    // refusal costs.
+    const saved = await upload(
+      buildH5pPackageWithEntry('__MACOSX/SpeakTest.Main-1.0/._library.json', 'x'),
+      'from-macos.h5p',
+    );
+
+    await expect(
+      storage.exists(`${CONTENT_PREFIX}${saved.contentId}/${CONTENT_FILE}`),
+    ).resolves.toBe(true);
+  });
 
   it('answers 415 for a file that is not named .h5p', async () => {
     const response = await post(editor.idToken, await buildH5pPackage(), 'drill.zip').expect(415);
