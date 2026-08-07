@@ -154,26 +154,38 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
 
   protected async insertImage(): Promise<void> {
     const asset = await this.mediaPicker.pickImage();
-    if (asset) {
-      this.editor
-        ?.chain()
-        .focus()
-        .setImage({ src: asset.url, alt: asset.alt?.['en'] ?? '' })
-        .run();
-      this.assetInserted.emit(asset);
+    const editor = this.editor;
+    if (asset === null || editor === null) {
+      // Cancelled, a failed upload the picker has already reported, or a view
+      // torn down while the file dialog was open.
+      return;
     }
+
+    // Announced *before* the insert. ProseMirror dispatches the transaction
+    // synchronously, so `onUpdate` — and any HTML the listener derives from —
+    // arrives during `.run()`. Emitting afterwards would hand a listener content
+    // that already refers to an asset it has not been told about yet.
+    this.assetInserted.emit(asset);
+    editor
+      .chain()
+      .focus()
+      .setImage({ src: asset.url, alt: asset.alt?.['en'] ?? '' })
+      .run();
   }
 
   protected async insertAudio(): Promise<void> {
     const asset = await this.mediaPicker.pickAudio();
-    if (asset) {
-      this.editor
-        ?.chain()
-        .focus()
-        .setAudio({ src: asset.url, title: asset.path, assetPath: asset.path })
-        .run();
-      this.assetInserted.emit(asset);
+    const editor = this.editor;
+    if (asset === null || editor === null) {
+      return;
     }
+
+    this.assetInserted.emit(asset);
+    editor
+      .chain()
+      .focus()
+      .setAudio({ src: asset.url, title: asset.path, assetPath: asset.path })
+      .run();
   }
 
   protected async setLink(): Promise<void> {

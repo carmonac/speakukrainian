@@ -1,0 +1,86 @@
+<section class="pages">
+  <header class="pages__header">
+    <div>
+      <h1>Pages</h1>
+      <p>The articles, indexes and exercises inside each section.</p>
+    </div>
+
+    @if (canAddPage()) {
+      <a matButton="filled" class="pages__new" routerLink="/pages/new" [queryParams]="newPageParams()">
+        <mat-icon>add</mat-icon>
+        New page
+      </a>
+    } @else {
+      <span class="pages__new-hint" [matTooltip]="addPageReason()">
+        <button matButton="filled" type="button" class="pages__new" disabled>
+          <mat-icon>add</mat-icon>
+          New page
+        </button>
+      </span>
+    }
+  </header>
+
+  <mat-form-field appearance="outline" class="pages__filter">
+    <mat-label>Section</mat-label>
+    <mat-select class="pages__section-filter" [value]="listData().sectionId" (selectionChange)="filterBy($event.value)">
+      <mat-option [value]="null">{{ allSectionsOption }}</mat-option>
+      @for (choice of sections(); track choice.id) {
+        <mat-option [value]="choice.id" [style.padding-inline-start.px]="16 + choice.depth * 12">
+          {{ choice.label }}
+        </mat-option>
+      }
+    </mat-select>
+  </mat-form-field>
+
+  @if (loading()) {
+    <mat-progress-bar mode="indeterminate" />
+  }
+
+  <table mat-table [dataSource]="items()" class="pages__table">
+    <ng-container matColumnDef="title">
+      <th mat-header-cell *matHeaderCellDef scope="col">Title</th>
+      <!-- Interpolated, never `[innerHTML]`: a page title is stored verbatim
+           (ADR-003), so every place it renders has to be an escaped context. -->
+      <td mat-cell *matCellDef="let page">
+        <a class="pages__title" [routerLink]="['/pages', page.id]">{{ title(page) }}</a>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="type">
+      <th mat-header-cell *matHeaderCellDef scope="col">Type</th>
+      <td mat-cell *matCellDef="let page" class="pages__type">{{ typeLabel(page) }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="status">
+      <th mat-header-cell *matHeaderCellDef scope="col">Status</th>
+      <td mat-cell *matCellDef="let page" class="pages__status">{{ page.status }}</td>
+    </ng-container>
+
+    <ng-container matColumnDef="path">
+      <th mat-header-cell *matHeaderCellDef scope="col">Path</th>
+      <td mat-cell *matCellDef="let page">
+        <code class="pages__path">{{ page.path }}</code>
+      </td>
+    </ng-container>
+
+    <ng-container matColumnDef="updated">
+      <th mat-header-cell *matHeaderCellDef scope="col">Updated</th>
+      <td mat-cell *matCellDef="let page" class="pages__updated">{{ page.audit.updatedAt | date: 'medium' }}</td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="columns"></tr>
+    <tr mat-row *matRowDef="let page; columns: columns" [class.is-saved]="page.id === savedId()"></tr>
+  </table>
+
+  @if (listData().failed) {
+    <p class="pages__failed">{{ loadFailed }}</p>
+  } @else if (items().length === 0) {
+    <p class="pages__empty">No pages yet.</p>
+  }
+
+  @if (cursor() !== null) {
+    <button matButton type="button" class="pages__load-more" [disabled]="loading()" (click)="loadMore()">
+      Load more
+    </button>
+  }
+</section>

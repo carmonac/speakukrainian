@@ -29,6 +29,7 @@ import { RichTextEditor } from './rich-text-editor';
           <app-rich-text-editor
             [placeholder]="placeholder()"
             [inlineOnly]="inlineOnly()"
+            [disabled]="disabled()"
             [ngModel]="valueFor(locale)"
             (ngModelChange)="updateLocale(locale, $event)"
             (assetInserted)="assetInserted.emit($event)"
@@ -54,6 +55,7 @@ export class LocalizedRichTextEditor implements ControlValueAccessor {
 
   protected readonly selectedIndex = signal(0);
   protected readonly value = signal<RichText>({});
+  protected readonly disabled = signal(false);
 
   private onChange: (value: RichText) => void = () => {};
   private onTouched: () => void = () => {};
@@ -77,6 +79,15 @@ export class LocalizedRichTextEditor implements ControlValueAccessor {
 
   registerOnTouched(fn: () => void): void {
     this.onTouched = fn;
+  }
+
+  /**
+   * Forwarded to every tab's editor. Without this a disabled control would
+   * still be typeable — the wrapper is the only value accessor the form sees,
+   * so a `setDisabledState` it swallows never reaches ProseMirror.
+   */
+  setDisabledState(isDisabled: boolean): void {
+    this.disabled.set(isDisabled);
   }
 
   protected updateLocale(locale: LocaleCode, content: string): void {

@@ -1,0 +1,51 @@
+.pages {
+  display: block;
+  padding: 24px;
+
+  &__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+
+    h1 {
+      margin: 0 0 4px;
+    }
+
+    p {
+      margin: 0 0 16px;
+      color: var(--mat-sys-on-surface-variant, #49454f);
+    }
+  }
+
+  &__filter {
+    width: min(320px, 100%);
+  }
+
+  &__table {
+    width: 100%;
+  }
+
+  &__path {
+    color: var(--mat-sys-on-surface-variant, #49454f);
+    font-size: 0.8125rem;
+  }
+
+  &__status {
+    text-transform: capitalize;
+  }
+
+  &__empty,
+  &__failed {
+    margin-top: 16px;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__load-more {
+    margin-top: 16px;
+  }
+
+  .is-saved {
+    background: var(--mat-sys-surface-container-high, #ece6f0);
+  }
+}
