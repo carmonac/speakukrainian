@@ -32,6 +32,8 @@ import {
 } from './fixtures/h5p-package.js';
 
 const LIBRARIES_PREFIX = 'h5p/libraries/';
+/** What both fixture library directories are named after. */
+const FIXTURE_LIBRARY_PREFIX = 'SpeakTest.';
 const CONTENT_PREFIX = 'h5p/content/';
 const MAIN_LIBRARY_PREFIX = `${LIBRARIES_PREFIX}${MAIN_LIBRARY_DIR}/`;
 const DEP_LIBRARY_PREFIX = `${LIBRARIES_PREFIX}${DEP_LIBRARY_DIR}/`;
@@ -271,9 +273,15 @@ describe('h5p (e2e)', () => {
 
     await upload(await buildH5pPackage({ patchVersion: 2 }));
 
-    // Still one directory per major.minor: a patch updates in place.
+    // Still one directory per major.minor: a patch updates in place, so no
+    // second `SpeakTest.*` directory appears. Only the fixture's own libraries
+    // are this suite's business — every other library in the bucket was put
+    // there by an earlier run or by a real upload, which is the state this
+    // feature exists to accumulate and which no teardown here can undo.
     await expect(
-      storage.listSubdirectories(LIBRARIES_PREFIX).then((names) => names.sort()),
+      storage
+        .listSubdirectories(LIBRARIES_PREFIX)
+        .then((names) => names.filter((name) => name.startsWith(FIXTURE_LIBRARY_PREFIX)).sort()),
     ).resolves.toEqual([DEP_LIBRARY_DIR, MAIN_LIBRARY_DIR]);
     await expect(installedPatchVersion(MAIN_LIBRARY_PREFIX)).resolves.toBe(2);
     await expect(installedPatchVersion(DEP_LIBRARY_PREFIX)).resolves.toBe(2);
