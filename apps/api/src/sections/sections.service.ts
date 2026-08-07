@@ -119,6 +119,8 @@ export class SectionsService {
         throw new ConflictException(
           'This section still has subsections. Delete or move them first.',
         );
+      case 'has-pages':
+        throw new ConflictException('This section still holds pages. Delete or move them first.');
       case 'depth-exceeded':
         throw new UnprocessableEntityException(
           `Sections nest at most ${MAX_SECTION_DEPTH + 1} levels deep; this would reach depth ${failure.depth}.`,
@@ -134,6 +136,10 @@ export class SectionsService {
       case 'move-too-large':
         throw new UnprocessableEntityException(
           `Moving this section would rewrite more than ${failure.limit} documents in one transaction.`,
+        );
+      case 'pages-too-large':
+        throw new UnprocessableEntityException(
+          `Renaming or moving this section would rewrite its subtree and the pages under it in more than ${failure.limit} writes, which one transaction cannot commit.`,
         );
       case 'invalid':
         // The `errors` key matches what `ZodValidationPipe` produces, so a
