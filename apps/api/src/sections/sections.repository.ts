@@ -375,6 +375,12 @@ export class SectionsRepository extends BaseRepository<Section> {
 
       // A pure reorder changes no path, so it scans nothing and spends nothing
       // — the short-circuit above is what keeps a reorder cheap.
+      //
+      // Refusal order is load-bearing and is the same in `update`: the cheapest
+      // read refuses first, so an oversized subtree is reported as
+      // `subtree-too-large` and never scanned for pages. Moving this scan above
+      // the descendant read or the `move-too-large` check would spend a range
+      // query to answer a request already known to be refused.
       let pages: PagePathRow[] = [];
       if (reparented) {
         const scanned = await this.pages.scanUnder(

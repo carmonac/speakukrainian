@@ -71,6 +71,9 @@ export class SectionPagesRepository {
     }
     return {
       ok: true,
+      // The cast cannot change a value: `DocumentSnapshot.get` is untyped, and a
+      // document whose `path` is missing or not a string sorts outside a string
+      // range, so this query never returns one.
       pages: snapshot.docs.map((doc) => ({ id: doc.id, path: String(doc.get('path')) })),
     };
   }
