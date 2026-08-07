@@ -12,9 +12,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   pageBodySchema,
   type ContentPage,
+  type ListSectionsQuery,
   type LocaleCode,
+  type Page,
   type PageBody,
   type Section,
+  type SectionTreeNode,
 } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
@@ -103,6 +106,8 @@ class ListStub {}
 interface Options {
   pages?: ContentPage[];
   sections?: Section[];
+  /** What `GET /sections?parentId=…` answers, for the subsection-list preview. */
+  children?: Section[];
   saved?: ContentPage;
   saveFails?: unknown;
   published?: ContentPage;
@@ -152,12 +157,22 @@ function setup(options: Options = {}): Recorded {
     },
   } as unknown as PagesApi;
 
+  // `tree` and `list` are here for the `subsection_list` body editor, which the
+  // shell constructs for `?type=subsection_list` and which loads its own data.
   const sectionsApi = {
     get: (id: string) => {
       const found = sections.get(id);
       return found === undefined
         ? throwError(() => new HttpErrorResponse({ status: 404, statusText: 'Not Found' }))
         : of(found);
+    },
+    tree: () =>
+      of<SectionTreeNode[]>(
+        Array.from(sections.values(), (entry) => ({ ...entry, children: [] as SectionTreeNode[] })),
+      ),
+    list: (query: ListSectionsQuery) => {
+      recorded.calls.push({ method: 'sections.list', args: [query] });
+      return of<Page<Section>>({ items: options.children ?? [], nextCursor: null });
     },
   } as unknown as SectionsApi;
 
@@ -371,6 +386,7 @@ function conflictError(message: string): HttpErrorResponse {
 const TITLE = 'app-localized-rich-text-editor[formControlName="title"]';
 const META_TITLE = 'app-localized-rich-text-editor[formControlName="metaTitle"]';
 const BODY = 'app-rich-text-page-body-editor';
+const SUBSECTION_BODY = 'app-subsection-list-page-body-editor';
 
 describe('PageFormPage', () => {
   beforeEach(() => {
@@ -717,6 +733,38 @@ describe('PageFormPage', () => {
     expect(body.type).toBe('subsection_list');
     // And it is a body the API would accept, not a bare discriminant.
     expect(pageBodySchema.safeParse(body).success).toBe(true);
+  });
+
+  it('gives a subsection list page its own editor, and lets it be saved', async () => {
+    // The seam: the shell picks the branch from the route's type, and the body
+    // component behind it is what makes the form valid.
+    setup();
+    const harness = await open('/pages/new?sectionId=grammar&type=subsection_list');
+
+    expect(root(harness).querySelector(SUBSECTION_BODY)).not.toBeNull();
+    expect(root(harness).querySelector('.page-form__body-unavailable')).toBeNull();
+    expect(saveButton(harness).disabled).toBe(true);
+
+    await typeInto(harness, TITLE, EN, '<p>Grammar points</p>');
+
+    expect(saveButton(harness).disabled).toBe(false);
+  });
+
+  it('posts a subsection list body that stores no source section', async () => {
+    // Keeping the default has to be the *absence* of the key: the section id
+    // copied in would pin the page to a section it merely lives in today.
+    const { calls } = setup();
+    const harness = await open('/pages/new?sectionId=grammar&type=subsection_list');
+
+    await typeInto(harness, TITLE, EN, '<p>Grammar points</p>');
+    await submit(harness);
+
+    expect(bodyOf(calls, 'create')['body']).toEqual({
+      type: 'subsection_list',
+      layout: 'grid',
+      showImages: true,
+      showDescriptions: true,
+    });
   });
 
   it('still seeds a rich text page with a rich text body', async () => {

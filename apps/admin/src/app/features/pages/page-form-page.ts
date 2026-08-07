@@ -51,11 +51,12 @@ import {
   PLAIN_TITLE_HINT,
   PUBLISH_NEEDS_SAVE,
 } from './page-messages';
-import { emptyBodyFor } from './page-body';
+import { AUTHORABLE_PAGE_TYPES, emptyBodyFor } from './page-body';
 import type { PageFormData } from './page-form.resolver';
 import { sortOrderValidator } from './page-validators';
 import { sectionPathOfPage } from './pages.model';
 import { RichTextPageBodyEditor } from './rich-text-page-body-editor';
+import { SubsectionListPageBodyEditor } from './subsection-list-page-body-editor';
 import { PagesApi, type CreatePageBody } from './pages.api';
 
 /** The form's raw value, which the two payload builders read. */
@@ -76,11 +77,16 @@ interface PageFormValue {
  * never touches `body.content`, and knows nothing about rich text, audio,
  * images, H5P or subsection lists.
  *
- * Giving a body type an editor (#10, #13) touches three places and no others:
- * the component itself, the `@if` branch in the template that renders it, and
- * {@link bodyEditorAvailable}. What the control *starts* from is deliberately
- * not one of them — {@link emptyBodyFor} is keyed on `PageType`, so this form
- * cannot seed a page with the body of a type nobody asked for.
+ * Giving a body type an editor (#13) touches three places and no others: the
+ * component itself, the `@case` in the template that renders it, and one entry
+ * in {@link AUTHORABLE_PAGE_TYPES}. What the control *starts* from is
+ * deliberately not one of them — {@link emptyBodyFor} is keyed on `PageType`, so
+ * this form cannot seed a page with the body of a type nobody asked for.
+ *
+ * {@link ownSectionId} is passed to the `subsection_list` branch, and only to
+ * it: the binding lives on the `@case`. That is not body-type knowledge leaking
+ * into the shell — it is the section this form already renders in "In
+ * **Grammar points**" — and the branch that wants it is the one that says so.
  */
 @Component({
   selector: 'app-page-form-page',
@@ -98,6 +104,7 @@ interface PageFormValue {
     MatTooltipModule,
     LocalizedRichTextEditor,
     RichTextPageBodyEditor,
+    SubsectionListPageBodyEditor,
   ],
   templateUrl: './page-form-page.html',
   styleUrl: './page-form-page.scss',
@@ -168,8 +175,23 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
 
   protected readonly isEdit = computed(() => this.formData().page !== null);
   protected readonly typeLabel = computed(() => PAGE_TYPE_LABELS[this.formData().type]);
-  /** #10 and #13 each delete one member of this condition. */
-  protected readonly bodyEditorAvailable = computed(() => this.formData().type === 'rich_text');
+  /**
+   * #13 deletes this, the `@default` branch in the template and
+   * `BODY_TYPE_UNAVAILABLE` together — once every type has an editor, there is
+   * no page this form can open and not edit.
+   */
+  protected readonly bodyEditorAvailable = computed(() =>
+    AUTHORABLE_PAGE_TYPES.includes(this.formData().type),
+  );
+
+  /**
+   * The section this page lives in — from the resolved section, or from the
+   * stored page when the section read failed. The `subsection_list` body
+   * defaults its source to it, and stores nothing while that default is kept.
+   */
+  protected readonly ownSectionId = computed(
+    () => this.formData().section?.id ?? this.formData().page?.sectionId ?? null,
+  );
 
   /**
    * A create with no section would post a `sectionId` the API refuses. The
@@ -205,8 +227,7 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
    * arrived with and land them among every page in the site.
    */
   protected readonly listQueryParams = computed<Record<string, string>>(() => {
-    const { section, page } = this.formData();
-    const sectionId = section?.id ?? page?.sectionId ?? null;
+    const sectionId = this.ownSectionId();
     const params: Record<string, string> = {};
     if (sectionId !== null) {
       params['sectionId'] = sectionId;
