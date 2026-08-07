@@ -69,6 +69,10 @@ export class RichTextPageBodyEditor implements ControlValueAccessor, Validator {
   private readonly tracker = new PageAssetTracker();
 
   protected readonly content = signal<RichText>({});
+  /**
+   * Reaches the wrapper below through `NgModel`'s own `disabled` input, which is
+   * on the same element as `[ngModel]` — neither editor component declares one.
+   */
   protected readonly disabled = signal(false);
 
   private onChange: (value: PageBody) => void = () => {};

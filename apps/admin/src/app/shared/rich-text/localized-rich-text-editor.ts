@@ -85,6 +85,11 @@ export class LocalizedRichTextEditor implements ControlValueAccessor {
    * Forwarded to every tab's editor. Without this a disabled control would
    * still be typeable — the wrapper is the only value accessor the form sees,
    * so a `setDisabledState` it swallows never reaches ProseMirror.
+   *
+   * The `[disabled]` binding in the template above is not an input of
+   * {@link RichTextEditor}, which declares none: it is `NgModel`'s own
+   * `disabled` input, on the same element as `[ngModel]`, and that is what calls
+   * the editor's `setDisabledState` in turn.
    */
   setDisabledState(isDisabled: boolean): void {
     this.disabled.set(isDisabled);

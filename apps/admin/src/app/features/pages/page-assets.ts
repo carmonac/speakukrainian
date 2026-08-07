@@ -69,10 +69,21 @@ export function referencedAssets(html: string): HtmlAssetRefs {
  * session ({@link remember}).
  *
  * A reference the registry cannot resolve is **left out** rather than stored
- * with an invented content type and size. The arrays are an index over our own
- * uploads; the orphan sweep the data model describes reads `data-asset-path` out
- * of the content itself, so a missing entry loses nothing the HTML does not
- * still hold.
+ * with an invented content type and size: a fabricated entry is a lie in
+ * Firestore that a later sweep would act on, where a missing one is only a gap
+ * in an index.
+ *
+ * The two halves degrade differently, and the difference matters to whoever
+ * writes the orphan sweep. **Audio** carries `data-asset-path` in the stored
+ * HTML, so a clip missing from `audioAssets` is still findable by reading the
+ * content — the sweep can be path-based and complete. **Images** carry only
+ * `src`: the tiptap `Image` node writes no path attribute, so an image missing
+ * from `imageAssets` is invisible to the index *and* to a path-based sweep, and
+ * finding it again means reversing a stored URL back to a storage path, which
+ * depends on how the environment serves the bucket. Giving the `Image` node its
+ * own `assetPath` attribute — the API sanitizer's `ALLOWED_ATTR` is per
+ * attribute, not per tag, so it would survive the round trip — is the fix, and
+ * it belongs to whichever issue writes the sweep.
  */
 export class PageAssetTracker {
   private readonly audioByPath = new Map<string, AssetRef>();
