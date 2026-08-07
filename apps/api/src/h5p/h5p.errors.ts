@@ -69,6 +69,13 @@ const YAUZL_FILENAME_ERRORS = [
  * written: an unanchored `Unexpected end of file` would also swallow a storage
  * read that failed with those words, which is a server fault and must stay a
  * 500.
+ *
+ * Yauzl's own wording only, and deliberately not zlib's. A deflate stream that
+ * will not inflate fails with `invalid code lengths set` and its siblings,
+ * which are not here: those same words come out of any inflating stream in the
+ * request path — a gzip-encoded storage response included — where they are a
+ * server fault. So a data failure of that shape, were the scan ever to miss
+ * one, would answer 500 rather than 400.
  */
 const YAUZL_DATA_ERRORS = [
   /^CRC32 validation failed\. /,
