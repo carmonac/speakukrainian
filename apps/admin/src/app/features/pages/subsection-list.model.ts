@@ -35,6 +35,23 @@ export interface SourceOption {
  * deleted — needs {@link sourceProblem} anyway, so disabling the option would be
  * a second mechanism for one rule, and a refusal nobody can provoke cannot be
  * read.
+ *
+ * That is the opposite treatment to `sections.model.ts#parentOptions`, which
+ * disables the illegal entry and prints its reason on the option itself. The
+ * line between the two is whether a stored document can already be in the
+ * refused state. Every stored parent is one the API accepted, so `parentOptions`
+ * only ever refuses a move the author is about to make and the picker can be the
+ * whole rule. A saved `sourceSectionId` can point at a section switched to
+ * `kind: 'link'` or deleted long after the save, so this rule needs a validator
+ * whatever the picker does — and given the validator, disabling the option would
+ * remove the one case where the author can read the reason.
+ *
+ * Not the same thing as `pages.model.ts#sectionChoices`, despite the identical
+ * walk and a flag that with two section kinds is today its negation. They answer
+ * different questions: `canHoldPages` is the create rule `PagesRepository.create`
+ * enforces with a 422, `isLink` is "has no subsections of its own". Merging them
+ * would tie two unrelated rules to one field, and a third section kind, or the
+ * API relaxing either rule, would have to unpick it.
  */
 export function sourceOptions(
   tree: readonly SectionTreeNode[],
