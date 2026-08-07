@@ -759,6 +759,22 @@ function nestColumns(harness: RouterTestingHarness): DebugElement[] {
     );
 }
 
+/**
+ * The rows CDK's own sort has translated right now, by title — which is how a
+ * pending reorder shows before it is dropped. The clone standing in the dragged
+ * row's slot is skipped, the same way the component's own hit test skips it: it
+ * is carried along by the sort and says nothing about where the row would land.
+ */
+function shiftedRows(harness: RouterTestingHarness): string[] {
+  return rows(harness)
+    .filter(
+      (row) =>
+        row.style.transform.includes('translate3d') &&
+        !row.classList.contains('cdk-drag-placeholder'),
+    )
+    .map((row) => row.querySelector('.sections-tree__title')?.textContent?.trim() ?? '');
+}
+
 /** The sections whose nest column carries `marker` right now. */
 function nestsMarked(harness: RouterTestingHarness, marker: string): string[] {
   return nestColumns(harness)
@@ -929,6 +945,68 @@ describe('SectionsPage drag and drop through CDK', () => {
       '/grammar/tenses/present-simple',
       '/listening',
     ]);
+  });
+
+  it('sends nothing at all when a release in the strip has no row to nest into', async () => {
+    const { calls } = setup([seeded()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    // Rows: Grammar(0) Tenses(1) Present simple(2) Listening(3). Down the tree
+    // first, so the sort really is holding a slot other than the row's own —
+    // "Grammar" last among the roots — then sideways into the strip over
+    // "Listening", which would take the drop, and finally up it onto "Present
+    // simple", which is inside "Grammar" and never can. A release there is
+    // neither gesture, so it has to do nothing at all: falling through to the
+    // slot the sort was holding would move a section the admin never dropped
+    // there, and toast that it had.
+    let pending: string[] = [];
+    const aimedAt: string[][] = [];
+    await dragPointer(
+      harness,
+      layout.handle(0),
+      [layout.handle(3), layout.nest(3), layout.nest(2)],
+      (stop) => {
+        if (stop === 0) {
+          pending = shiftedRows(harness);
+        } else {
+          aimedAt.push(nestsMarked(harness, 'is-target'));
+        }
+      },
+    );
+
+    expect(pending).toEqual(['Tenses', 'Present simple', 'Listening']);
+    expect(aimedAt).toEqual([['Listening'], []]);
+    expect(calls.map((call) => call.method)).toEqual(['tree']);
+    expect(titles(harness)).toEqual(['Grammar', 'Tenses', 'Present simple', 'Listening']);
+  });
+
+  it('drops the highlight and hands the sort back when the pointer leaves the strip', async () => {
+    const { calls } = setup([siblings()]);
+    const harness = await open();
+    const layout = layOut(harness);
+    laidOut = layout;
+
+    // Rows: Alpha(0) Beta(1) Beta One(2) Beta Two(3) Beta Three(4) Gamma(5).
+    // Into the strip, back out into the band — where the sort takes over again
+    // and slides "Beta One" down — and back into the strip aiming at "Beta
+    // One"'s resting row. Leaving the strip has to clear the highlight and give
+    // the sort its translations back, or the second entry hit-tests a layout
+    // nobody is looking at and the release lands somewhere else.
+    const aimedAt: string[][] = [];
+    await dragPointer(
+      harness,
+      layout.handle(3),
+      [layout.nest(5), layout.handle(2), layout.nest(2)],
+      () => aimedAt.push(nestsMarked(harness, 'is-target')),
+    );
+
+    expect(aimedAt).toEqual([['Gamma'], [], ['Beta One']]);
+    expect(calls.filter((call) => call.method === 'move')).toEqual([
+      { method: 'move', args: ['beta-two', { parentId: 'beta-one', sortOrder: 0 }] },
+    ]);
+    expect(paths(harness)).toContain('/beta/beta-one/beta-two');
   });
 
   it('reorders and never re-parents when the pointer only moves vertically', async () => {
