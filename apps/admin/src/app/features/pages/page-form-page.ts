@@ -51,10 +51,11 @@ import {
   PLAIN_TITLE_HINT,
   PUBLISH_NEEDS_SAVE,
 } from './page-messages';
+import { emptyBodyFor } from './page-body';
 import type { PageFormData } from './page-form.resolver';
 import { sortOrderValidator } from './page-validators';
 import { sectionPathOfPage } from './pages.model';
-import { RichTextPageBodyEditor, emptyRichTextBody } from './rich-text-page-body-editor';
+import { RichTextPageBodyEditor } from './rich-text-page-body-editor';
 import { PagesApi, type CreatePageBody } from './pages.api';
 
 /** The form's raw value, which the two payload builders read. */
@@ -70,10 +71,16 @@ interface PageFormValue {
  * Authors one page, on `/pages/new` and on `/pages/:id` alike.
  *
  * It is a **shell**: it owns the title, slug, section, SEO, status and the
- * payloads, and it hands the body to a component chosen by `body.type` through a
- * single `FormControl<PageBody>`. It never imports a body schema, never touches
- * `body.content`, and knows nothing about rich text, audio, images, H5P or
- * subsection lists. #10 and #13 add one component and one `@if` branch each.
+ * payloads, and it hands the body to a component chosen by the route's page type
+ * through a single `FormControl<PageBody>`. It never imports a body schema,
+ * never touches `body.content`, and knows nothing about rich text, audio,
+ * images, H5P or subsection lists.
+ *
+ * Giving a body type an editor (#10, #13) touches three places and no others:
+ * the component itself, the `@if` branch in the template that renders it, and
+ * {@link bodyEditorAvailable}. What the control *starts* from is deliberately
+ * not one of them — {@link emptyBodyFor} is keyed on `PageType`, so this form
+ * cannot seed a page with the body of a type nobody asked for.
  */
 @Component({
   selector: 'app-page-form-page',
@@ -142,8 +149,12 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
      * One control for the whole body. The body component is its value accessor
      * *and* its validator, so `form.invalid` and `form.dirty` cover body edits
      * without the shell knowing what is in there.
+     *
+     * A control needs a value here and `formData()` is not readable yet, so this
+     * is a placeholder: `ngOnInit` replaces it on both routes — with the stored
+     * body on an edit, and with `emptyBodyFor(type)` on a create.
      */
-    body: this.fb.nonNullable.control<PageBody>(emptyRichTextBody()),
+    body: this.fb.nonNullable.control<PageBody>(emptyBodyFor('rich_text')),
   });
 
   /**
@@ -209,7 +220,11 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
   ngOnInit(): void {
     const page = this.formData().page;
     if (page === null) {
-      this.form.controls.body.setValue(emptyRichTextBody());
+      // The type the route asked for, not the one this release can edit: a body
+      // seeded as `rich_text` for a page requested as something else is the
+      // wrong document, and an author who never touches the body would post it
+      // without ever seeing it.
+      this.form.controls.body.setValue(emptyBodyFor(this.formData().type));
       this.suggestSlugFromTitle();
     } else {
       // A stored page always carries a sort order, so an emptied field is a lost

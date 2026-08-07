@@ -9,7 +9,13 @@ import { Router, provideRouter, withComponentInputBinding } from '@angular/route
 import { RouterTestingHarness } from '@angular/router/testing';
 import { of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ContentPage, LocaleCode, Section } from '@speakukrainian/shared';
+import {
+  pageBodySchema,
+  type ContentPage,
+  type LocaleCode,
+  type PageBody,
+  type Section,
+} from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { unsavedChangesGuard } from '../../core/router/unsaved-changes.guard';
@@ -220,6 +226,16 @@ function root(harness: RouterTestingHarness): HTMLElement {
 
 function form(harness: RouterTestingHarness): PageFormPage {
   return harness.routeDebugElement?.componentInstance as PageFormPage;
+}
+
+/**
+ * The body control's value. Read off the component because a type this release
+ * has no editor for renders nothing that shows it — which is the case under
+ * test, and the reason a wrong value there stays invisible until #10 or #13
+ * gives that type an editor.
+ */
+function bodyValue(harness: RouterTestingHarness): PageBody {
+  return form(harness)['form'].controls.body.value;
 }
 
 function slugField(harness: RouterTestingHarness): HTMLInputElement {
@@ -672,6 +688,33 @@ describe('PageFormPage', () => {
     await typeInto(harness, TITLE, EN, '<p>An exercise</p>');
 
     expect(saveButton(harness).disabled).toBe(true);
+  });
+
+  it('seeds the body control with the type the route asked for', async () => {
+    // The shell has no editor for this type yet, so nothing on screen shows what
+    // the control holds. A `rich_text` body seeded here would be posted for a
+    // `subsection_list` page — silently, by an author who filled in the title
+    // and pressed Save — the moment #10 gives the type an editor and Save stops
+    // being disabled.
+    setup();
+    const harness = await open('/pages/new?sectionId=grammar&type=subsection_list');
+
+    const body = bodyValue(harness);
+    expect(body.type).toBe('subsection_list');
+    // And it is a body the API would accept, not a bare discriminant.
+    expect(pageBodySchema.safeParse(body).success).toBe(true);
+  });
+
+  it('still seeds a rich text page with a rich text body', async () => {
+    setup();
+    const harness = await open('/pages/new?sectionId=grammar&type=rich_text');
+
+    expect(bodyValue(harness)).toEqual({
+      type: 'rich_text',
+      content: {},
+      audioAssets: [],
+      imageAssets: [],
+    });
   });
 
   it('sends /pages/new with no section back to the list, saying why', async () => {

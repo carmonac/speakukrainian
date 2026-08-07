@@ -117,8 +117,3 @@ export class RichTextPageBodyEditor implements ControlValueAccessor, Validator {
     this.tracker.remember(asset);
   }
 }
-
-/** The value a brand-new `rich_text` page starts from. */
-export function emptyRichTextBody(): PageBody {
-  return { type: 'rich_text', content: {}, audioAssets: [], imageAssets: [] };
-}

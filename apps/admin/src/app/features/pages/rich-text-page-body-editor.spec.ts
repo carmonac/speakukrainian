@@ -8,7 +8,8 @@ import type { AssetRef, LocaleCode, PageBody } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { RichTextEditor } from '../../shared/rich-text/rich-text-editor';
-import { RichTextPageBodyEditor, emptyRichTextBody } from './rich-text-page-body-editor';
+import { emptyBodyFor } from './page-body';
+import { RichTextPageBodyEditor } from './rich-text-page-body-editor';
 
 const EN = 0;
 const UK = 1;
@@ -32,7 +33,7 @@ const audioHtml = `<audio src="${CLIP.url}" data-asset-path="${CLIP.path}" contr
   template: `<app-rich-text-page-body-editor [formControl]="body" />`,
 })
 class BodyHost {
-  readonly body = new FormControl<PageBody>(emptyRichTextBody(), { nonNullable: true });
+  readonly body = new FormControl<PageBody>(emptyBodyFor('rich_text'), { nonNullable: true });
 }
 
 describe('RichTextPageBodyEditor', () => {
