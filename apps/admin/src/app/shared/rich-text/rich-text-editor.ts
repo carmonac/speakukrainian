@@ -6,10 +6,12 @@ import {
   forwardRef,
   inject,
   input,
+  output,
   signal,
   viewChild,
 } from '@angular/core';
 import { NG_VALUE_ACCESSOR, type ControlValueAccessor } from '@angular/forms';
+import type { AssetRef } from '@speakukrainian/shared';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
@@ -49,6 +51,18 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
   readonly placeholder = input('');
   /** Hides the image and audio buttons for short fields like a menu label. */
   readonly inlineOnly = input(false);
+
+  /**
+   * The asset the picker just returned, for a form that has to record it
+   * somewhere other than in the HTML.
+   *
+   * The serialized content keeps only a `src` and, for audio, a
+   * `data-asset-path` — the API sanitizer's `ALLOW_DATA_ATTR: false` stops
+   * anything else riding along — so `contentType` and `sizeBytes` exist nowhere
+   * else once the insert has run. A form that ignores this output loses
+   * nothing but those two fields.
+   */
+  readonly assetInserted = output<AssetRef>();
 
   protected readonly disabled = signal(false);
   protected readonly active = signal<Record<string, boolean>>({});
@@ -146,6 +160,7 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
         .focus()
         .setImage({ src: asset.url, alt: asset.alt?.['en'] ?? '' })
         .run();
+      this.assetInserted.emit(asset);
     }
   }
 
@@ -157,6 +172,7 @@ export class RichTextEditor implements ControlValueAccessor, OnDestroy {
         .focus()
         .setAudio({ src: asset.url, title: asset.path, assetPath: asset.path })
         .run();
+      this.assetInserted.emit(asset);
     }
   }
 

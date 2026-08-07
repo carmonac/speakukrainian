@@ -1,7 +1,7 @@
-import { Component, forwardRef, input, signal } from '@angular/core';
+import { Component, forwardRef, input, output, signal } from '@angular/core';
 import { FormsModule, NG_VALUE_ACCESSOR, type ControlValueAccessor } from '@angular/forms';
 import { MatTabsModule } from '@angular/material/tabs';
-import type { LocaleCode, RichText } from '@speakukrainian/shared';
+import type { AssetRef, LocaleCode, RichText } from '@speakukrainian/shared';
 import { RichTextEditor } from './rich-text-editor';
 
 /**
@@ -31,6 +31,7 @@ import { RichTextEditor } from './rich-text-editor';
             [inlineOnly]="inlineOnly()"
             [ngModel]="valueFor(locale)"
             (ngModelChange)="updateLocale(locale, $event)"
+            (assetInserted)="assetInserted.emit($event)"
           />
         </mat-tab>
       }
@@ -42,6 +43,14 @@ export class LocalizedRichTextEditor implements ControlValueAccessor {
   readonly locales = input.required<LocaleCode[]>();
   readonly placeholder = input('');
   readonly inlineOnly = input(false);
+
+  /**
+   * Forwarded from whichever tab's editor inserted it. The locale is
+   * deliberately not carried: an asset is identified by its storage path or its
+   * URL, and a form deriving what the content references reads every locale
+   * anyway.
+   */
+  readonly assetInserted = output<AssetRef>();
 
   protected readonly selectedIndex = signal(0);
   protected readonly value = signal<RichText>({});
