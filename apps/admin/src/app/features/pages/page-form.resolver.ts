@@ -10,7 +10,7 @@ import {
 } from '@speakukrainian/shared';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { SectionsApi } from '../sections/sections.api';
-import { PAGE_NEEDS_SECTION } from './page-messages';
+import { PAGE_NEEDS_SECTION, SECTION_CANNOT_HOLD_PAGES } from './page-messages';
 import { PagesApi } from './pages.api';
 
 /** What the form route hands the form. `page` is `null` on the create route. */
@@ -71,6 +71,15 @@ export const pageFormResolver: ResolveFn<PageFormData> = async (route) => {
   try {
     section = await firstValueFrom(sections.get(sectionId.data));
   } catch {
+    return new RedirectCommand(router.createUrlTree(['/pages']));
+  }
+
+  // `PagesRepository.create` answers 422 for a link section, and both the list
+  // and the section tree already refuse to offer "Add page" for one. A
+  // hand-typed URL is the third way in, and without this it opens a form whose
+  // only possible ending is that 422, after the author has written the page.
+  if (section.kind !== 'content') {
+    notifications.error(SECTION_CANNOT_HOLD_PAGES);
     return new RedirectCommand(router.createUrlTree(['/pages']));
   }
 

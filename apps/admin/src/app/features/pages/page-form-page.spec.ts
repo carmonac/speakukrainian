@@ -22,7 +22,11 @@ import { unsavedChangesGuard } from '../../core/router/unsaved-changes.guard';
 import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { RichTextEditor } from '../../shared/rich-text/rich-text-editor';
 import { SectionsApi } from '../sections/sections.api';
-import { BODY_TYPE_UNAVAILABLE, PAGE_NEEDS_SECTION } from './page-messages';
+import {
+  BODY_TYPE_UNAVAILABLE,
+  PAGE_NEEDS_SECTION,
+  SECTION_CANNOT_HOLD_PAGES,
+} from './page-messages';
 import { PageFormPage } from './page-form-page';
 import { pageFormResolver } from './page-form.resolver';
 import { PagesApi } from './pages.api';
@@ -59,6 +63,16 @@ const GRAMMAR: Section = {
   sortOrder: 0,
   status: 'published',
   audit,
+};
+
+const LINKS: Section = {
+  ...GRAMMAR,
+  id: 'links',
+  kind: 'link',
+  slug: 'links',
+  path: '/links',
+  title: { en: 'Elsewhere' },
+  link: { type: 'external', href: 'https://example.test/course', openInNewTab: true },
 };
 
 function page(id: string, overrides: Partial<ContentPage> = {}): ContentPage {
@@ -715,6 +729,17 @@ describe('PageFormPage', () => {
       audioAssets: [],
       imageAssets: [],
     });
+  });
+
+  it('sends /pages/new for a link section back to the list, saying why', async () => {
+    // The list and the section tree both refuse to offer "Add page" here; a
+    // hand-typed URL is the third way in, and the API answers 422.
+    const recorded = setup({ sections: [LINKS] });
+
+    await open('/pages/new?sectionId=links&type=rich_text');
+
+    expect(TestBed.inject(Router).url).toBe('/pages');
+    expect(recorded.errors).toEqual([SECTION_CANNOT_HOLD_PAGES]);
   });
 
   it('sends /pages/new with no section back to the list, saying why', async () => {
