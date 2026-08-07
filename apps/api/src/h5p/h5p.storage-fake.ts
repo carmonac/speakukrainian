@@ -1,0 +1,116 @@
+import { Readable } from 'node:stream';
+import type { StorageService, StoredObject } from '../infra/storage/storage.service.js';
+
+/**
+ * An in-memory stand-in for `StorageService`, used by the H5P adapter specs.
+ *
+ * It is a real implementation of the six methods the adapters call — including
+ * `deleteByPrefix`'s trailing-slash rule — so a path assertion in a spec is
+ * exact rather than a claim about what a mock was asked to do. It lives in
+ * `src` rather than beside one spec because both adapter specs and the service
+ * spec need the same object graph.
+ */
+export class InMemoryStorage {
+  readonly objects = new Map<string, { body: Buffer; createdAt: Date }>();
+
+  constructor(private clock = new Date('2026-05-01T00:00:00.000Z')) {}
+
+  put(path: string, body: Buffer | NodeJS.ReadableStream): Promise<void> {
+    if (Buffer.isBuffer(body)) {
+      this.objects.set(path, { body, createdAt: this.clock });
+      return Promise.resolve();
+    }
+
+    return new Promise((resolvePut, reject) => {
+      const chunks: Buffer[] = [];
+      body.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
+      body.on('error', reject);
+      body.on('end', () => {
+        this.objects.set(path, { body: Buffer.concat(chunks), createdAt: this.clock });
+        resolvePut();
+      });
+    });
+  }
+
+  delete(path: string): Promise<void> {
+    this.objects.delete(path);
+    return Promise.resolve();
+  }
+
+  exists(path: string): Promise<boolean> {
+    return Promise.resolve(this.objects.has(path));
+  }
+
+  stat(path: string): Promise<{ sizeBytes: number; createdAt: Date } | null> {
+    const found = this.objects.get(path);
+    return Promise.resolve(
+      found ? { sizeBytes: found.body.length, createdAt: found.createdAt } : null,
+    );
+  }
+
+  list(prefix: string): Promise<StoredObject[]> {
+    return Promise.resolve(
+      [...this.objects.entries()]
+        .filter(([path]) => path.startsWith(prefix))
+        .map(([path, object]) => ({
+          path,
+          sizeBytes: object.body.length,
+          createdAt: object.createdAt,
+        })),
+    );
+  }
+
+  listSubdirectories(prefix: string): Promise<string[]> {
+    const directories = new Set<string>();
+    for (const path of this.objects.keys()) {
+      if (!path.startsWith(prefix)) {
+        continue;
+      }
+      const [head, ...rest] = path.slice(prefix.length).split('/');
+      if (rest.length > 0 && head) {
+        directories.add(head);
+      }
+    }
+    return Promise.resolve([...directories]);
+  }
+
+  async deleteByPrefix(prefix: string): Promise<void> {
+    if (!prefix.endsWith('/')) {
+      throw new Error(`A delete prefix must end in "/", got "${prefix}".`);
+    }
+    for (const path of [...this.objects.keys()]) {
+      if (path.startsWith(prefix)) {
+        this.objects.delete(path);
+      }
+    }
+  }
+
+  createReadStream(path: string, range?: { start?: number; end?: number }): Readable {
+    const found = this.objects.get(path);
+    if (!found) {
+      throw new Error(`no such object: ${path}`);
+    }
+    const body = range
+      ? found.body.subarray(range.start ?? 0, range.end === undefined ? undefined : range.end + 1)
+      : found.body;
+
+    return Readable.from([body]);
+  }
+
+  /** Contents of an object as text, for asserting what an adapter wrote. */
+  text(path: string): string {
+    const found = this.objects.get(path);
+    if (!found) {
+      throw new Error(`no such object: ${path}`);
+    }
+    return found.body.toString('utf-8');
+  }
+
+  paths(): string[] {
+    return [...this.objects.keys()].sort();
+  }
+
+  asStorageService(): StorageService {
+    return this as unknown as StorageService;
+  }
+}
