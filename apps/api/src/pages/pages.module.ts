@@ -8,13 +8,14 @@ import { SectionPagesRepository } from './section-pages.repository.js';
  * `FirestoreModule` and `CommonModule` are `@Global`, so neither is imported
  * here.
  *
- * `PagesRepository` stays unexported. `SectionsModule` imports this module for
- * the narrow `SectionPagesRepository` port only — a section rename rewrites
- * page paths, it has no business creating or deleting pages.
+ * `PagesRepository` and `PagesService` stay unexported. `SectionsModule` is the
+ * only importer and it imports this module for the narrow
+ * `SectionPagesRepository` port only — a section rename rewrites page paths, it
+ * has no business creating or deleting pages.
  */
 @Module({
   controllers: [PagesController],
   providers: [PagesService, PagesRepository, SectionPagesRepository],
-  exports: [PagesService, SectionPagesRepository],
+  exports: [SectionPagesRepository],
 })
 export class PagesModule {}
