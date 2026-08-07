@@ -124,6 +124,13 @@ export class StorageService {
    * than truncating: a caller that silently gets half a listing deletes half a
    * piece of content, or reinstalls a library it already has.
    *
+   * The ceiling is a cliff and not a slope — past it this raises a plain
+   * `Error`, which no route maps, so the caller gets a 500 and no listing. That
+   * is the right trade for a caller that wants the objects, because a partial
+   * answer is worse than none; a caller that only wants to *act* on every
+   * object should page for itself the way `deleteByPrefix` does, rather than
+   * materialising the listing first.
+   *
    * Sizes come back in the listing itself, so a caller that needs the total
    * size of a prefix does not need one `stat` per object.
    */
@@ -174,14 +181,20 @@ export class StorageService {
    * The trailing slash is asserted rather than appended, so a caller that built
    * the prefix by hand fails loudly: deleting `h5p/content/abc` without it
    * would also take out `h5p/content/abcdef/…`.
+   *
+   * Deletes page by page rather than over `list()`, which keeps the listing
+   * ceiling out of the delete path: a prefix too wide to enumerate in one go is
+   * still a prefix that has to be removable, and a content that cannot be
+   * deleted is a content nothing can clean up after.
    */
   async deleteByPrefix(prefix: string): Promise<void> {
     if (!prefix.endsWith('/')) {
       throw new Error(`A delete prefix must end in "/", got "${prefix}".`);
     }
 
-    const objects = await this.list(prefix);
-    await Promise.all(objects.map((object) => this.delete(object.path)));
+    await this.eachPage({ prefix }, async (files) => {
+      await Promise.all(files.map((file) => this.delete(file.name)));
+    });
   }
 
   /**
@@ -223,7 +236,7 @@ export class StorageService {
    */
   private async eachPage(
     query: GetFilesOptions,
-    onPage: (files: File[], apiResponse: unknown) => void,
+    onPage: (files: File[], apiResponse: unknown) => void | Promise<void>,
   ): Promise<void> {
     let next: GetFilesOptions | null = {
       ...query,
@@ -234,7 +247,7 @@ export class StorageService {
     while (next) {
       const page: GetFilesResponse = await this.bucket.getFiles(next);
       const [files, nextQuery, apiResponse] = page;
-      onPage(files, apiResponse);
+      await onPage(files, apiResponse);
       next = (nextQuery as GetFilesOptions | null) ?? null;
     }
   }

@@ -209,6 +209,25 @@ describe('StorageService.deleteByPrefix', () => {
       'h5p/content/abc/media/clip.txt',
     ]);
   });
+
+  it('deletes past the listing ceiling, which a delete has no way to recover from', async () => {
+    // `list()` refuses a prefix this wide rather than truncating, and that is
+    // the right answer for a caller that wants the objects. A delete only wants
+    // to act on them, so it pages instead — otherwise the one prefix nobody can
+    // enumerate is also the one prefix nobody can clean up.
+    const objects = (from: number, count: number): FakeObject[] =>
+      Array.from({ length: count }, (_unused, offset) => ({ name: `wide/${from + offset}` }));
+    const { service, state } = createService([
+      { objects: objects(0, MAX_STORAGE_LIST_RESULTS) },
+      { objects: objects(MAX_STORAGE_LIST_RESULTS, 5) },
+    ]);
+
+    await expect(service.list('wide/')).rejects.toThrow(/more than 10000 objects/);
+
+    await service.deleteByPrefix('wide/');
+
+    expect(state.deleted).toHaveLength(MAX_STORAGE_LIST_RESULTS + 5);
+  });
 });
 
 describe('StorageService.stat', () => {
