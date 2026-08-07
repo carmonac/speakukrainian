@@ -6,10 +6,17 @@
     </div>
 
     @if (canAddPage()) {
-      <a matButton="filled" class="pages__new" routerLink="/pages/new" [queryParams]="newPageParams()">
+      <button matButton="filled" type="button" class="pages__new" [matMenuTriggerFor]="typeMenu">
         <mat-icon>add</mat-icon>
         New page
-      </a>
+      </button>
+      <mat-menu #typeMenu="matMenu">
+        @for (type of authorableTypes; track type) {
+          <a mat-menu-item class="pages__new-type" routerLink="/pages/new" [queryParams]="newPageParams(type)">
+            {{ pageTypeLabel(type) }}
+          </a>
+        }
+      </mat-menu>
     } @else {
       <span class="pages__new-hint" [matTooltip]="addPageReason()">
         <button matButton="filled" type="button" class="pages__new" disabled>

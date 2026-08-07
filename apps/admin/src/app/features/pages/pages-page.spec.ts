@@ -225,6 +225,25 @@ async function chooseSection(harness: RouterTestingHarness, label: string): Prom
   harness.detectChanges();
 }
 
+async function openNewPageMenu(harness: RouterTestingHarness): Promise<void> {
+  const trigger = root(harness).querySelector<HTMLButtonElement>('button.pages__new');
+  if (!trigger) {
+    throw new Error('Expected a New page trigger');
+  }
+  trigger.click();
+  harness.detectChanges();
+  await harness.fixture.whenStable();
+  harness.detectChanges();
+}
+
+/** The menu renders into an overlay, outside the component's own element. */
+function newPageItems(): { label: string; href: string }[] {
+  return Array.from(document.querySelectorAll<HTMLAnchorElement>('a.pages__new-type'), (item) => ({
+    label: item.textContent?.trim() ?? '',
+    href: item.getAttribute('href') ?? '',
+  }));
+}
+
 describe('PagesPage', () => {
   beforeEach(() => {
     history.replaceState({}, '');
@@ -323,7 +342,7 @@ describe('PagesPage', () => {
     expect(recorded).toHaveLength(2);
   });
 
-  it('offers New page only for a section that can hold one', async () => {
+  it('offers New page only for a section that can hold one, one item per authorable type', async () => {
     setup();
     const harness = await open('/pages');
 
@@ -334,19 +353,29 @@ describe('PagesPage', () => {
     expect(tooltip(harness)).toBe(PICK_SECTION_FIRST);
 
     await chooseSection(harness, 'Grammar points');
+    await openNewPageMenu(harness);
 
-    const link = root(harness).querySelector<HTMLAnchorElement>('a.pages__new');
-    expect(link?.getAttribute('href')).toBe('/pages/new?sectionId=grammar&type=rich_text');
+    expect(newPageItems()).toEqual([
+      { label: 'Rich text', href: '/pages/new?sectionId=grammar&type=rich_text' },
+      { label: 'Subsection list', href: '/pages/new?sectionId=grammar&type=subsection_list' },
+    ]);
+    // #13 adds this one; offering it now would open a form with no body editor.
+    expect(newPageItems().some((item) => item.href.includes('h5p_exercise'))).toBe(false);
   });
 
   it('refuses New page for a link section, which the API would reject', async () => {
     setup();
     const harness = await open('/pages?sectionId=docs');
 
-    expect(root(harness).querySelector<HTMLButtonElement>('button.pages__new')?.disabled).toBe(
-      true,
-    );
-    expect(root(harness).querySelector('a.pages__new')).toBeNull();
+    const trigger = root(harness).querySelector<HTMLButtonElement>('button.pages__new');
+    expect(trigger?.disabled).toBe(true);
+
+    // Pressing it anyway opens nothing, so there is no type to choose either.
+    trigger?.click();
+    harness.detectChanges();
+    await harness.fixture.whenStable();
+
+    expect(newPageItems()).toEqual([]);
     expect(tooltip(harness)).toBe(SECTION_CANNOT_HOLD_PAGES);
   });
 
