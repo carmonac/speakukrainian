@@ -13,7 +13,14 @@ import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { MAX_DEPTH_MESSAGE, SLUG_TAKEN_FALLBACK } from './section-messages';
 import type { SectionMoveData } from './section-move.resolver';
-import { findNode, parentOptions, positionOptions, sectionTitle } from './sections.model';
+import {
+  applyMove,
+  findNode,
+  isNoOpMove,
+  parentOptions,
+  positionOptions,
+  sectionTitle,
+} from './sections.model';
 import { SectionsApi } from './sections.api';
 
 /**
@@ -128,8 +135,19 @@ export class SectionMovePage implements OnInit {
       return;
     }
 
-    const { section } = this.formData();
+    const { section, tree } = this.formData();
     const { parentId, position } = this.form.getRawValue();
+
+    // The screen opens on the placement the section already has, so Move with
+    // nothing changed is a request that would only rewrite the numbers the
+    // server is holding. Same guard the drag gesture makes, over the same pure
+    // functions. It goes back to the tree with the row highlighted and says
+    // nothing: a "was moved" toast for a move that never happened is a lie, and
+    // the highlighted row is where the section is.
+    if (isNoOpMove(tree, applyMove(tree, section.id, { parentId, position }), section.id)) {
+      await this.router.navigate(['/sections'], { state: { savedId: section.id } });
+      return;
+    }
 
     this.saving.set(true);
     try {

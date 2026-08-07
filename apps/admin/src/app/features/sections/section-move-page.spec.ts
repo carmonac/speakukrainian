@@ -330,6 +330,37 @@ describe('SectionMovePage', () => {
     });
   });
 
+  it('sends nothing when Move is pressed on the placement the section already has', async () => {
+    const { calls, successes } = setup();
+    const harness = await open('/sections/articles/move');
+
+    save(harness).click();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(calls.map((call) => call.method)).toEqual(['tree']);
+    // No "was moved" for a move that did not happen — the tree comes back with
+    // the row highlighted, which is where the section is.
+    expect(successes).toEqual([]);
+    const router = TestBed.inject(Router);
+    expect(router.url).toBe('/sections');
+    expect(router.lastSuccessfulNavigation()?.extras.state).toEqual({ savedId: 'articles' });
+  });
+
+  it('still sends when only the position changed under the same parent', async () => {
+    const { calls } = setup();
+    const harness = await open('/sections/articles/move');
+
+    await choose(harness, 'section-move__position', 'First');
+    save(harness).click();
+    await harness.fixture.whenStable();
+
+    expect(calls[1]).toEqual({
+      method: 'move',
+      args: ['articles', { parentId: 'grammar', sortOrder: 0 }],
+    });
+  });
+
   it('binds a 409 under the parent field instead of only toasting it', async () => {
     const { calls } = setup({
       moveFails: new HttpErrorResponse({
