@@ -66,6 +66,10 @@
     </mat-checkbox>
 
     <p class="subsection-body__field-label">Intro</p>
+    <!-- Audio and images embedded here are recorded in the stored HTML and
+         nowhere else: `subsectionListPageBodySchema` has no asset arrays, which
+         is why the orphan-sweep rule in `docs/architecture.md` reads
+         `data-asset-path` out of the content rather than out of the body. -->
     <app-localized-rich-text-editor
       class="subsection-body__intro"
       [locales]="locales()"

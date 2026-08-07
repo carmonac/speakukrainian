@@ -109,7 +109,9 @@ inside a JSON string ends the block, and no sanitizer upstream will have removed
 
 _Why:_ this is a language-learning product — pronunciation clips are core content. A real node
 is selectable, deletable and serializable like any other block, and it carries the storage
-object path, which is what lets us find and collect orphaned uploads later.
+object path, which is what lets us find and collect orphaned uploads later. That path in the
+HTML — not the body's asset arrays — is what an orphan sweep may read; see "Data model" below
+for the rule and the fields it protects.
 
 ### ADR-005 — Admin state lives in the URL and `history.state`
 
@@ -326,6 +328,19 @@ the extension derived from the content type, never from the uploaded filename �
 cannot choose the name an object lands under, and two uploads of `intro.mp3` cannot collide.
 Nothing indexes these objects yet: the sweep for orphans that ADR-004 anticipates has to walk the
 prefix a month at a time and match paths against `data-asset-path` in published content.
+
+**The stored HTML is the source of truth for which assets a page references; `body.audioAssets`
+and `body.imageAssets` are a convenience index.** They exist to supply the metadata the HTML
+cannot carry — `contentType`, `sizeBytes`, the storage `path` behind an image `src` — and they
+are incomplete by construction: only `rich_text` bodies have them at all. The other two rich text
+fields, `subsection_list.intro` and `h5p_exercise.explanation`, live on `strictObject` bodies with
+**no asset array**, so a clip embedded in an intro is recorded nowhere but the content. A sweep
+that decides what is orphaned by reading `body.audioAssets` would therefore delete audio a
+published page still plays. It must instead parse every rich text field of every body — `content`,
+`intro`, `explanation` — for `data-asset-path`, and consult the index only for what those
+attributes do not say. Images are the same rule one step worse: the tiptap `Image` node writes
+only `src`, so a path-based sweep cannot see an image until that node gains its own path
+attribute (`page-assets.ts` describes the fix and why the sanitizer would let it through).
 
 ## Local development
 

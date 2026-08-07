@@ -73,6 +73,16 @@ export function referencedAssets(html: string): HtmlAssetRefs {
  * Firestore that a later sweep would act on, where a missing one is only a gap
  * in an index.
  *
+ * That gap is allowed because **the HTML decides, and these arrays are only a
+ * lookup table for the metadata it cannot carry.** They are also incomplete by
+ * construction across the collection: this tracker only ever sees a `rich_text`
+ * body, and `subsection_list.intro` and `h5p_exercise.explanation` are rich text
+ * whose schemas have no asset array at all — a clip an author embeds in an intro
+ * is referenced by the stored HTML and by nothing else. A sweep that decides
+ * what is orphaned from `body.audioAssets` therefore deletes live content. It
+ * has to read `data-asset-path` out of *every* rich text field of *every* body.
+ * `docs/architecture.md` states that rule; this is the code it constrains.
+ *
  * The two halves degrade differently, and the difference matters to whoever
  * writes the orphan sweep. **Audio** carries `data-asset-path` in the stored
  * HTML, so a clip missing from `audioAssets` is still findable by reading the
