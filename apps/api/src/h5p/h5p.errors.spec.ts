@@ -71,9 +71,34 @@ describe('toHttpException', () => {
     );
   });
 
+  it.each([
+    ['Relative path: content/../../pwned.txt'],
+    ['Absolute path: /etc/pwned.txt'],
+    ['Invalid characters in filename: content\\..\\pwned.txt'],
+  ])('turns a filename rejection from the zip reader (%j) into a 400', (message) => {
+    // These are plain `Error`s thrown from inside `yauzl-promise` while it reads
+    // the central directory. `assertSafePackageEntries` refuses such names
+    // first, so this is the backstop for one it let through — and an unhandled
+    // 500 for a file problem is what it exists to prevent.
+    const exception = toHttpException(new Error(message));
+
+    expect(exception?.getStatus()).toBe(400);
+    expect(bodyOf(exception!)['message']).toBe(
+      'The package contains a file with an unusable path.',
+    );
+  });
+
+  it('keeps the rejected entry name out of the response body', () => {
+    const exception = toHttpException(new Error('Relative path: content/../../pwned.txt'));
+
+    expect(JSON.stringify(bodyOf(exception!))).not.toContain('pwned');
+  });
+
   it('returns null for anything that is not an H5pError', () => {
     // A storage outage must not be reported to the admin as a corrupt file.
     expect(toHttpException(new Error('ECONNRESET'))).toBeNull();
+    // Close enough to read like one of yauzl's, and still a server fault.
+    expect(toHttpException(new Error('Absolute paths are unsupported by this bucket'))).toBeNull();
     expect(toHttpException('boom')).toBeNull();
     expect(toHttpException(undefined)).toBeNull();
   });

@@ -10,10 +10,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CreateH5pContentInput, H5pContent } from '@speakukrainian/shared';
 import type { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
+import { buildRawZip, type RawZipEntry } from './h5p.raw-zip.js';
 import { H5pService } from './h5p.service.js';
 import { InMemoryStorage } from './h5p.storage-fake.js';
 
 const MAIN = { machineName: 'SpeakTest.Main', majorVersion: 1, minorVersion: 2 };
+
+const HARMLESS_ENTRIES: RawZipEntry[] = [
+  { name: 'h5p.json', content: '{"title":"drill"}' },
+  { name: 'content/content.json', content: '{}' },
+];
 
 function metadata(overrides: Partial<IContentMetadata> = {}): IContentMetadata {
   return {
@@ -87,7 +93,9 @@ describe('H5pService.importPackage', () => {
     uploadDir = await mkdtemp(join(tmpdir(), 'h5p-service-spec-'));
 
     const path = join(uploadDir, randomUUID());
-    await writeFile(path, 'pretend this is a zip');
+    // A real archive, because the service scans the entry names before it hands
+    // the file to the importer.
+    await writeFile(path, buildRawZip(HARMLESS_ENTRIES));
     uploaded = { path, originalname: 'drill.h5p' } as Express.Multer.File;
   });
 
@@ -214,6 +222,35 @@ describe('H5pService.importPackage', () => {
     );
 
     await expect(service.importPackage(uploaded, 'editor-1')).rejects.toBe(outage);
+  });
+
+  it('refuses a package with a traversal entry name before the importer sees it', async () => {
+    // The guard has to be *here*, ahead of `addPackageLibrariesAndContent`:
+    // `PackageImporter.extractPackage` joins each entry name onto its temp
+    // directory and writes it, so a check any later is a check after the write.
+    const { repository, created } = createRepositorySpy();
+    let imported = false;
+    const editor = {
+      packageImporter: {
+        addPackageLibrariesAndContent: () => {
+          imported = true;
+          return Promise.resolve({});
+        },
+      },
+    } as unknown as H5PEditor;
+    const service = new H5pService(editor, contentStorage, repository, storage.asStorageService());
+    await writeFile(
+      uploaded.path,
+      buildRawZip([...HARMLESS_ENTRIES, { name: '../pwned.txt', content: 'x' }]),
+    );
+
+    const error = await service.importPackage(uploaded, 'editor-1').catch((thrown) => thrown);
+
+    expect(error).toBeInstanceOf(HttpException);
+    expect((error as HttpException).getStatus()).toBe(HttpStatus.BAD_REQUEST);
+    expect(imported).toBe(false);
+    expect(storage.paths()).toEqual([]);
+    expect(created).toEqual([]);
   });
 
   it('removes the installed content when the index write fails', async () => {

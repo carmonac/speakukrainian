@@ -4,6 +4,7 @@ import {
   CONTENT_ROOT_PREFIX,
   LIBRARY_ROOT_PREFIX,
   assertSafeContentId,
+  assertSafeEntryName,
   assertSafeRelativePath,
   contentObjectPath,
   contentPrefix,
@@ -43,6 +44,10 @@ describe('assertSafeRelativePath', () => {
     ['a|b'],
     ['a?b'],
     ['a*b'],
+    // A NUL truncates the path in the syscall; Node answers with a `TypeError`
+    // from somewhere much deeper, which is a 500 for a file problem.
+    ['a\u0000b'],
+    ['a\u001fb'],
     [''],
     ['a//b'],
     ['.'],
@@ -63,6 +68,20 @@ describe('assertSafeRelativePath', () => {
         'storage-file-implementations:illegal-relative-filename',
       );
     }
+  });
+});
+
+describe('assertSafeEntryName', () => {
+  it.each([['content/'], ['SpeakTest.Main-1.0/'], ['content/media/clip.txt']])(
+    'accepts %s',
+    (name) => {
+      // A zip may name a directory, which a stored object never can.
+      expect(() => assertSafeEntryName(name)).not.toThrow();
+    },
+  );
+
+  it.each([['content/../'], ['../'], ['/'], ['content/..'], ['//']])('rejects %s', (name) => {
+    expect(() => assertSafeEntryName(name)).toThrow(H5pError);
   });
 });
 

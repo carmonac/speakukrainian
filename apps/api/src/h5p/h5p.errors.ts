@@ -8,6 +8,8 @@ const logger = new Logger('H5pErrors');
  * Read out of the installed library's own sources, not guessed: everything else
  * falls through to a message that at least names the id.
  */
+const UNUSABLE_PATH = 'The package contains a file with an unusable path.';
+
 const MESSAGES: Record<string, string> = {
   'unable-to-unzip': 'The file is not a readable ZIP archive, so it is not an H5P package.',
   'package-validation-failed': 'The package is not a valid H5P package.',
@@ -15,13 +17,28 @@ const MESSAGES: Record<string, string> = {
   'install-missing-libraries':
     'The package needs libraries that are neither installed nor included in it.',
   'import-package-no-id-assigned': 'The package was read but no content could be created from it.',
-  'storage-file-implementations:illegal-relative-filename':
-    'The package contains a file with an unusable path.',
-  'storage-file-implementations:illegal-absolute-filename':
-    'The package contains a file with an unusable path.',
-  'storage-file-implementations:illegal-character':
-    'The package contains a file with an unusable path.',
+  'storage-file-implementations:illegal-relative-filename': UNUSABLE_PATH,
+  'storage-file-implementations:illegal-absolute-filename': UNUSABLE_PATH,
+  'storage-file-implementations:illegal-character': UNUSABLE_PATH,
 };
+
+/**
+ * How `yauzl-promise` rejects an entry name: a plain `Error` from an assertion,
+ * with no code and no class to match on.
+ *
+ * `assertSafePackageEntries` refuses every name that could produce one of these
+ * before the importer opens the package, so reaching this list means yauzl's
+ * reader rejected a name our scan accepted — an encoding difference, or a
+ * future yauzl validating something new. It is still the uploaded file's
+ * problem and not the server's, so it answers 4xx rather than escaping as an
+ * unhandled 500. Deliberately narrow: every other plain `Error` still returns
+ * `null` and stays a 500.
+ */
+const YAUZL_FILENAME_ERRORS = [
+  'Invalid characters in filename: ',
+  'Absolute path: ',
+  'Relative path: ',
+];
 
 /**
  * Maps an `H5pError` onto an HTTP response, or returns `null` for anything
@@ -35,7 +52,7 @@ const MESSAGES: Record<string, string> = {
  */
 export function toHttpException(error: unknown): HttpException | null {
   if (!(error instanceof H5pError)) {
-    return null;
+    return unusablePathException(error);
   }
 
   const status = error.httpStatusCode;
@@ -60,6 +77,24 @@ export function toHttpException(error: unknown): HttpException | null {
   return new HttpException(
     { statusCode: status, message, ...(errors?.length ? { errors } : {}) },
     status,
+  );
+}
+
+function unusablePathException(error: unknown): HttpException | null {
+  if (!(error instanceof Error)) {
+    return null;
+  }
+  if (!YAUZL_FILENAME_ERRORS.some((prefix) => error.message.startsWith(prefix))) {
+    return null;
+  }
+
+  // The message names the offending entry, which came from the uploaded file
+  // and not from this server, but it is logged rather than returned: the client
+  // is told the rule, in the same words a rejected path already gets.
+  logger.warn(`A package entry name was rejected by the zip reader: ${error.message}`);
+  return new HttpException(
+    { statusCode: HttpStatus.BAD_REQUEST, message: UNUSABLE_PATH },
+    HttpStatus.BAD_REQUEST,
   );
 }
 

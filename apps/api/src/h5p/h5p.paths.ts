@@ -9,13 +9,21 @@ const SAFE_CONTENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
  * Refuses a filename that could escape its prefix or produce an object name
  * nothing can address again.
  *
- * This is deliberately stricter than the library's own `checkFilename`, and it
- * is not decoration. `PackageImporter.addPackageLibrariesAndContent` streams
- * every file out of the package straight to `addFile`, without routing it
- * through `getUniqueFilename` — so `sanitizeFilename` is never consulted on the
- * install path and this is the only check standing between a crafted package
- * and an object written outside its prefix. A Cloud Storage object name is a
- * flat string: there is no `path.join` to normalise it away afterwards.
+ * **What this covers:** the storage boundary — every name either adapter is
+ * about to turn into an object path. `addFile`, `deleteFile`, `fileExists` and
+ * `getFileStream` are all reachable from the editor and player flows, where the
+ * name comes from a request rather than from a package.
+ *
+ * **What it does not cover:** the import path's extraction step. By the time
+ * `ContentStorer.copyFromDirectoryToStorage` reaches `addFile`, the package has
+ * already been unpacked onto disk and it is enumerating the extracted
+ * directory, so the names it passes have been normalised by the filesystem and
+ * a `..` inside the archive has already been acted on. `assertSafePackageEntries`
+ * is the guard for that, and it runs before the library opens the package.
+ *
+ * The rule is deliberately stricter than the library's own `checkFilename`: a
+ * Cloud Storage object name is a flat string, so there is no `path.join` to
+ * normalise a `..` away afterwards.
  */
 export function assertSafeRelativePath(filename: string): void {
   const illegal = (errorId: string): never => {
@@ -33,7 +41,11 @@ export function assertSafeRelativePath(filename: string): void {
   if (filename.includes('\\')) {
     illegal('illegal-character');
   }
-  if (/[<>:"|?*]/.test(filename)) {
+  // The set Windows forbids, plus the control range it also forbids: a NUL in
+  // particular truncates a path in the syscall and would leave Node throwing a
+  // `TypeError` from somewhere much further in.
+  // eslint-disable-next-line no-control-regex
+  if (/[<>:"|?*\u0000-\u001f]/.test(filename)) {
     illegal('illegal-character');
   }
 
@@ -43,6 +55,14 @@ export function assertSafeRelativePath(filename: string): void {
   if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
     illegal('illegal-relative-filename');
   }
+}
+
+/**
+ * The same rule for a zip entry name, which — unlike a stored object name — may
+ * denote a directory and end in `/`.
+ */
+export function assertSafeEntryName(name: string): void {
+  assertSafeRelativePath(name.endsWith('/') ? name.slice(0, -1) : name);
 }
 
 export function assertSafeContentId(contentId: string): void {

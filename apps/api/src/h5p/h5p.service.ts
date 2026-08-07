@@ -7,6 +7,7 @@ import { StorageService } from '../infra/storage/storage.service.js';
 import { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
 import { toHttpException } from './h5p.errors.js';
+import { assertSafePackageEntries } from './h5p.package-scan.js';
 import { contentPrefix, contentStoragePath } from './h5p.paths.js';
 import { H5P_EDITOR } from './h5p.tokens.js';
 
@@ -37,6 +38,11 @@ export class H5pService {
     const user: IUser = { id: actorId, email: '', name: '', type: 'local' };
 
     try {
+      // Before the library opens the package: `PackageImporter.extractPackage`
+      // joins each entry name onto its temp directory and writes it unchecked,
+      // so the names have to be refused while they are still only names.
+      await assertSafePackageEntries(file.path);
+
       const { id, metadata } = await this.editor.packageImporter.addPackageLibrariesAndContent(
         file.path,
         user,
