@@ -184,10 +184,15 @@ export class SubsectionListPageBodyEditor implements OnInit, ControlValueAccesso
   private readonly effectiveSource = computed(() => this.sourceSectionId() ?? this.ownSectionId());
 
   /**
-   * The one input of the preview pipeline: an id, or `null` for "nothing to ask
-   * the API about". Layout, the toggles, the intro and the preview locale are
-   * not read here, so **no keystroke and no toggle can issue a request** — a
-   * structural guarantee rather than a debounce.
+   * The only input of the preview pipeline: an id, or `null` for "nothing to
+   * ask the API about" — the page has no section, or the chosen one cannot be
+   * listed. Layout, the toggles, the intro and the preview locale are not read
+   * here, so **no keystroke and no toggle can issue a request** — a structural
+   * guarantee rather than a debounce.
+   *
+   * It reads {@link problem}, so the tree read can change it; being a `computed`
+   * is what makes that harmless, since a tree that settles the source's fate the
+   * same way produces the same id and notifies nothing.
    */
   private readonly previewSource = computed(() =>
     this.problem() === null ? this.effectiveSource() : null,
