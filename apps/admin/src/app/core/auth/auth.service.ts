@@ -1,19 +1,9 @@
-import { Injectable, computed, signal } from '@angular/core';
-import { initializeApp, type FirebaseApp } from 'firebase/app';
-import {
-  connectAuthEmulator,
-  getAuth,
-  onIdTokenChanged,
-  signInWithEmailAndPassword,
-  signOut,
-  type Auth,
-  type User,
-} from 'firebase/auth';
+import { Injectable, computed, inject, signal } from '@angular/core';
 // The `/roles` entry point carries no Zod: importing the comparison from the
 // barrel puts the whole schema package in the eager bundle.
 import { hasAtLeastRole } from '@speakukrainian/shared/roles';
 import type { UserRole } from '@speakukrainian/shared';
-import { environment } from '../../../environments/environment';
+import { FIREBASE_AUTH, type FirebaseUser } from './firebase-auth';
 
 export interface AdminUser {
   uid: string;
@@ -28,8 +18,7 @@ export interface AdminUser {
  */
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  private readonly app: FirebaseApp = initializeApp(environment.firebase);
-  private readonly auth: Auth = getAuth(this.app);
+  private readonly auth = inject(FIREBASE_AUTH);
 
   private readonly currentUser = signal<AdminUser | null>(null);
   /** `null` while the first auth state callback is still pending. */
@@ -46,18 +35,14 @@ export class AuthService {
   });
 
   constructor() {
-    if (environment.authEmulatorUrl) {
-      connectAuthEmulator(this.auth, environment.authEmulatorUrl, { disableWarnings: true });
-    }
-
-    onIdTokenChanged(this.auth, async (user: User | null) => {
+    this.auth.onIdTokenChanged(async (user: FirebaseUser | null) => {
       this.currentUser.set(user ? await toAdminUser(user) : null);
       this.initialized.set(true);
     });
   }
 
   async signIn(email: string, password: string): Promise<void> {
-    await signInWithEmailAndPassword(this.auth, email, password);
+    await this.auth.signIn(email, password);
     // A claim granted since the last session is only in a freshly minted token.
     await this.refreshClaims();
   }
@@ -75,7 +60,7 @@ export class AuthService {
   }
 
   async signOut(): Promise<void> {
-    await signOut(this.auth);
+    await this.auth.signOut();
   }
 
   /** Fresh ID token for the API call about to be made, or null when signed out. */
@@ -84,7 +69,7 @@ export class AuthService {
   }
 }
 
-async function toAdminUser(user: User, forceRefresh = false): Promise<AdminUser> {
+async function toAdminUser(user: FirebaseUser, forceRefresh = false): Promise<AdminUser> {
   const token = await user.getIdTokenResult(forceRefresh);
   return {
     uid: user.uid,

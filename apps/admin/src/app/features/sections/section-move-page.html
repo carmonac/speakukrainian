@@ -1,0 +1,60 @@
+<section class="section-move">
+  <mat-card class="section-move__card">
+    @if (saving()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+
+    <mat-card-header>
+      <mat-card-title>Move “{{ title() }}”</mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content>
+      <p class="section-move__current">
+        Currently at <code class="section-move__current-path">{{ formData().section.path }}</code>
+      </p>
+      <p class="section-move__path">
+        After the move: <code class="section-move__derived-path">{{ derivedPath() }}</code>
+      </p>
+
+      <form [formGroup]="form" (ngSubmit)="submit()" class="section-move__form">
+        <mat-form-field appearance="outline">
+          <mat-label>New parent</mat-label>
+          <mat-select formControlName="parentId" class="section-move__parent">
+            @for (option of parents(); track option.id) {
+              <mat-option
+                [value]="option.id"
+                [disabled]="option.disabled"
+                [style.padding-inline-start.px]="16 + option.depth * 16"
+              >
+                {{ option.label }}
+                @if (option.disabled) {
+                  <!-- As text and not a tooltip: a disabled option never takes
+                       focus, so a tooltip on it is unreachable by exactly the
+                       people this screen exists for. -->
+                  <span class="section-move__option-reason">— {{ maxDepthMessage }}</span>
+                }
+              </mat-option>
+            }
+          </mat-select>
+          @if (parentConflict(); as conflict) {
+            <mat-error class="section-move__parent-conflict">{{ conflict }}</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Position</mat-label>
+          <mat-select formControlName="position" class="section-move__position">
+            @for (option of positions(); track option.position) {
+              <mat-option [value]="option.position">{{ option.label }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+
+        <div class="section-move__actions">
+          <a matButton type="button" routerLink="/sections">Cancel</a>
+          <button matButton="filled" type="submit" class="section-move__save" [disabled]="saving()">Move</button>
+        </div>
+      </form>
+    </mat-card-content>
+  </mat-card>
+</section>

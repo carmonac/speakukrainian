@@ -14,13 +14,64 @@
     <mat-progress-bar mode="indeterminate" />
   }
 
-  <ul class="sections-tree">
+  @if (rows().length > 0) {
+    <p class="sections__drag-hint">{{ dragHint }}</p>
+  }
+
+  <!--
+    One drop list for the whole tree, and the re-parent half of the gesture is
+    hit-tested by the component rather than by a `cdkDropList` per row.
+
+    A nest column cannot be its own drop list. CDK caches a receiving list's
+    rectangle when the drag starts and never again, while its own sort keeps
+    translating the rows the drag passes; a translated row is then in two
+    places at once — the cached rectangle it has left and the one it now
+    occupies — and satisfies neither half of CDK's "is the pointer over this
+    list" test. Every sibling of the dragged row is translated, so no sibling
+    could ever take a drop, and the release fell through to a reorder instead.
+
+    No `cdkDropListLockAxis` either: it pins x at the drag handle, and the
+    strip the columns live in is at the other end of the row.
+  -->
+  <ul
+    #treeList
+    class="sections-tree"
+    cdkDropList
+    [class.is-dragging]="dragging() !== null"
+    [class.is-nesting]="nesting()"
+    [cdkDropListSortPredicate]="sortPredicate"
+    (cdkDropListDropped)="drop($event)"
+  >
     @for (row of rows(); track row.section.id) {
       <li
         class="sections-tree__row"
+        cdkDrag
+        [attr.data-section-id]="row.section.id"
+        [cdkDragData]="row"
+        [cdkDragDisabled]="busy()"
+        (cdkDragStarted)="beginDrag(row)"
+        (cdkDragEnded)="endDrag()"
         [class.is-saved]="row.section.id === savedId()"
+        [class.is-moving]="travelsWithDrag(row)"
         [style.padding-inline-start.px]="row.depth * 24"
       >
+        <!-- The gesture starts on the handle and never on the title, or the
+             browser's own link drag fights the CDK one. -->
+        <span class="sections-tree__handle" cdkDragHandle aria-hidden="true">
+          <mat-icon>drag_indicator</mat-icon>
+        </span>
+
+        <!-- A chip rather than CDK's default clone of the row: the row is as
+             wide as the tree and the gesture starts at its left edge, so a
+             clone would cover every nest column to the right of the pointer,
+             including the highlighted one being dropped on. -->
+        <ng-template cdkDragPreview>
+          <span class="sections-tree__preview">
+            <mat-icon>drag_indicator</mat-icon>
+            {{ title(row) }}
+          </span>
+        </ng-template>
+
         @if (row.hasChildren) {
           <button
             matIconButton
@@ -45,7 +96,30 @@
           >
         }
 
+        <!-- A column of its own rather than the whole row: a row that took the
+             drop everywhere would leave nowhere to drop for a plain reorder.
+             The hint is disabled while nothing is being dragged, so hovering
+             the blank space where the column will be says nothing. -->
+        <span
+          class="sections-tree__nest"
+          [class.is-available]="nestable().has(row.section.id)"
+          [class.is-target]="nestTargetId() === row.section.id"
+          [matTooltip]="nestHint"
+          [matTooltipDisabled]="dragging() === null"
+        >
+          <mat-icon>subdirectory_arrow_right</mat-icon>
+        </span>
+
         <span class="sections-tree__actions">
+          <a
+            matIconButton
+            class="sections-tree__move"
+            [routerLink]="['/sections', row.section.id, 'move']"
+            [attr.aria-label]="'Move ' + title(row)"
+          >
+            <mat-icon>drive_file_move</mat-icon>
+          </a>
+
           @if (row.canAddChild) {
             <a
               matIconButton

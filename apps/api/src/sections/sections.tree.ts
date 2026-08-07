@@ -30,6 +30,32 @@ export function placeUnder(parent: Section | null, slug: string): Placement {
   };
 }
 
+/** Just enough of a section to be ordered among its siblings. */
+export interface Ordered {
+  id: string;
+  sortOrder: number;
+}
+
+/**
+ * A destination's child list in its new order, contiguously numbered from 0.
+ *
+ * `others` is that list with the moving node already taken out, in `sortOrder`
+ * order; `position` is where the moving node goes among them, clamped to
+ * `[0, others.length]` so a caller can say "first" or "last" without knowing how
+ * many children there are. Contiguous numbering is what makes the position a
+ * client asked for and the number that gets stored the same integer — see
+ * `moveSectionSchema`.
+ */
+export function renumberSiblings(
+  others: readonly Ordered[],
+  movingId: string,
+  position: number,
+): Ordered[] {
+  const at = Math.min(Math.max(position, 0), others.length);
+  const ordered = [...others.slice(0, at), { id: movingId, sortOrder: at }, ...others.slice(at)];
+  return ordered.map((entry, index) => ({ id: entry.id, sortOrder: index }));
+}
+
 /**
  * Whether a placement leaves a section's derived fields exactly as they are —
  * which is what a reorder under the same parent computes. Every field is
