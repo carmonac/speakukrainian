@@ -2,15 +2,33 @@ import { Readable } from 'node:stream';
 import type { StorageService, StoredObject } from '../infra/storage/storage.service.js';
 
 /**
+ * The part of `StorageService` the H5P adapters and service use. Naming it
+ * makes the fake below check against the real signatures: change `list`'s
+ * shape, or add an argument to `put`, and the fake stops compiling instead of
+ * quietly answering an older contract.
+ */
+type StorageSurface = Pick<
+  StorageService,
+  | 'put'
+  | 'delete'
+  | 'exists'
+  | 'stat'
+  | 'list'
+  | 'listSubdirectories'
+  | 'deleteByPrefix'
+  | 'createReadStream'
+>;
+
+/**
  * An in-memory stand-in for `StorageService`, used by the H5P adapter specs.
  *
- * It is a real implementation of the six methods the adapters call — including
- * `deleteByPrefix`'s trailing-slash rule — so a path assertion in a spec is
- * exact rather than a claim about what a mock was asked to do. It lives in
- * `src` rather than beside one spec because both adapter specs and the service
- * spec need the same object graph.
+ * It is a real implementation of the eight methods the adapters call —
+ * including `deleteByPrefix`'s trailing-slash rule — so a path assertion in a
+ * spec is exact rather than a claim about what a mock was asked to do. It lives
+ * in `src` rather than beside one spec because both adapter specs and the
+ * service spec need the same object graph.
  */
-export class InMemoryStorage {
+export class InMemoryStorage implements StorageSurface {
   readonly objects = new Map<string, { body: Buffer; createdAt: Date }>();
 
   constructor(private clock = new Date('2026-05-01T00:00:00.000Z')) {}
@@ -110,6 +128,13 @@ export class InMemoryStorage {
     return [...this.objects.keys()].sort();
   }
 
+  /**
+   * The cast is unavoidable — `StorageService` is a class with private state
+   * this does not model — but it is not unchecked: `implements StorageSurface`
+   * above is what makes a drift in any method the adapters call a compile
+   * error rather than a spec that keeps passing against a contract that has
+   * moved.
+   */
   asStorageService(): StorageService {
     return this as unknown as StorageService;
   }
