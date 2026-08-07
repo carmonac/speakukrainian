@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { H5pError } from '@lumieducation/h5p-server';
@@ -230,5 +231,22 @@ describe('assertSafePackageEntries', () => {
 
       await expect(assertSafePackageEntries(path)).resolves.toBeUndefined();
     });
+  });
+});
+
+describe('the zip reader the scan shares with the importer', () => {
+  it('is the same installed copy `@lumieducation/h5p-server` resolves', async () => {
+    // The scan is only sound while both read the same archive. They agree today
+    // because pnpm hoists one `yauzl-promise@4` for both; a future
+    // `@lumieducation/h5p-server` major that moves off `^4` without this
+    // package following would split them, and the two could then disagree about
+    // which entries an archive has — an entry the scan never saw is an entry it
+    // never checked. This turns that from silent into a failing test.
+    const here = createRequire(import.meta.url);
+    const importer = createRequire(here.resolve('@lumieducation/h5p-server'));
+
+    await expect(realpath(importer.resolve('yauzl-promise'))).resolves.toBe(
+      await realpath(here.resolve('yauzl-promise')),
+    );
   });
 });
