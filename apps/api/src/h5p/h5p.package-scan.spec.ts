@@ -221,19 +221,28 @@ describe('assertSafePackageEntries', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('refuses an entry whose data no longer matches its checksum', async () => {
-      // The shape acceptance criterion 4 calls a corrupt archive. It cannot be
-      // decided from the headers, so it is the read that catches it — and if it
-      // is not caught here, `extractPackage` pipes the failing entry to disk and
-      // the pipe never settles, which is a request that never answers.
-      const path = await write(buildRawZip(damaged({ compressionMethod: 8, corruptData: true })));
+    // The shape acceptance criterion 4 calls a corrupt archive. It cannot be
+    // decided from the headers, so it is the read that catches it — and if it
+    // is not caught here, `extractPackage` pipes the failing entry to disk and
+    // the pipe never settles, which is a request that never answers. Both
+    // storage methods, because they fail differently: the deflated one comes
+    // out of zlib, the stored one out of yauzl's checksum stream, and the
+    // stored one is the shape that hangs.
+    it.each([
+      ['stored', 0],
+      ['deflated', 8],
+    ])(
+      'refuses a %s entry whose data no longer matches its checksum',
+      async (_method, compressionMethod) => {
+        const path = await write(buildRawZip(damaged({ compressionMethod, corruptData: true })));
 
-      const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
+        const error = await assertSafePackageEntries(path).catch((thrown: unknown) => thrown);
 
-      expect(error).toBeInstanceOf(H5pError);
-      expect((error as H5pError).errorId).toBe('unable-to-unzip');
-      expect((error as H5pError).httpStatusCode).toBe(400);
-    });
+        expect(error).toBeInstanceOf(H5pError);
+        expect((error as H5pError).errorId).toBe('unable-to-unzip');
+        expect((error as H5pError).httpStatusCode).toBe(400);
+      },
+    );
 
     describe('the budget for that read', () => {
       // A few kilobytes of zip can declare gigabytes of data, so the read needs
