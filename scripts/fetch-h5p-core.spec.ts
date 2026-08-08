@@ -2,8 +2,10 @@ import { crc32 } from 'node:zlib';
 import { mkdtemp, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  AssetDownloadError,
+  FETCH_COMMAND,
   H5P_ASSET_PINS,
   MARKER_FILE,
   archiveTopLevel,
@@ -11,6 +13,7 @@ import {
   contentDigest,
   digestOfFiles,
   extractArchive,
+  main,
   needsFetch,
   type H5pAssetPin,
 } from './fetch-h5p-core.ts';
@@ -310,5 +313,156 @@ describe('H5P_ASSET_PINS', () => {
 
     expect(archiveUrl(core)).toBe(`https://github.com/${core.repo}/archive/${core.commit}.zip`);
     expect(archiveTopLevel(core)).toBe(`h5p-php-library-${core.commit}`);
+  });
+});
+
+describe('main', () => {
+  /**
+   * Two pins so that "carries on to the next one" is a claim this file can make.
+   * Neither is real: `install` is injected, so nothing here reaches the network
+   * or the repository's own asset tree.
+   */
+  const PINS: readonly H5pAssetPin[] = [
+    {
+      kind: 'core',
+      repo: 'h5p/h5p-php-library',
+      commit: 'a'.repeat(40),
+      digest: 'b'.repeat(64),
+      sentinel: 'js/h5p.js',
+    },
+    {
+      kind: 'editor',
+      repo: 'h5p/h5p-editor-php-library',
+      commit: 'c'.repeat(40),
+      digest: 'd'.repeat(64),
+      sentinel: 'scripts/h5peditor.js',
+    },
+  ];
+
+  /** Records which pins were installed and lets a chosen kind fail. */
+  function installer(fail?: { kind: H5pAssetPin['kind']; error: Error }): {
+    install: (pin: H5pAssetPin, assetsRoot: string) => Promise<void>;
+    installed: () => string[];
+  } {
+    const installed: string[] = [];
+    return {
+      install: (pin) => {
+        if (fail && pin.kind === fail.kind) {
+          return Promise.reject(fail.error);
+        }
+        installed.push(pin.kind);
+        return Promise.resolve();
+      },
+      installed: () => [...installed],
+    };
+  }
+
+  const run = (
+    argv: readonly string[],
+    install: (pin: H5pAssetPin, assetsRoot: string) => Promise<void>,
+  ): Promise<number> => main(argv, { assetsRoot: work, pins: PINS, install });
+
+  let warnings: string[];
+
+  beforeEach(() => {
+    warnings = [];
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('installs every pin that is not already on disk and exits 0', async () => {
+    const { install, installed } = installer();
+
+    await expect(run([], install)).resolves.toBe(0);
+    expect(installed()).toEqual(['core', 'editor']);
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns and still exits 0 when a download does not happen', async () => {
+    // `pnpm install` on a plane. The assets are absent, the API boots without
+    // them and its asset routes answer 503 — an inconvenience, not a broken
+    // install, so failing here would make the whole repository unusable offline.
+    const { install, installed } = installer({
+      kind: 'core',
+      error: new AssetDownloadError('github.com answered 503.'),
+    });
+
+    await expect(run([], install)).resolves.toBe(0);
+    // The other pin is still installed: one repository being unreachable says
+    // nothing about the other.
+    expect(installed()).toEqual(['editor']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('github.com answered 503.');
+    // The warning has to name the way out, because it scrolls past inside a
+    // much longer install log.
+    expect(warnings[0]).toContain(FETCH_COMMAND);
+  });
+
+  it('exits 1 for that same download under --require', async () => {
+    // The whole contract of the `h5p-assets` Dockerfile stage and of CI's fetch
+    // step: an image or a job that cannot serve the H5P client is broken, and
+    // nobody reads a warning in a build log.
+    const { install } = installer({
+      kind: 'editor',
+      error: new AssetDownloadError('fetch failed'),
+    });
+
+    await expect(run(['--require'], install)).resolves.toBe(1);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('exits 0 under --require when every download succeeded', async () => {
+    const { install } = installer();
+
+    await expect(run(['--require'], install)).resolves.toBe(0);
+  });
+
+  it('raises anything that is not a failed download, flag or no flag', async () => {
+    // A digest that does not match is wrong bytes rather than no bytes: it must
+    // be loud on every path, which is why it is not caught into `missing`.
+    const { install } = installer({
+      kind: 'core',
+      error: new Error('extracted to digest 00…, but the pin says ff…'),
+    });
+
+    await expect(run([], install)).rejects.toThrow(/the pin says/);
+  });
+
+  it('skips a pin that is already installed', async () => {
+    const [core] = PINS;
+    expect(core).toBeDefined();
+    if (!core) {
+      return;
+    }
+    await writeFile(
+      join(work, MARKER_FILE),
+      JSON.stringify({ core: { commit: core.commit, digest: core.digest } }),
+      'utf-8',
+    );
+    await writeTree(work, [['core/js/h5p.js', 'window.H5P = {};\n']]);
+    const { install, installed } = installer();
+
+    await expect(run(['--require'], install)).resolves.toBe(0);
+    expect(installed()).toEqual(['editor']);
+  });
+
+  it('leaves no staging directory behind when a download fails', async () => {
+    // The run that exits 1 is the one most likely to be repeated, and an empty
+    // `.fetch-tmp` is a puzzle for whoever looks at what the failure did.
+    await mkdir(join(work, '.fetch-tmp', 'core-xyz'), { recursive: true });
+    const { install } = installer({
+      kind: 'core',
+      error: new AssetDownloadError('fetch failed'),
+    });
+
+    await run(['--require'], install);
+
+    await expect(exists(join(work, '.fetch-tmp'))).resolves.toBe(false);
   });
 });

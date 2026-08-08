@@ -356,6 +356,21 @@ export async function fetchPin(pin: H5pAssetPin, assetsRoot: string): Promise<vo
 }
 
 /**
+ * What a run works on, so that the exit-code contract can be driven.
+ *
+ * The defaults are the real ones and nothing but the spec ever passes anything
+ * else. The seam exists because `--require` is the entire contract of the
+ * `h5p-assets` Dockerfile stage and of CI's fetch step — both exist only to
+ * turn a failed download into a non-zero exit — and neither exit code can be
+ * asserted against the real pins without a network and the real tree.
+ */
+export interface FetchRun {
+  assetsRoot?: string;
+  pins?: readonly H5pAssetPin[];
+  install?: (pin: H5pAssetPin, assetsRoot: string) => Promise<void>;
+}
+
+/**
  * Two failure modes, on purpose.
  *
  * A developer on a plane must still be able to run `pnpm install`, so a
@@ -367,20 +382,26 @@ export async function fetchPin(pin: H5pAssetPin, assetsRoot: string): Promise<vo
  * it, because an image that cannot serve the H5P client is broken rather than
  * inconvenient, and nobody is watching that build's warnings.
  */
-export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
+export async function main(
+  argv: readonly string[] = process.argv.slice(2),
+  run: FetchRun = {},
+): Promise<number> {
   const required = argv.includes('--require');
+  const assetsRoot = run.assetsRoot ?? ASSETS_ROOT;
+  const pins = run.pins ?? H5P_ASSET_PINS;
+  const install = run.install ?? fetchPin;
   let missing = false;
 
   try {
-    for (const pin of H5P_ASSET_PINS) {
-      if (!(await needsFetch(ASSETS_ROOT, pin))) {
+    for (const pin of pins) {
+      if (!(await needsFetch(assetsRoot, pin))) {
         console.log(`H5P ${pin.kind} assets are already at ${pin.commit.slice(0, 10)}.`);
         continue;
       }
 
       try {
         console.log(`Fetching H5P ${pin.kind} assets from ${pin.repo}@${pin.commit.slice(0, 10)}…`);
-        await fetchPin(pin, ASSETS_ROOT);
+        await install(pin, assetsRoot);
         console.log(`Installed H5P ${pin.kind} assets into apps/api/h5p/${pin.kind}.`);
       } catch (error) {
         if (!(error instanceof AssetDownloadError)) {
@@ -397,7 +418,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     // In a `finally`, because a run that exits 1 is the one most likely to be
     // repeated and an empty directory left behind is a puzzle for whoever
     // looks at what the failure did.
-    await rm(join(ASSETS_ROOT, TEMP_DIRNAME), { recursive: true, force: true }).catch(
+    await rm(join(assetsRoot, TEMP_DIRNAME), { recursive: true, force: true }).catch(
       () => undefined,
     );
   }
