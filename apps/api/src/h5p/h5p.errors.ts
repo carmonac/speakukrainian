@@ -40,6 +40,11 @@ const MESSAGES: Record<string, string> = {
   // matters, because without it a reader asking for a missing image is told
   // their file could not be imported as an H5P package.
   'h5p-player:content-missing': 'That exercise does not exist.',
+  // The same path rule as the three ids above, raised by
+  // `assertSafeRequestPath` for a path that arrived in a URL rather than in a
+  // package. One rule, two sentences, because "the package contains…" is a
+  // statement about something a reader never sent.
+  'h5p-request:unusable-path': 'That path is not valid.',
   'content-file-missing': 'That file is not part of this exercise.',
   'library-file-missing': 'That file is not part of this library.',
   'invalid-ubername-pattern': 'That is not a valid H5P library name.',

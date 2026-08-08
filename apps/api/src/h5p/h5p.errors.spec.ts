@@ -75,6 +75,7 @@ describe('toHttpException', () => {
     ['content-file-missing', 404, 'That file is not part of this exercise.'],
     ['library-file-missing', 404, 'That file is not part of this library.'],
     ['invalid-ubername-pattern', 400, 'That is not a valid H5P library name.'],
+    ['h5p-request:unusable-path', 400, 'That path is not valid.'],
   ] as const)('words %s for a reader rather than for an uploader', (errorId, status, message) => {
     // The same mapper serves the play and asset routes. Without wording of
     // their own these fall through to a sentence about importing a package,
@@ -83,6 +84,7 @@ describe('toHttpException', () => {
 
     expect(exception?.getStatus()).toBe(status);
     expect(bodyOf(exception!)['message']).toBe(message);
+    expect(bodyOf(exception!)['message']).not.toContain('package');
   });
 
   it('names the id for a 4xx it has no wording for, rather than saying nothing', () => {

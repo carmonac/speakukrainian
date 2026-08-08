@@ -334,6 +334,17 @@ describe('h5p serving (e2e)', () => {
       expect((response.body as ErrorBody).message).toBe('That is not a valid H5P library name.');
     });
 
+    it('refuses a library name that is a traversal without blaming a package', async () => {
+      // `..` satisfies the ubername pattern, so this reaches our own path rule.
+      // It is still a GET: telling this caller their package contains a file
+      // with an unusable path names something they never sent.
+      const response = await request(server())
+        .get('/api/h5p/libraries/..-1.0/library.json')
+        .expect(400);
+
+      expect((response.body as ErrorBody).message).toBe('That path is not valid.');
+    });
+
     it('answers 404 for a file the library does not have', async () => {
       const response = await request(server())
         .get(`/api/h5p/libraries/${MAIN_LIBRARY_DIR}/nope.js`)

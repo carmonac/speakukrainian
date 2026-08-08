@@ -6,6 +6,7 @@ import {
   assertSafeContentId,
   assertSafeEntryName,
   assertSafeRelativePath,
+  assertSafeRequestPath,
   contentObjectPath,
   contentPrefix,
   contentStoragePath,
@@ -99,6 +100,23 @@ describe('assertSafeEntryName', () => {
   });
 });
 
+describe('assertSafeRequestPath', () => {
+  it('applies the same rule as the storage assert', () => {
+    expect(() => assertSafeRequestPath('media/clip.mp3')).not.toThrow();
+    expect(() => assertSafeRequestPath('media/../../h5p.json')).toThrow(H5pError);
+  });
+
+  it('refuses with an id worded for a caller who uploaded nothing', () => {
+    // The `storage-file-implementations:*` ids all mean "the package contains a
+    // file with an unusable path", which is a statement about something a
+    // reader never sent. Same rule, same status, different sentence.
+    const error = thrownBy(() => assertSafeRequestPath('../../etc/passwd'));
+
+    expect(error.errorId).toBe('h5p-request:unusable-path');
+    expect(error.httpStatusCode).toBe(400);
+  });
+});
+
 describe('assertSafeContentId', () => {
   it.each([['a'], ['ff6c4a3a-4d1f-4f0f-9a4b-9d3b2f5a1c77'], ['A_b-1'], ['0'.repeat(64)]])(
     'accepts %s',
@@ -109,6 +127,13 @@ describe('assertSafeContentId', () => {
 
   it.each([[''], ['../x'], ['a/b'], ['a.b'], ['a b'], ['0'.repeat(65)]])('rejects %s', (id) => {
     expect(() => assertSafeContentId(id)).toThrow(H5pError);
+  });
+
+  it('refuses as a request, since an id only reaches this from a URL', () => {
+    // `GET /api/h5p/play/<bad-id>` is the reachable way to fail this; on the
+    // import path the id is generated. Package wording there names a file the
+    // caller never sent.
+    expect(thrownBy(() => assertSafeContentId('../x')).errorId).toBe('h5p-request:unusable-path');
   });
 });
 
@@ -158,6 +183,9 @@ describe('library paths', () => {
 
       expect(build).toThrow(H5pError);
       expect(thrownBy(build).httpStatusCode).toBe(400);
+      // `GET /api/h5p/libraries/..-1.0/library.json` is what reaches this, so
+      // the refusal may not be worded as a package that was never uploaded.
+      expect(thrownBy(build).errorId).toBe('h5p-request:unusable-path');
     },
   );
 
