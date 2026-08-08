@@ -110,13 +110,38 @@ describe('the root postinstall', () => {
 describe('the API image', () => {
   const dockerfile = readFileSync(join(REPO_ROOT, 'apps', 'api', 'Dockerfile'), 'utf-8');
 
+  /**
+   * Instructions only, one per element, inner whitespace collapsed.
+   *
+   * Matched whole rather than as substrings of the file: the text a `#` comment
+   * can hold includes the text of the instruction it replaced, so a substring
+   * assertion here is satisfied by `RUN true  # was: <the instruction>` and
+   * protects nothing.
+   */
+  const instructions = dockerfile
+    .split('\n')
+    .map((line) => line.trim().replace(/\s+/g, ' '))
+    .filter((line) => line !== '' && !line.startsWith('#'));
+
   it('still turns a fetch it cannot do into a failed build', () => {
     // What makes the soft postinstall safe. The API image is the one that has
     // to serve these assets, so it opts in by copying the script and then
     // re-runs it with `--require`, which is the only place the offline case is
     // fatal. Without that line a build with no network would produce an image
     // whose H5P asset routes all answer 503.
-    expect(dockerfile).toContain('COPY scripts/fetch-h5p-core.ts scripts/');
-    expect(dockerfile).toContain('node scripts/fetch-h5p-core.ts --require');
+    expect(instructions).toContain('COPY scripts/fetch-h5p-core.ts scripts/');
+    expect(instructions).toContain('RUN node scripts/fetch-h5p-core.ts --require');
+  });
+
+  it('keeps the stage that runs that check in the build graph', () => {
+    // BuildKit builds only the stages the target depends on, and the runtime
+    // stage's copies are the sole edge into `h5p-assets`. Drop them and the
+    // check above is still written down but never runs, which is the one way
+    // this image can lose its offline protection with nothing turning red.
+    const stagesCopiedFrom = instructions
+      .map((line) => /^COPY --from=(\S+) /.exec(line)?.[1])
+      .filter((stage) => stage !== undefined);
+
+    expect(stagesCopiedFrom).toContain('h5p-assets');
   });
 });

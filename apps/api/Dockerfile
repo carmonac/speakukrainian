@@ -67,9 +67,12 @@ WORKDIR /app
 
 COPY --from=build /app ./
 
-# Copied explicitly rather than left to `pnpm deploy`, which builds its file
-# list the way `pack` does — and these paths are gitignored, so they would be
-# silently absent and every H5P asset route would answer 503.
+# Not what puts the assets in the image: `pnpm deploy` already carries the whole
+# tree, bar its `.gitignore` files. What these two lines are is the only edge into
+# the `h5p-assets` stage, and BuildKit builds only the stages its target depends
+# on — so deleting them as redundant would take the `--require` check above out of
+# the build with them, and a build with no network would then ship an image whose
+# H5P asset routes all answer 503, with nothing red anywhere.
 COPY --from=h5p-assets /repo/apps/api/h5p/core ./h5p/core
 COPY --from=h5p-assets /repo/apps/api/h5p/editor ./h5p/editor
 
