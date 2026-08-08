@@ -22,8 +22,11 @@ import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
  */
 const PREFIX = 'e2e-schedule';
 
-/** Bounds the purge read the way the repository bounds every other read. */
+/** Bounds each purge read the way the repository bounds every other read. */
 const PURGE_LIMIT = 1000;
+
+/** Enough pages to clear any run this suite could have left behind, and a bound. */
+const MAX_PURGE_PASSES = 20;
 
 /** 20 characters, the shape of a Firestore auto-id, and not one that exists. */
 const UNKNOWN_ID = 'zzzz0000zzzz0000zzzz';
@@ -125,13 +128,32 @@ describe('schedule slots (e2e)', () => {
   /**
    * Runs at setup as well as teardown: a run killed before its teardown would
    * otherwise leave slots that the site-wide list query keeps returning.
+   *
+   * The tag filter is in the *query*, not in memory: a bounded read of the
+   * whole collection filtered afterwards silently purges nothing once the
+   * collection holds more than a page of other documents, and the suite then
+   * fails on fixtures it cannot see. A prefix range over `note` is exact, and
+   * needs no composite index — Firestore indexes single fields on its own, and
+   * a document with no `note` is simply not in that index.
+   *
+   * It pages, because one bounded read cannot assume it is the last.
    */
   const purge = async (): Promise<void> => {
-    const snapshot = await firestore.collection(COLLECTIONS.scheduleSlots).limit(PURGE_LIMIT).get();
-    const mine = snapshot.docs.filter((doc) => String(doc.get('note') ?? '').startsWith(PREFIX));
-    for (const doc of mine) {
-      await doc.ref.delete();
+    for (let pass = 0; pass < MAX_PURGE_PASSES; pass += 1) {
+      const snapshot = await firestore
+        .collection(COLLECTIONS.scheduleSlots)
+        .where('note', '>=', PREFIX)
+        .where('note', '<', `${PREFIX}\uffff`)
+        .limit(PURGE_LIMIT)
+        .get();
+      if (snapshot.empty) {
+        return;
+      }
+      await Promise.all(snapshot.docs.map((doc) => doc.ref.delete()));
     }
+    throw new Error(
+      `Purge gave up after ${MAX_PURGE_PASSES} passes — more than ${MAX_PURGE_PASSES * PURGE_LIMIT} slots are tagged "${PREFIX}"`,
+    );
   };
 
   beforeAll(async () => {
