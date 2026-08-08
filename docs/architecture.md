@@ -379,6 +379,66 @@ _The rule for the next tree UI:_ copy this shape, not `cdkDropListGroup`. The st
 inside `SectionsPage` only because it has one consumer; the second one is the trigger to lift it
 out, along with the pointer geometry in `sections.model.ts`, rather than to copy it.
 
+### ADR-014 — Recurring slots expand in the authoring zone
+
+A weekly recurrence is expanded into concrete documents **at write time**, walking **civil dates**
+in the slot's `timeZone` and converting each occurrence to a UTC instant on its own. Nothing is
+derived by adding elapsed milliseconds to the previous occurrence. That is the whole of "a 09:00
+`Europe/Madrid` slot is still 09:00 after the March change": 25 March 09:00 is `08:00Z` and 1 April
+09:00 is `07:00Z`, and only a per-occurrence conversion produces both. `startsAt + 7 × 86_400_000`
+produces `08:00Z` for 1 April, which reads as 10:00 in Madrid — the naive implementation the
+criterion exists to catch.
+
+The conversion uses `Intl` alone, no date library. A wall clock cannot simply be offset, because
+the offset in force depends on the instant being computed. So `wallClockToInstant` reads the wall
+clock as if it were UTC, probes the zone's offset ±24 h either side of that — no zone transitions
+twice inside 48 h, so those are exactly the offsets on both sides of any transition — and returns
+the first candidate that formats back to the wall clock asked for, else the earlier one:
+
+| Wall clock asked for | `before` | `after` | Round-trips  | Returned | Reads back as |
+| -------------------- | -------- | ------- | ------------ | -------- | ------------- |
+| 25 Mar 09:00 (plain) | 08:00Z   | 08:00Z  | both         | 08:00Z   | 09:00 CET     |
+| 01 Apr 09:00 (plain) | 07:00Z   | 07:00Z  | both         | 07:00Z   | 09:00 CEST    |
+| 29 Mar 02:30 (gap)   | 01:30Z   | 00:30Z  | neither      | 01:30Z   | 03:30 CEST    |
+| 25 Oct 02:30 (twice) | 00:30Z   | 01:30Z  | both, differ | 00:30Z   | 02:30 CEST    |
+
+So a wall clock inside the **spring-forward gap** shifts forward by the size of the gap — 02:30
+becomes 03:30 — and one in the **autumn overlap** resolves to the **earlier** instant, still on
+summer time. Both match `Temporal`'s `disambiguation: 'compatible'`, which is what every calendar
+application does. Skipping the occurrence would break the "exact expected number of slots" promise,
+and refusing the series would refuse one that is fine on the other 51 weeks.
+
+Two smaller traps are load-bearing and have their own tests: the formatter uses `hourCycle: 'h23'`,
+because `hour12: false` still yields `"24"` for midnight in V8 and would date every midnight slot a
+day early; and `zoneOffsetMs` floors its instant to the second, because the formatted parts carry
+no milliseconds and subtracting the raw epoch value returns an offset out by up to 999 ms.
+
+A slot's **duration is absolute**, not wall-clock: each occurrence ends `endsAt − startsAt` after
+it begins. Converting `endsAt`'s wall clock separately would turn a one-hour lesson into a zero- or
+two-hour one on exactly one day of the year, and a zero-hour one is not a slot at all.
+
+**Instants are stored as normalised `…Z` ISO strings.** `isoDateTimeSchema` accepts
+`2026-03-30T09:00:00+02:00`, `…T07:00:00Z` and `…T07:00:00.000Z` — one instant, three spellings
+that sort three different ways — and Firestore compares `startsAt` lexicographically, so an
+unnormalised value silently drops out of a range query. Every instant goes through `toInstant`
+before it is stored and before it is used as a query bound. _Rejected:_ storing Firestore
+`Timestamp`s, which would make the ordering correct by construction but would make this the one
+collection that does so; no other repository writes a `Timestamp`, and mixing representations is
+worse than one normalisation helper.
+
+Overlap rejection reads a **bounded window of one owner's slots**, `[minStart − 24 h, maxEnd)` on
+`startsAt` alone, and that lower bound is complete **only because a slot may not be longer than 24
+hours**. `MAX_SLOT_DURATION_HOURS` is therefore not decoration: raise or remove it and both the
+overlap check and the "slots intersecting a range" read start missing slots. The write itself is a
+`WriteBatch`, not a transaction — a Firestore transaction locks the documents it reads, not the
+query range, so it buys nothing against a concurrent insert (the same fact `SectionsRepository`
+documents about sibling slugs) — and `MAX_RECURRENCE_SLOTS = 200` sits well under the 500-write
+batch limit so a series is never split across commits.
+
+_Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
+document hand-written with a duration over 24 h is invisible to the overlap check; and overlap
+rejection is best-effort under concurrency, repairable by cancelling one of the two slots.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
