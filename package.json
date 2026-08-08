@@ -13,6 +13,8 @@
     "test": "turbo run test",
     "test:e2e": "turbo run test:e2e",
     "typecheck": "turbo run typecheck",
+    "postinstall": "node scripts/fetch-h5p-core.ts",
+    "h5p:fetch": "pnpm --filter @speakukrainian/scripts run h5p:fetch",
     "format": "prettier --write \"**/*.{ts,html,scss,json,md,mjs,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,html,scss,json,md,mjs,yml,yaml}\"",
     "seed:admin": "pnpm --filter @speakukrainian/shared run build && pnpm --filter @speakukrainian/scripts run seed:admin",

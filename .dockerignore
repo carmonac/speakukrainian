@@ -13,6 +13,9 @@ coverage
 .claude
 docker/firebase/.data
 docker/storage/data
+# A developer's fetched H5P client libraries — 13 MB, and the build downloads
+# its own from the pinned commits.
+apps/*/h5p
 *.md
 .env
 .env.*

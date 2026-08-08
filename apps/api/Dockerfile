@@ -14,8 +14,28 @@ FROM base AS deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
+COPY scripts/package.json scripts/
+# The root `postinstall` fetches the H5P client libraries, and pnpm runs the
+# root project's lifecycle scripts even under `--filter` — so the script has to
+# be in the context before the install, or every build fails on a missing file.
+# It also means the download is cached with this layer, which is what we want:
+# the pinned commits change far less often than the sources do.
+COPY scripts/fetch-h5p-core.ts scripts/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter @speakukrainian/api... --filter @speakukrainian/shared...
+    pnpm install --frozen-lockfile \
+      --filter @speakukrainian/api... \
+      --filter @speakukrainian/shared... \
+      --filter @speakukrainian/scripts
+
+# ---- H5P client assets ------------------------------------------------------
+# The postinstall above is deliberately soft-failing, so that `pnpm install` on
+# a machine with no network still succeeds. An *image* that cannot serve the
+# H5P client is broken rather than inconvenient, and nobody reads a build's
+# warnings — so this stage runs the same script with `--require`, which turns
+# the offline case into a non-zero exit. When the assets are already there from
+# the layer above it is a no-op.
+FROM deps AS h5p-assets
+RUN node scripts/fetch-h5p-core.ts --require
 
 # ---- build ------------------------------------------------------------------
 FROM deps AS build
@@ -41,7 +61,14 @@ WORKDIR /app
 
 COPY --from=build /app ./
 
-# Never run as root, and give the H5P working directory to that same user.
+# Copied explicitly rather than left to `pnpm deploy`, which builds its file
+# list the way `pack` does — and these paths are gitignored, so they would be
+# silently absent and every H5P asset route would answer 503.
+COPY --from=h5p-assets /repo/apps/api/h5p/core ./h5p/core
+COPY --from=h5p-assets /repo/apps/api/h5p/editor ./h5p/editor
+
+# Never run as root, and give the H5P working directory to that same user. This
+# has to stay after the copies above, or their files keep root's ownership.
 RUN useradd --system --create-home --uid 10001 nodeapp \
  && mkdir -p /app/h5p/temporary-storage \
  && chown -R nodeapp:nodeapp /app
