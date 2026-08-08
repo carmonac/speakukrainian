@@ -65,7 +65,16 @@ export const H5P_ASSET_PINS: readonly H5pAssetPin[] = [
 
 const REPO_ROOT = resolve(import.meta.dirname, '..');
 
-/** Where the API's `H5P_ASSETS_DIR` default (`./h5p`, relative to `apps/api`) lands. */
+/**
+ * Where the API's `H5P_ASSETS_DIR` default (`./h5p`, relative to `apps/api`)
+ * lands.
+ *
+ * Fixed rather than read from that variable: this runs from the root
+ * `postinstall`, where the API's environment is not loaded and its config
+ * schema is not importable without dragging the whole API into an install.
+ * `.env.example` and `configuration.ts` say the same thing from the other side
+ * — the variable moves where the API *reads*, never where the fetch writes.
+ */
 export const ASSETS_ROOT = join(REPO_ROOT, 'apps', 'api', 'h5p');
 
 /** Records which commit and digest each kind on disk came from. */

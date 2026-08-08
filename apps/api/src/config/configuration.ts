@@ -48,9 +48,13 @@ export const envSchema = z.object({
   H5P_TEMP_DIR: z.string().default('./h5p/temporary-storage'),
 
   /**
-   * Where `scripts/fetch-h5p-core.ts` puts the H5P client libraries, relative
-   * to the app root. `<dir>/core` and `<dir>/editor` are what the asset routes
-   * serve.
+   * Where the API reads the H5P client libraries from, relative to the app
+   * root. `<dir>/core` and `<dir>/editor` are what the asset routes serve.
+   *
+   * `scripts/fetch-h5p-core.ts` writes `apps/api/h5p` and does not read this,
+   * because it runs from `postinstall` where the API's environment is not
+   * loaded. The default is the same directory; anything else has to be
+   * populated by hand.
    */
   H5P_ASSETS_DIR: z.string().default('./h5p'),
 

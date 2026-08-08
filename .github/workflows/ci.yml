@@ -66,6 +66,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # The install's own fetch warns and exits 0 when it cannot download, so
+      # that `pnpm install` works offline. This suite serves those assets, so
+      # here the download has to report itself: without this a codeload hiccup
+      # is three 503s in the H5P suite and a warning buried in the install log.
+      - name: Require the H5P client libraries
+        run: node scripts/fetch-h5p-core.ts --require
+
       - name: Start Firestore and Cloud Storage emulators
         run: docker compose up -d --build --wait
 
