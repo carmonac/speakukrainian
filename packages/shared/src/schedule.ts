@@ -59,9 +59,38 @@ export const updateScheduleSlotSchema = createScheduleSlotSchema
   .extend({ status: slotStatusSchema.optional() });
 export type UpdateScheduleSlotInput = z.infer<typeof updateScheduleSlotSchema>;
 
-export const listScheduleSlotsQuerySchema = z.object({
-  from: isoDateTimeSchema.optional(),
-  to: isoDateTimeSchema.optional(),
-  status: slotStatusSchema.optional(),
-});
+/**
+ * The longest range a caller may ask for, in days. 366 rather than 365 so a
+ * full leap year is expressible in one request.
+ *
+ * This bounds the *question*; the API applies its own, smaller bound on the
+ * number of documents an answer may contain.
+ */
+export const MAX_SCHEDULE_RANGE_DAYS = 366;
+
+const DAY_MS = 86_400_000;
+
+/**
+ * The range is mandatory and capped, so no caller can ask the API for an
+ * unbounded read of the collection.
+ */
+export const listScheduleSlotsQuerySchema = z
+  .object({
+    from: isoDateTimeSchema,
+    to: isoDateTimeSchema,
+    status: slotStatusSchema.optional(),
+  })
+  .refine((query) => new Date(query.to) > new Date(query.from), {
+    message: '`to` must be after `from`',
+    path: ['to'],
+  })
+  .refine(
+    (query) =>
+      new Date(query.to).getTime() - new Date(query.from).getTime() <=
+      MAX_SCHEDULE_RANGE_DAYS * DAY_MS,
+    {
+      message: `A schedule range cannot be longer than ${MAX_SCHEDULE_RANGE_DAYS} days`,
+      path: ['to'],
+    },
+  );
 export type ListScheduleSlotsQuery = z.infer<typeof listScheduleSlotsQuerySchema>;
