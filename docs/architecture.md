@@ -379,6 +379,137 @@ _The rule for the next tree UI:_ copy this shape, not `cdkDropListGroup`. The st
 inside `SectionsPage` only because it has one consumer; the second one is the trigger to lift it
 out, along with the pointer geometry in `sections.model.ts`, rather than to copy it.
 
+### ADR-014 — Recurring slots expand in the authoring zone
+
+A weekly recurrence is expanded into concrete documents **at write time**, walking **civil dates**
+in the slot's `timeZone` and converting each occurrence to a UTC instant on its own. Nothing is
+derived by adding elapsed milliseconds to the previous occurrence. That is the whole of "a 09:00
+`Europe/Madrid` slot is still 09:00 after the March change": 25 March 09:00 is `08:00Z` and 1 April
+09:00 is `07:00Z`, and only a per-occurrence conversion produces both. `startsAt + 7 × 86_400_000`
+produces `08:00Z` for 1 April, which reads as 10:00 in Madrid — the naive implementation the
+criterion exists to catch.
+
+The conversion uses `Intl` alone, no date library. A wall clock cannot simply be offset, because
+the offset in force depends on the instant being computed. So `wallClockToInstant` reads the wall
+clock as if it were UTC, probes the zone's offset ±24 h either side of that — no zone transitions
+twice inside 48 h, so those are exactly the offsets on both sides of any transition — and returns
+the first candidate that formats back to the wall clock asked for, else the earlier one:
+
+| Wall clock asked for | `before` | `after` | Round-trips  | Returned | Reads back as |
+| -------------------- | -------- | ------- | ------------ | -------- | ------------- |
+| 25 Mar 09:00 (plain) | 08:00Z   | 08:00Z  | both         | 08:00Z   | 09:00 CET     |
+| 01 Apr 09:00 (plain) | 07:00Z   | 07:00Z  | both         | 07:00Z   | 09:00 CEST    |
+| 29 Mar 02:30 (gap)   | 01:30Z   | 00:30Z  | neither      | 01:30Z   | 03:30 CEST    |
+| 25 Oct 02:30 (twice) | 00:30Z   | 01:30Z  | both, differ | 00:30Z   | 02:30 CEST    |
+
+So a wall clock inside the **spring-forward gap** shifts forward by the size of the gap — 02:30
+becomes 03:30 — and one in the **autumn overlap** resolves to the **earlier** instant, still on
+summer time. Both match `Temporal`'s `disambiguation: 'compatible'`, which is what every calendar
+application does. Skipping the occurrence would break the "exact expected number of slots" promise,
+and refusing the series would refuse one that is fine on the other 51 weeks.
+
+Two smaller traps are load-bearing and have their own tests: the formatter uses `hourCycle: 'h23'`,
+because `hour12: false` still yields `"24"` for midnight in V8 and would date every midnight slot a
+day early; and `zoneOffsetMs` floors its instant to the second, because the formatted parts carry
+no milliseconds and subtracting the raw epoch value returns an offset out by up to 999 ms.
+
+A slot's **duration is absolute**, not wall-clock: each occurrence ends `endsAt − startsAt` after
+it begins. Converting `endsAt`'s wall clock separately would turn a one-hour lesson into a zero- or
+two-hour one on exactly one day of the year, and a zero-hour one is not a slot at all.
+
+**Instants are stored as normalised `…Z` ISO strings.** `isoDateTimeSchema` accepts
+`2026-03-30T09:00:00+02:00`, `…T07:00:00Z` and `…T07:00:00.000Z` — one instant, three spellings
+that sort three different ways — and Firestore compares `startsAt` lexicographically, so an
+unnormalised value silently drops out of a range query. Every instant goes through `toInstant`
+before it is stored and before it is used as a query bound. _Rejected:_ storing Firestore
+`Timestamp`s, which would make the ordering correct by construction but would make this the one
+collection that does so; no other repository writes a `Timestamp`, and mixing representations is
+worse than one normalisation helper.
+
+Overlap rejection reads a **bounded window of one owner's slots**, `[minStart − 24 h, maxEnd)` on
+`startsAt` alone, and that lower bound is complete **only because a slot may not be longer than 24
+hours**. `MAX_SLOT_DURATION_HOURS` is therefore not decoration: raise or remove it and both the
+overlap check and the "slots intersecting a range" read start missing slots. The write itself is a
+`WriteBatch`, not a transaction — a Firestore transaction locks the documents it reads, not the
+query range, so it buys nothing against a concurrent insert (the same fact `SectionsRepository`
+documents about sibling slugs) — and `MAX_RECURRENCE_SLOTS = 200` sits well under the 500-write
+batch limit so a series is never split across commits. **Every write this module makes is one batch
+under that limit**, deleting a series included: `MAX_SERIES_DELETE_SLOTS = 500` is the batch limit
+itself rather than a policy number, and a series holding more future occurrences than that is
+refused instead of assembling a commit the server would reject. It is bounded there, not at the
+200-occurrence creation cap, because a series can only exceed 200 through hand-written documents —
+the very case the refusal exists to let an admin clean up. The Firestore emulator does not enforce
+the 500-write limit, so this one is pinned by a unit test against a double that does.
+
+**The range read answers with a bare `ScheduleSlot[]`, not the `Page<T>` every other list route
+returns.** A calendar is not a cursor list: #15 draws a whole visible range at once, and half a week
+followed by a `nextCursor` is not something a calendar can render. The mandatory, 366-day-capped
+range is the bound that pagination would otherwise supply, and the 422 at `MAX_LIST_SLOTS = 1000` is
+what replaces "fetch the next page" — the honest answer to a range holding more slots than one
+response should carry is to ask for a narrower range, not to hand back a page of it and let the
+caller believe the week is empty after Wednesday. This is a deliberate exception for a bounded
+range read, not a second house pattern: a list route with no natural range still returns `Page<T>`
+from `BaseRepository.paginate`.
+
+`timeZone` is validated as **a zone the runtime can actually resolve**, in `packages/shared` rather
+than in the API, because both halves of the field have to close: an unresolvable zone handed to
+`Intl.DateTimeFormat` is a `RangeError`, and one that is merely stored is a document every later
+reader trips over. The check constructs a formatter rather than searching
+`Intl.supportedValuesOf('timeZone')`, whose canonical-names-only list would refuse the
+backward-compatibility links (`Asia/Calcutta`, `US/Eastern`) that `Intl` resolves happily. It is on
+the stored schema as well as the input one, so — as with `endsAt > startsAt` — a document that
+somehow holds an unresolvable zone fails loudly on read rather than reaching a renderer that cannot
+draw it.
+
+A **fixed offset is refused** even though `Intl` accepts `+05:30` or `+23:00` wherever it accepts a
+zone name, because an offset never observes a transition: a series authored in `+02:00` would drift
+an hour against Madrid for half the year, quietly defeating the only reason the field exists. A zone
+that genuinely has no DST is still expressible by name (`UTC`, `Etc/GMT+5`, `Asia/Kolkata`) and a
+slot authored in one simply never shifts.
+
+The refusal is written as **"a zone name starts with an ASCII letter"**, not as "the value does not
+start with a sign". The first version tested `/^[+-]/` and was bypassed by `−05:30`: `Intl` reads
+U+2212 MINUS SIGN as a sign too, so that offset parsed, was stored, and pinned its own formatter.
+Adding U+2212 to the character class would have been right only until ICU accepted a fourth sign, so
+the test asks the opposite question. It is exact in both directions, and each direction is swept
+rather than argued: across all 1 114 112 code points exactly three (U+002B, U+002D, U+2212) are
+accepted ahead of an offset body and `Intl` resolves nothing offset-shaped without one, so no offset
+can start with a letter; and of the 418 canonical names plus every backward-compatibility link that
+resolves, none starts with anything but a letter, so no real zone is refused. A test pins each half
+— one sweeps every offset spelling of all three signs, the other feeds the runtime's canonical zone
+list through the schema, with an explicit case for a backward-compatibility link that list omits.
+
+**Both time-zone caches are keyed on the lower-cased zone**, and that is half of what makes them
+safe. `Intl` matches zone ids case-insensitively, so `Europe/Madrid`, `europe/madrid` and
+`eUrOpE/mAdRiD` all resolve — 2048 spellings of one zone, each of which was a separate entry
+retaining its own `Intl.DateTimeFormat` (~15 KB) for the life of the process, reachable over HTTP by
+any admin token and unbounded. Lower-cased, no two zone names differ.
+
+The other half is structural, and it is why `timeZoneSchema` runs its two checks as **one**
+refinement that returns early rather than as two chained `.refine()` calls. Zod runs every
+refinement in a chain whatever failed before it, so the chained version still looked `+05:30` up —
+and cached it — after the offset check had already refused it, which put the entire offset syntax
+(8712 spellings across the three signs) into a set documented as bounded by the zone database. As
+one check, the lookup is unreachable for anything the field refuses, so nothing but a zone name can
+key it. That is the same reason the API's formatter map is bounded: every caller passes a value this
+schema accepted. The _stored_ value keeps the caller's spelling — canonicalising through
+`resolvedOptions().timeZone` would rewrite `US/Eastern` to `America/New_York` behind the admin's
+back, so anything comparing two `timeZone` values must fold case rather than use `===`.
+
+**Ownership is not enforced on writes in Phase 1.** Every mutating route is `@Roles('admin')`, and
+that role is the whole of the check: any admin may patch or delete another admin's slot, or delete
+their whole series, and `GET` is site-wide. Only _overlap_ is per-owner, because two teachers may
+legitimately offer the same hour. This is a decision, not an oversight — admins are a handful of
+trusted staff, and the alternative costs an `ownerId` argument through the repository, an
+owner-prefixed index, and a `403` path with nothing behind it today. What would change it: teachers
+administering their own calendars, or admins who are not all trusted with each other's time.
+Booking is the related Phase 2 hole and is closed the other way: `booked` is excluded from the patch
+schema outright, so no route can produce a slot that reads as booked with no `bookedBy`.
+
+_Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
+document hand-written with a duration over 24 h is invisible to the overlap check; and overlap
+rejection is best-effort under concurrency, repairable by cancelling one of the two slots.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
