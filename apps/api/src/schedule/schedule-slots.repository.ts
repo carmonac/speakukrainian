@@ -5,6 +5,7 @@ import {
   COLLECTIONS,
   scheduleSlotSchema,
   type ListScheduleSlotsQuery,
+  type LocalizedText,
   type ScheduleSlot,
   type UpdateScheduleSlotInput,
 } from '@speakukrainian/shared';
@@ -51,7 +52,7 @@ export function toDocumentData(slot: ScheduleSlot): Record<string, unknown> {
 /** Metadata every slot of one write shares. Kept apart from the per-slot times. */
 export interface SlotMeta {
   timeZone: string;
-  note?: string;
+  note?: LocalizedText;
   recurrenceId: string | null;
 }
 

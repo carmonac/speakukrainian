@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SCHEDULE_RANGE_DAYS,
+  MAX_SLOT_NOTE_LENGTH,
   createScheduleSlotSchema,
   listScheduleSlotsQuerySchema,
   resolvableTimeZoneCacheSize,
@@ -65,6 +66,63 @@ describe('createScheduleSlotSchema', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe('slot notes', () => {
+  const slotWith = (note?: unknown): Record<string, unknown> => ({
+    startsAt: '2026-09-01T09:00:00Z',
+    endsAt: '2026-09-01T10:00:00Z',
+    timeZone: 'Europe/Madrid',
+    ...(note === undefined ? {} : { note }),
+  });
+
+  it('accepts a note in several locales and round-trips it', () => {
+    const note = { en: 'Bring your workbook', uk: 'Візьміть зошит', es: 'Trae tu cuaderno' };
+
+    expect(createScheduleSlotSchema.parse(slotWith(note)).note).toEqual(note);
+  });
+
+  it('accepts a slot with no note at all', () => {
+    expect(createScheduleSlotSchema.parse(slotWith())).not.toHaveProperty('note');
+  });
+
+  it('refuses a plain-string note', () => {
+    // The shape every note had before it was localized. A body written against
+    // the old schema has to fail rather than be stored as something no locale
+    // can render.
+    const result = createScheduleSlotSchema.safeParse(slotWith('Bring your workbook'));
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['note']);
+  });
+
+  it('refuses a note over the bound and names the locale that broke it', () => {
+    // An admin editing four locale tabs needs to be told which one is too long.
+    const result = createScheduleSlotSchema.safeParse(
+      slotWith({ en: 'short', uk: 'я'.repeat(MAX_SLOT_NOTE_LENGTH + 1) }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['note', 'uk']);
+  });
+
+  it(`accepts ${MAX_SLOT_NOTE_LENGTH} characters in each of two locales`, () => {
+    // The bound is per locale, not a total across them: read the other way, this
+    // slot is twice over and adding a translation would invalidate the ones
+    // already authored.
+    const full = 'a'.repeat(MAX_SLOT_NOTE_LENGTH);
+    const result = createScheduleSlotSchema.safeParse(slotWith({ en: full, uk: full }));
+
+    expect(result.success).toBe(true);
+    expect(result.data?.note).toEqual({ en: full, uk: full });
+  });
+
+  it('refuses a key that is not a locale code', () => {
+    const result = createScheduleSlotSchema.safeParse(slotWith({ 'not a locale': 'x' }));
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['note', 'not a locale']);
   });
 });
 

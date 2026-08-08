@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { auditSchema, isoDateTimeSchema } from './common.js';
+import { auditSchema, isoDateTimeSchema, localeCodeSchema } from './common.js';
 
 export const slotStatusSchema = z.enum(['open', 'booked', 'cancelled', 'completed']);
 export type SlotStatus = z.infer<typeof slotStatusSchema>;
@@ -132,6 +132,24 @@ export const timeZoneSchema = z
   });
 
 /**
+ * Longest a note may be **in each locale**, not in total across them: a total
+ * bound would make the sixth translation fail for text already authored in five
+ * languages, and report it against whichever locale happened to be saved last.
+ */
+export const MAX_SLOT_NOTE_LENGTH = 500;
+
+/**
+ * Free-form note shown to the learner before booking, as localized plain text.
+ *
+ * Plain text and not `richTextSchema`: this route runs no `RichTextSanitizer`,
+ * `scheduleSlotSchema` carries no `audioAssets`/`imageAssets` for the orphan
+ * sweep to read so any embedded media would be untracked, and one range read
+ * carries up to `MAX_LIST_SLOTS` of these. A locale with no translation falls
+ * back per ADR-009, and a slot with no note at all shows nothing.
+ */
+export const slotNoteSchema = z.record(localeCodeSchema, z.string().max(MAX_SLOT_NOTE_LENGTH));
+
+/**
  * A window of the admin's time that a learner can book. Times are stored as
  * absolute UTC instants plus the IANA zone they were authored in, so recurring
  * slots survive daylight-saving shifts.
@@ -148,8 +166,7 @@ export const scheduleSlotSchema = z
     status: slotStatusSchema.default('open'),
     /** Set when the slot was generated from a recurrence rule. */
     recurrenceId: z.string().min(1).nullable().default(null),
-    /** Free-form note shown to the learner before booking. */
-    note: z.string().max(500).optional(),
+    note: slotNoteSchema.optional(),
     /** Populated once `status === 'booked'`. Booking itself is Phase 2. */
     bookedBy: z.string().min(1).nullable().default(null),
     bookedAt: z.string().nullable().default(null),
@@ -175,7 +192,7 @@ export const createScheduleSlotSchema = z.object({
   startsAt: isoDateTimeSchema,
   endsAt: isoDateTimeSchema,
   timeZone: timeZoneSchema,
-  note: z.string().max(500).optional(),
+  note: slotNoteSchema.optional(),
   recurrence: slotRecurrenceSchema.optional(),
 });
 export type CreateScheduleSlotInput = z.infer<typeof createScheduleSlotSchema>;
