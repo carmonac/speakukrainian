@@ -9,6 +9,7 @@ import {
   contentObjectPath,
   contentPrefix,
   contentStoragePath,
+  joinContentFilePath,
   libraryObjectPath,
   libraryPrefix,
 } from './h5p.paths.js';
@@ -133,7 +134,49 @@ describe('library paths', () => {
     expect(() => libraryObjectPath(LIBRARY, '../../../x')).toThrow(H5pError);
   });
 
+  it.each([['../evil'], ['a/../..'], ['/etc'], ['a\\b']])(
+    'never builds a prefix from the library name %j',
+    (machineName) => {
+      // The contract, not the mechanism. Today it is `LibraryName.toUberName`'s
+      // own pattern that refuses these first — `libraryPrefix`'s assert is the
+      // module's uniform rule sitting behind it, and it is genuinely unreachable
+      // while that pattern holds. Asserting the outcome rather than which of the
+      // two threw is what keeps this true if either changes; asserting the
+      // assert's own `H5pError` would only pin the current order.
+      expect(() => libraryPrefix({ machineName, majorVersion: 1, minorVersion: 0 })).toThrow();
+    },
+  );
+
   it('roots library listings at the shared storage prefix', () => {
     expect(LIBRARY_ROOT_PREFIX).toBe('h5p/libraries/');
+  });
+});
+
+describe('joinContentFilePath', () => {
+  it('joins the decoded segments Express hands back', () => {
+    expect(joinContentFilePath(['media', 'clip.mp3'])).toBe('media/clip.mp3');
+  });
+
+  it('keeps a space, which Express has already decoded from %20', () => {
+    expect(joinContentFilePath(['media', 'tone one.mp3'])).toBe('media/tone one.mp3');
+  });
+
+  it('accepts a single string, which is what a one-segment wildcard can be', () => {
+    expect(joinContentFilePath('h5p.json')).toBe('h5p.json');
+  });
+
+  it('refuses a traversal that arrives inside one decoded segment', () => {
+    // The whole reason the assert runs after the join. `media/..%2f..%2fx`
+    // reaches Express 5 as `['media', '../../x']`, so a per-segment check sees
+    // two ordinary names and only the joined string sees the traversal.
+    expect(() => joinContentFilePath(['media', '../../x'])).toThrow(H5pError);
+  });
+
+  it('refuses a traversal spread across two segments', () => {
+    expect(() => joinContentFilePath(['media', '..', '..', 'x'])).toThrow(H5pError);
+  });
+
+  it.each([[[]], [['']], ['']])('refuses the empty path %j', (segments) => {
+    expect(() => joinContentFilePath(segments)).toThrow(H5pError);
   });
 });

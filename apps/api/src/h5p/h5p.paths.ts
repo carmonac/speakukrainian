@@ -96,7 +96,33 @@ export function contentObjectPath(contentId: ContentId, filename: string): strin
 
 /** `h5p/libraries/<Machine.Name-major.minor>/`. */
 export function libraryPrefix(library: ILibraryName): string {
-  return `${STORAGE_PREFIXES.h5pLibraries}/${LibraryName.toUberName(library)}/`;
+  const ubername = LibraryName.toUberName(library);
+  // The library-file route builds this from an ubername in the request URL, so
+  // the rule every other builder in this module follows applies here too.
+  //
+  // Not a fix for anything reachable today: `LibraryName.fromUberName`'s pattern
+  // is `^([\w.]+)-(\d+)\.(\d+)$`, so the worst a machine name of `..` can
+  // produce is the segment `..-1.0`, which is not a `..` segment. It is here so
+  // that the guard lives in the builder and cannot be forgotten by the next
+  // caller, which is the property this module is built on.
+  assertSafeRelativePath(ubername);
+  return `${STORAGE_PREFIXES.h5pLibraries}/${ubername}/`;
+}
+
+/**
+ * Joins an Express wildcard's segments into one relative path and asserts it.
+ *
+ * Express 5 hands a `*path` parameter back as an array of **decoded** segments,
+ * so a percent-encoded separator arrives *inside* one segment:
+ * `media/..%2f..%2fx` becomes `['media', '../../x']`. Checking each segment
+ * would see `../../x` as one harmless name; only the joined string, split on
+ * `/` again, sees it as a traversal. That is why the assert runs after the join
+ * and never per segment.
+ */
+export function joinContentFilePath(segments: readonly string[] | string): string {
+  const joined = Array.isArray(segments) ? segments.join('/') : String(segments);
+  assertSafeRelativePath(joined);
+  return joined;
 }
 
 export function libraryObjectPath(library: ILibraryName, filename: string): string {

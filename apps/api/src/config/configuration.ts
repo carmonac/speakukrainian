@@ -46,6 +46,25 @@ export const envSchema = z.object({
 
   /** Where H5P keeps its working files, relative to the app root. */
   H5P_TEMP_DIR: z.string().default('./h5p/temporary-storage'),
+
+  /**
+   * Where `scripts/fetch-h5p-core.ts` puts the H5P client libraries, relative
+   * to the app root. `<dir>/core` and `<dir>/editor` are what the asset routes
+   * serve.
+   */
+  H5P_ASSETS_DIR: z.string().default('./h5p'),
+
+  /**
+   * Base URL the H5P client uses to reach this API. Every asset URL in a player
+   * model is built from it.
+   *
+   * It must be **absolute** wherever the page's origin differs from the API's,
+   * which is every local development setup: the admin runs on :4200 and the API
+   * on :8080, so a relative `/api/h5p/core/js/h5p.js` in a model rendered at
+   * :4200 resolves against :4200 and 404s. In production both are behind one
+   * origin and the relative default is right.
+   */
+  H5P_BASE_URL: z.string().default('/api/h5p'),
 });
 
 export type Env = z.infer<typeof envSchema>;

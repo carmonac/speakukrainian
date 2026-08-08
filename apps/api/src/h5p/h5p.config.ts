@@ -14,7 +14,7 @@ import { MAX_H5P_UPLOAD_BYTES } from '@speakukrainian/shared';
  * `proxy`, `contentFilesUrlPlayerOverride` — is silently ignored. Setting one
  * of those here would look right and do nothing.
  */
-export function createH5pConfig(): H5PConfig {
+export function createH5pConfig(baseUrl: string): H5PConfig {
   return new H5PConfig(undefined, {
     // Not cosmetic. The stock defaults are 16 MiB per file and 64 MiB total,
     // and `PackageValidator.validateFileSizes` enforces them before anything
@@ -25,23 +25,26 @@ export function createH5pConfig(): H5PConfig {
     maxTotalSize: MAX_H5P_UPLOAD_BYTES,
 
     // The stock install-lock budget assumes a local filesystem; every library
-    // file here is an HTTP write to object storage. `PackageImporter` queues
+    // file here is an HTTP write to object storage. `PackageImporter` starts
     // every library directory of a package at once — ~68 of them and ~1700
-    // objects for `H5P.CoursePresentation 1.22` — and `async-lock` starts an
-    // entry's occupation timer when it is *queued*, not when it takes the lock,
-    // so this budget has to cover the whole import rather than one library's
-    // share of it. Measured against fake-gcs-server, which answers a small
-    // write in ~10 ms, that import runs 16-20 s and the stock 10 s fails it
-    // about two cold runs in three; real Cloud Storage is roughly an order of
-    // magnitude slower per object. Five minutes is Cloud Run's own default
-    // request timeout, so a pathological import now ends because the request
-    // ended, rather than because a library budget expired mid-upload and threw
-    // away work the caller cannot see was nearly done.
+    // objects for `H5P.CoursePresentation 1.22` — each under its own lock key
+    // (`install-from-directory:<ubername>`), so they all run concurrently and
+    // each one's budget measures the whole import rather than its own share of
+    // it. Measured against fake-gcs-server, which answers a small write in
+    // ~10 ms, that import runs 16-20 s and the stock 10 s fails it about two
+    // cold runs in three; real Cloud Storage is roughly an order of magnitude
+    // slower per object. Five minutes is Cloud Run's own default request
+    // timeout, so a pathological import now ends because the request ended,
+    // rather than because a library budget expired mid-upload and threw away
+    // work the caller cannot see was nearly done.
     installLibraryLockMaxOccupationTime: 300_000,
 
-    // Only bounds waiting behind *another* import of the same library. Kept
-    // above the occupation budget, the same way the library's own defaults are,
-    // so a waiter is never refused while the holder is still inside its budget.
+    // Unreachable in this configuration, and kept only to mirror the library's
+    // own 2:1 ratio. It would bound waiting behind another import of the *same*
+    // library, but `async-lock` arms the occupation timer at `acquire` for a
+    // waiter too — so a waiter is refused at 300 s and this value never fires.
+    // It buys no behaviour; it is here so that a future change to the budget
+    // above has an obvious companion rather than a hidden default.
     installLibraryLockTimeout: 600_000,
 
     // `trackResults` is out of scope for Phase 1 and no
@@ -56,8 +59,17 @@ export function createH5pConfig(): H5PConfig {
     fetchingDisabled: 1,
     sendUsageStatistics: false,
 
-    // Used by `UrlGenerator` for the editor and player routes that #12 and #13
-    // add; harmless while nothing generates a URL.
-    baseUrl: '/api/h5p',
+    // Every asset URL in a player model is built from this. It comes from
+    // `H5P_BASE_URL` rather than being fixed here because it has to be absolute
+    // whenever the page's origin differs from the API's — see the environment
+    // schema.
+    baseUrl,
+
+    // The default is `/editor`, which is the prefix the editor *model* route
+    // will use. Two different things one line apart in the URL space: this one
+    // is Joubel's editor JavaScript on disk, that one is a JSON model. Left at
+    // the default they collide, and the collision is silent — whichever route
+    // Express matched first would answer both.
+    editorLibraryUrl: '/editor-assets',
   });
 }
