@@ -408,6 +408,12 @@ summer time. Both match `Temporal`'s `disambiguation: 'compatible'`, which is wh
 application does. Skipping the occurrence would break the "exact expected number of slots" promise,
 and refusing the series would refuse one that is fine on the other 51 weeks.
 
+These helpers live in **`packages/shared/src/time.ts`**, not in the API, because the admin composes
+wall-clock times too: an offset-bearing ISO string needs the offset at the instant being computed,
+which is the same circularity the ±24 h probe exists to break. A second copy of that arithmetic is
+exactly the drift rule 1 exists to stop, on the one calculation here that is wrong by an hour for
+any wall clock within ~14 h of a transition and silent about it.
+
 Two smaller traps are load-bearing and have their own tests: the formatter uses `hourCycle: 'h23'`,
 because `hour12: false` still yields `"24"` for midnight in V8 and would date every midnight slot a
 day early; and `zoneOffsetMs` floors its instant to the second, because the formatted parts carry
@@ -491,7 +497,7 @@ refinement in a chain whatever failed before it, so the chained version still lo
 and cached it — after the offset check had already refused it, which put the entire offset syntax
 (8712 spellings across the three signs) into a set documented as bounded by the zone database. As
 one check, the lookup is unreachable for anything the field refuses, so nothing but a zone name can
-key it. That is the same reason the API's formatter map is bounded: every caller passes a value this
+key it. That is the same reason the shared formatter map is bounded: every caller passes a value this
 schema accepted. The _stored_ value keeps the caller's spelling — canonicalising through
 `resolvedOptions().timeZone` would rewrite `US/Eastern` to `America/New_York` behind the admin's
 back, so anything comparing two `timeZone` values must fold case rather than use `===`.
@@ -505,6 +511,15 @@ owner-prefixed index, and a `403` path with nothing behind it today. What would 
 administering their own calendars, or admins who are not all trusted with each other's time.
 Booking is the related Phase 2 hole and is closed the other way: `booked` is excluded from the patch
 schema outright, so no route can produce a slot that reads as booked with no `bookedBy`.
+
+**A slot's `note` is localized plain text** — `LocalizedText`, bounded at `MAX_SLOT_NOTE_LENGTH`
+_per locale_ so a sixth translation never invalidates text already authored in five — and not
+`RichText`. It is shown to a learner, so rule 2 makes it localized; what it is not is rich, because
+this route runs no `RichTextSanitizer` as every other rich text field's does, `scheduleSlotSchema`
+carries no `audioAssets`/`imageAssets` for the orphan sweep to read so any embedded media would be
+untracked, and one `MAX_LIST_SLOTS` range read would otherwise carry a thousand HTML bodies. Rule 3
+still holds: the admin authors it in `LocalizedRichTextEditor` with `[inlineOnly]="true"` through
+`toPlainLocalized`/`fromPlainLocalized`, the same way `section.title` and `page.title` are authored.
 
 _Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
 document hand-written with a duration over 24 h is invisible to the overlap check; and overlap
