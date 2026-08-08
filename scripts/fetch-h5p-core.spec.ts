@@ -9,6 +9,7 @@ import {
   archiveTopLevel,
   archiveUrl,
   contentDigest,
+  digestOfFiles,
   extractArchive,
   needsFetch,
   type H5pAssetPin,
@@ -135,19 +136,55 @@ describe('contentDigest', () => {
     await expect(contentDigest(work)).resolves.not.toBe(TREE_DIGEST);
   });
 
-  it('does not depend on the order the directory hands its entries back', async () => {
-    // The same tree, written in reverse. Directory order is a filesystem
-    // property and not a stable one across the machines that run this.
-    await writeTree(work, [...TREE].reverse());
-
-    await expect(contentDigest(work)).resolves.toBe(TREE_DIGEST);
-  });
-
   it('ignores an empty directory, which an archive may or may not record', async () => {
     await writeTree(work, TREE);
     await mkdir(join(work, 'styles', 'empty'), { recursive: true });
 
     await expect(contentDigest(work)).resolves.toBe(TREE_DIGEST);
+  });
+});
+
+describe('digestOfFiles', () => {
+  const FILES: [string, string][] = [
+    ['README.txt', 'a'.repeat(64)],
+    ['js/h5p.js', 'b'.repeat(64)],
+    ['js/vendor/jquery.js', 'c'.repeat(64)],
+  ];
+
+  it('does not depend on the order the file list arrives in', () => {
+    // Driven here rather than through the filesystem on purpose: APFS returns
+    // directory entries already sorted, so a test that only reorders the
+    // *writes* passes with the sort deleted, and a CI runner on ext4 would then
+    // be the first thing to notice.
+    const shuffled = [FILES[2], FILES[0], FILES[1]] as [string, string][];
+
+    expect(digestOfFiles(shuffled)).toBe(digestOfFiles(FILES));
+    expect(digestOfFiles([...FILES].reverse())).toBe(digestOfFiles(FILES));
+  });
+
+  it('sorts by bytes, not by locale', () => {
+    // `localeCompare` puts `a.txt` before `Z.txt`; byte order does not. A digest
+    // that changed with the machine's locale would fail on someone else's.
+    const upper: [string, string] = ['Z.txt', 'd'.repeat(64)];
+    const lower: [string, string] = ['a.txt', 'e'.repeat(64)];
+
+    expect(digestOfFiles([upper, lower])).toBe(digestOfFiles([lower, upper]));
+    expect(digestOfFiles([upper, lower])).not.toBe(
+      digestOfFiles([
+        [upper[0], lower[1]],
+        [lower[0], upper[1]],
+      ]),
+    );
+  });
+
+  it('binds each path to its content, so swapping two files changes the digest', () => {
+    const swapped: [string, string][] = [
+      ['README.txt', 'b'.repeat(64)],
+      ['js/h5p.js', 'a'.repeat(64)],
+      ['js/vendor/jquery.js', 'c'.repeat(64)],
+    ];
+
+    expect(digestOfFiles(swapped)).not.toBe(digestOfFiles(FILES));
   });
 });
 

@@ -102,12 +102,33 @@ export class AssetDownloadError extends Error {}
  */
 export async function contentDigest(root: string): Promise<string> {
   const files = await listFiles(root);
-  files.sort((a, b) => Buffer.compare(Buffer.from(a, 'utf-8'), Buffer.from(b, 'utf-8')));
+
+  return digestOfFiles(
+    await Promise.all(
+      files.map(async (file): Promise<[string, string]> => {
+        const bytes = await readFile(join(root, ...file.split('/')));
+        return [file, createHash('sha256').update(bytes).digest('hex')];
+      }),
+    ),
+  );
+}
+
+/**
+ * The digest itself, over `[posix relative path, sha256 of the bytes]` pairs.
+ *
+ * Separate from the walk so that the sort is testable without depending on the
+ * order a filesystem happens to enumerate a directory in — APFS returns names
+ * sorted, so a test that only reorders the *writes* proves nothing there and
+ * everything on ext4.
+ */
+export function digestOfFiles(files: readonly (readonly [string, string])[]): string {
+  const sorted = [...files].sort(([a], [b]) =>
+    Buffer.compare(Buffer.from(a, 'utf-8'), Buffer.from(b, 'utf-8')),
+  );
 
   const digest = createHash('sha256');
-  for (const file of files) {
-    const bytes = await readFile(join(root, ...file.split('/')));
-    digest.update(`${file}\0${createHash('sha256').update(bytes).digest('hex')}\n`);
+  for (const [path, sha256] of sorted) {
+    digest.update(`${path}\0${sha256}\n`);
   }
 
   return digest.digest('hex');
@@ -341,31 +362,36 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const required = argv.includes('--require');
   let missing = false;
 
-  for (const pin of H5P_ASSET_PINS) {
-    if (!(await needsFetch(ASSETS_ROOT, pin))) {
-      console.log(`H5P ${pin.kind} assets are already at ${pin.commit.slice(0, 10)}.`);
-      continue;
-    }
-
-    try {
-      console.log(`Fetching H5P ${pin.kind} assets from ${pin.repo}@${pin.commit.slice(0, 10)}…`);
-      await fetchPin(pin, ASSETS_ROOT);
-      console.log(`Installed H5P ${pin.kind} assets into apps/api/h5p/${pin.kind}.`);
-    } catch (error) {
-      if (!(error instanceof AssetDownloadError)) {
-        throw error;
+  try {
+    for (const pin of H5P_ASSET_PINS) {
+      if (!(await needsFetch(ASSETS_ROOT, pin))) {
+        console.log(`H5P ${pin.kind} assets are already at ${pin.commit.slice(0, 10)}.`);
+        continue;
       }
-      missing = true;
-      console.warn(
-        `Could not download the H5P ${pin.kind} assets (${error.message}). ` +
-          `The API will boot, but its H5P asset routes answer 503 until you run \`${FETCH_COMMAND}\`.`,
-      );
-    }
-  }
 
-  await rm(join(ASSETS_ROOT, TEMP_DIRNAME), { recursive: true, force: true }).catch(
-    () => undefined,
-  );
+      try {
+        console.log(`Fetching H5P ${pin.kind} assets from ${pin.repo}@${pin.commit.slice(0, 10)}…`);
+        await fetchPin(pin, ASSETS_ROOT);
+        console.log(`Installed H5P ${pin.kind} assets into apps/api/h5p/${pin.kind}.`);
+      } catch (error) {
+        if (!(error instanceof AssetDownloadError)) {
+          throw error;
+        }
+        missing = true;
+        console.warn(
+          `Could not download the H5P ${pin.kind} assets (${error.message}). ` +
+            `The API will boot, but its H5P asset routes answer 503 until you run \`${FETCH_COMMAND}\`.`,
+        );
+      }
+    }
+  } finally {
+    // In a `finally`, because a run that exits 1 is the one most likely to be
+    // repeated and an empty directory left behind is a puzzle for whoever
+    // looks at what the failure did.
+    await rm(join(ASSETS_ROOT, TEMP_DIRNAME), { recursive: true, force: true }).catch(
+      () => undefined,
+    );
+  }
 
   return required && missing ? 1 : 0;
 }
