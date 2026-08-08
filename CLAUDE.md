@@ -29,7 +29,12 @@ pnpm emulators:up          # Firestore + Auth + fake GCS in Docker
 pnpm dev                   # all apps in watch mode
 pnpm lint typecheck test build
 pnpm test:e2e              # API integration tests; needs the emulators up
+pnpm h5p:fetch             # re-download the H5P client libraries (postinstall does it)
 ```
+
+`pnpm test:e2e` needs the emulators up **and** the H5P client libraries on disk: `pnpm install`
+fetches them, and `pnpm h5p:fetch` re-runs that download if it was skipped because the machine was
+offline.
 
 `pnpm lint` runs `pnpm format:check` before the per-package linters, so
 `pnpm lint typecheck test build` is the whole gate — the same commands CI runs, in the same

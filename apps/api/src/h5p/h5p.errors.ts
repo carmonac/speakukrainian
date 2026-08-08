@@ -5,9 +5,10 @@ import { formatMaxH5pUploadSize } from '@speakukrainian/shared';
 const logger = new Logger('H5pErrors');
 
 /**
- * What the caller is told for each error the import path can actually produce.
- * Read out of the installed library's own sources, not guessed: everything else
- * falls through to a message that at least names the id.
+ * What the caller is told for each error the import and serving paths can
+ * actually produce. Read out of the installed library's own sources, not
+ * guessed: everything else falls through to a message that at least names the
+ * id.
  */
 const UNUSABLE_PATH = 'The package contains a file with an unusable path.';
 const UNREADABLE_ARCHIVE = 'The file is not a readable ZIP archive, so it is not an H5P package.';
@@ -34,6 +35,23 @@ const MESSAGES: Record<string, string> = {
   'package-scan:unsupported-compression':
     'The package uses a ZIP compression method that cannot be read. Save it again with standard deflate compression.',
   'package-scan:unpacks-too-large': `The package unpacks to more than ${formatMaxH5pUploadSize()}.`,
+  // The serving routes. Each of these carries its own HTTP status on the
+  // `H5pError`, so what is chosen here is only the wording — and the wording
+  // matters, because without it a reader asking for a missing image is told
+  // their file could not be imported as an H5P package.
+  'h5p-player:content-missing': 'That exercise does not exist.',
+  // The same path rule as the three ids above, raised by
+  // `assertSafeRequestPath` for a path that arrived in a URL rather than in a
+  // package. One rule, two sentences, because "the package contains…" is a
+  // statement about something a reader never sent.
+  'h5p-request:unusable-path': 'That path is not valid.',
+  'content-file-missing': 'That file is not part of this exercise.',
+  'library-file-missing': 'That file is not part of this library.',
+  'invalid-ubername-pattern': 'That is not a valid H5P library name.',
+  // Raised by `rangeCallbackFor`, from inside the endpoint's own call stack.
+  'h5p-range:unsatisfiable': 'The requested byte range is outside this file.',
+  'h5p-range:malformed': 'The Range header could not be understood.',
+  'h5p-range:multipart': 'Only a single byte range can be served.',
 };
 
 /**
@@ -87,14 +105,18 @@ const YAUZL_DATA_ERRORS = [
 ];
 
 /**
- * Maps an `H5pError` onto an HTTP response, or returns `null` for anything
- * else.
+ * Maps an error from the H5P library onto an HTTP response, or returns `null`
+ * when it is not one this API can attribute to the request.
  *
- * The `null` is the point of the function. A storage outage, a bug in an
- * adapter or a broken Firestore connection is not an `H5pError`, so it is
- * rethrown, logged by the global filter and answered as a 500 — rather than
- * being reported to the admin as "your file is corrupt", which would send them
- * looking for a problem in a file that is fine.
+ * An `H5pError` carries its own status and is mapped straight through. A plain
+ * `Error` is mapped only when it matches one of the two narrow zip-reader
+ * families above; everything else returns `null`.
+ *
+ * That `null` is the point of the function. A storage outage, a bug in an
+ * adapter or a broken Firestore connection is not the caller's file being
+ * wrong, so it is rethrown, logged by the global filter and answered as a 500 —
+ * rather than being reported to the admin as "your file is corrupt", which
+ * would send them looking for a problem in a file that is fine.
  */
 export function toHttpException(error: unknown): HttpException | null {
   if (!(error instanceof H5pError)) {
@@ -105,15 +127,17 @@ export function toHttpException(error: unknown): HttpException | null {
   if (status < HttpStatus.BAD_REQUEST || status >= HttpStatus.INTERNAL_SERVER_ERROR) {
     // `error.message` carries `debugMessage` and can name a server path, so it
     // is logged and never returned.
-    logger.error(`H5P import failed: ${error.message}`);
+    logger.error(`An H5P request failed: ${error.message}`);
     return new InternalServerErrorException(
-      'The H5P package could not be imported because of a server error.',
+      'The H5P request could not be completed because of a server error.',
     );
   }
 
+  // Deliberately neutral about which route raised it: the same mapper now
+  // serves the import path and the read paths, and a reader who asked for a
+  // missing exercise must not be told their upload failed.
   const message =
-    MESSAGES[error.errorId] ??
-    `The uploaded file could not be imported as an H5P package (${error.errorId}).`;
+    MESSAGES[error.errorId] ?? `The H5P request could not be completed (${error.errorId}).`;
 
   // An aggregate knows *which* rules failed. Without forwarding them the admin
   // is told only that validation failed, which is not actionable.

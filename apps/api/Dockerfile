@@ -14,8 +14,34 @@ FROM base AS deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
+COPY scripts/package.json scripts/
+# The root `postinstall` fetches the H5P client libraries, and pnpm runs the
+# root project's lifecycle scripts even under `--filter`. It skips when this
+# file is not in the context — which is what lets the admin and web images
+# install their subset of the workspace without it — so copying it here is how
+# *this* image opts into the fetch, and it puts the download in this cached
+# layer, which is what we want: the pinned commits change far less often than
+# the sources do.
+COPY scripts/fetch-h5p-core.ts scripts/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter @speakukrainian/api... --filter @speakukrainian/shared...
+    pnpm install --frozen-lockfile \
+      --filter @speakukrainian/api... \
+      --filter @speakukrainian/shared... \
+      --filter @speakukrainian/scripts
+
+# ---- H5P client assets ------------------------------------------------------
+# The postinstall above is deliberately soft-failing, so that `pnpm install` on
+# a machine with no network still succeeds. An *image* that cannot serve the
+# H5P client is broken rather than inconvenient, and nobody reads a build's
+# warnings — so this stage runs the same script with `--require`, which turns
+# the offline case into a non-zero exit. When the assets are already there from
+# the layer above it is a no-op.
+#
+# It is also what stands between this image and a *silently* skipped fetch: drop
+# the COPY above and the postinstall says so and carries on, but this line then
+# fails on the missing file.
+FROM deps AS h5p-assets
+RUN node scripts/fetch-h5p-core.ts --require
 
 # ---- build ------------------------------------------------------------------
 FROM deps AS build
@@ -41,7 +67,17 @@ WORKDIR /app
 
 COPY --from=build /app ./
 
-# Never run as root, and give the H5P working directory to that same user.
+# Not what puts the assets in the image: `pnpm deploy` already carries the whole
+# tree, bar its `.gitignore` files. What these two lines are is the only edge into
+# the `h5p-assets` stage, and BuildKit builds only the stages its target depends
+# on — so deleting them as redundant would take the `--require` check above out of
+# the build with them, and a build with no network would then ship an image whose
+# H5P asset routes all answer 503, with nothing red anywhere.
+COPY --from=h5p-assets /repo/apps/api/h5p/core ./h5p/core
+COPY --from=h5p-assets /repo/apps/api/h5p/editor ./h5p/editor
+
+# Never run as root, and give the H5P working directory to that same user. This
+# has to stay after the copies above, or their files keep root's ownership.
 RUN useradd --system --create-home --uid 10001 nodeapp \
  && mkdir -p /app/h5p/temporary-storage \
  && chown -R nodeapp:nodeapp /app

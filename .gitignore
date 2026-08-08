@@ -21,11 +21,16 @@ Thumbs.db
 firestore-debug.log
 firebase-debug.log
 
-# H5P working dirs (local dev only). Anchored with `**/` on purpose: the API
-# runs with `apps/api` as its CWD, so the default `./h5p/temporary-storage`
-# lands at `apps/api/h5p/`, which a repo-root-anchored pattern does not match.
-**/h5p/temporary-storage/
-**/h5p/content/
+# H5P working dirs and fetched client libraries, all under `apps/<app>/h5p/`.
+# Anchored at `apps/*/` rather than `**/`: the API's own module is
+# `apps/api/src/h5p/`, so a `**/h5p/<name>/` pattern silently ignores source
+# directories inside it — a file added under `src/h5p/content/` would vanish
+# from `git add` with no error anywhere.
+apps/*/h5p/temporary-storage/
+apps/*/h5p/core/
+apps/*/h5p/editor/
+apps/*/h5p/.assets.json
+apps/*/h5p/.fetch-tmp/
 
 # Agent loop working files: plans and per-issue state are scratch, not history.
 .agent/

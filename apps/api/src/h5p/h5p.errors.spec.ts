@@ -70,13 +70,33 @@ describe('toHttpException', () => {
     expect(bodyOf(exception!)['message']).toBe(message);
   });
 
+  it.each([
+    ['h5p-player:content-missing', 404, 'That exercise does not exist.'],
+    ['content-file-missing', 404, 'That file is not part of this exercise.'],
+    ['library-file-missing', 404, 'That file is not part of this library.'],
+    ['invalid-ubername-pattern', 400, 'That is not a valid H5P library name.'],
+    ['h5p-request:unusable-path', 400, 'That path is not valid.'],
+  ] as const)('words %s for a reader rather than for an uploader', (errorId, status, message) => {
+    // The same mapper serves the play and asset routes. Without wording of
+    // their own these fall through to a sentence about importing a package,
+    // which is not what the caller did.
+    const exception = toHttpException(new H5pError(errorId, { name: 'x' }, status));
+
+    expect(exception?.getStatus()).toBe(status);
+    expect(bodyOf(exception!)['message']).toBe(message);
+    expect(bodyOf(exception!)['message']).not.toContain('package');
+  });
+
   it('names the id for a 4xx it has no wording for, rather than saying nothing', () => {
     const exception = toHttpException(new H5pError('some-future-error-id', {}, 403));
 
     expect(exception?.getStatus()).toBe(403);
     expect(bodyOf(exception!)['message']).toBe(
-      'The uploaded file could not be imported as an H5P package (some-future-error-id).',
+      'The H5P request could not be completed (some-future-error-id).',
     );
+    // It must not claim the caller uploaded anything: this mapper is now on the
+    // read paths too.
+    expect(bodyOf(exception!)['message']).not.toContain('uploaded');
   });
 
   it('answers a 5xx H5pError generically and keeps the debug message out of the body', () => {
@@ -95,7 +115,7 @@ describe('toHttpException', () => {
     expect(exception?.getStatus()).toBe(500);
     expect(JSON.stringify(bodyOf(exception!))).not.toContain('/tmp/');
     expect(bodyOf(exception!)['message']).toBe(
-      'The H5P package could not be imported because of a server error.',
+      'The H5P request could not be completed because of a server error.',
     );
   });
 

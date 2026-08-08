@@ -46,6 +46,48 @@ export const envSchema = z.object({
 
   /** Where H5P keeps its working files, relative to the app root. */
   H5P_TEMP_DIR: z.string().default('./h5p/temporary-storage'),
+
+  /**
+   * Where the API reads the H5P client libraries from, relative to the app
+   * root. `<dir>/core` and `<dir>/editor` are what the asset routes serve.
+   *
+   * `scripts/fetch-h5p-core.ts` writes `apps/api/h5p` and does not read this,
+   * because it runs from `postinstall` where the API's environment is not
+   * loaded. The default is the same directory; anything else has to be
+   * populated by hand.
+   */
+  H5P_ASSETS_DIR: z.string().default('./h5p'),
+
+  /**
+   * Base URL the H5P client uses to reach this API. Every asset URL in a player
+   * model is built from it.
+   *
+   * It must be **absolute** wherever the page's origin differs from the API's,
+   * which is every local development setup: the admin runs on :4200 and the API
+   * on :8080, so a relative `/api/h5p/core/js/h5p.js` in a model rendered at
+   * :4200 resolves against :4200 and 404s. In production both are behind one
+   * origin and the relative default is right.
+   */
+  H5P_BASE_URL: z.string().default('/api/h5p'),
+
+  /**
+   * How long a content or library file may deliver nothing at all before the
+   * API gives up on it and answers.
+   *
+   * A bucket that drops a connection part way through a body leaves the Cloud
+   * Storage read stream open and silent — no error, no end — so without a limit
+   * the response hangs for as long as the client will wait. It measures
+   * silence, not duration: any byte restarts the clock, and so does a client
+   * too slow to take them. Thirty seconds is far longer than a healthy read
+   * ever pauses for and far shorter than a browser's own patience.
+   *
+   * The floor is what stops a typo from becoming an outage: any value a healthy
+   * read can reach in a normal pause — a second of scheduling, a slow first
+   * byte from the bucket — would abort every response on the revision that set
+   * it, and it would do so uniformly, so it would not look like a bad value.
+   * A second is below anything worth configuring and above anything accidental.
+   */
+  H5P_STREAM_STALL_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(30_000),
 });
 
 export type Env = z.infer<typeof envSchema>;

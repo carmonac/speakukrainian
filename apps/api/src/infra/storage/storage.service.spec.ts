@@ -18,11 +18,35 @@ interface FakePage {
   prefixes?: string[];
 }
 
+/** The slice of the SDK's request options the service is allowed to change. */
+interface FakeRequestOptions {
+  uri: string;
+  maxRetries?: number;
+}
+
+interface FakeInterceptor {
+  request: (options: FakeRequestOptions) => FakeRequestOptions;
+}
+
+/** The request options a file's interceptors leave behind them. */
+function decorate(interceptors: FakeInterceptor[], path: string): FakeRequestOptions {
+  return interceptors.reduce<FakeRequestOptions>(
+    (decorated, interceptor) => interceptor.request(decorated),
+    { uri: path },
+  );
+}
+
 interface FakeBucket {
   /** Every `getFiles` query the service issued, in order. */
   queries: GetFilesOptions[];
   deleted: string[];
-  saved: { path: string; body: unknown; options: Record<string, unknown> }[];
+  saved: {
+    path: string;
+    body: unknown;
+    options: Record<string, unknown>;
+    /** The request options this write would have gone out with. */
+    request: FakeRequestOptions;
+  }[];
 }
 
 /**
@@ -34,26 +58,42 @@ interface FakeBucket {
 function fakeStorage(pages: FakePage[]): { storage: Storage; state: FakeBucket } {
   const state: FakeBucket = { queries: [], deleted: [], saved: [] };
 
-  const file = (path: string) => ({
-    delete: (): Promise<unknown[]> => {
-      state.deleted.push(path);
-      return Promise.resolve([]);
-    },
-    save: (body: unknown, options: Record<string, unknown>): Promise<void> => {
-      state.saved.push({ path, body, options });
-      return Promise.resolve();
-    },
-    exists: (): Promise<[boolean]> =>
-      Promise.resolve([pages.some((page) => page.objects.some((object) => object.name === path))]),
-    getMetadata: (): Promise<[FakeObject]> => {
-      const found = pages
-        .flatMap((page) => page.objects)
-        .find((object) => object.name === path) ?? { name: path };
-      return Promise.resolve([found]);
-    },
-    createReadStream: (options?: unknown): Readable =>
-      Readable.from([JSON.stringify({ path, options })]),
-  });
+  const file = (path: string) => {
+    const interceptors: FakeInterceptor[] = [];
+
+    return {
+      interceptors,
+      delete: (): Promise<unknown[]> => {
+        state.deleted.push(path);
+        return Promise.resolve([]);
+      },
+      save: (body: unknown, options: Record<string, unknown>): Promise<void> => {
+        state.saved.push({ path, body, options, request: decorate(interceptors, path) });
+        return Promise.resolve();
+      },
+      exists: (): Promise<[boolean]> =>
+        Promise.resolve([
+          pages.some((page) => page.objects.some((object) => object.name === path)),
+        ]),
+      getMetadata: (): Promise<[FakeObject]> => {
+        const found = pages
+          .flatMap((page) => page.objects)
+          .find((object) => object.name === path) ?? { name: path };
+        return Promise.resolve([found]);
+      },
+      createReadStream: (options?: unknown): Readable =>
+        Readable.from([
+          JSON.stringify({
+            path,
+            options,
+            // What the client would actually send, once this file's own
+            // interceptors have decorated the request — which is where the
+            // retry setting under test lives.
+            request: decorate(interceptors, path),
+          }),
+        ]),
+    };
+  };
 
   const bucket = {
     file,
@@ -280,28 +320,62 @@ describe('StorageService.put', () => {
 });
 
 describe('StorageService.createReadStream', () => {
+  interface RecordedRead {
+    path: string;
+    options?: { start?: number; end?: number };
+    request: FakeRequestOptions;
+  }
+
+  const read = async (
+    service: StorageService,
+    range?: { start?: number; end?: number },
+  ): Promise<RecordedRead> => {
+    const chunks: string[] = [];
+    for await (const chunk of service.createReadStream('a/x', range)) {
+      chunks.push(String(chunk));
+    }
+    return JSON.parse(chunks.join('')) as RecordedRead;
+  };
+
   it('passes a byte range through to the client', async () => {
     const { service } = createService();
 
-    const chunks: string[] = [];
-    for await (const chunk of service.createReadStream('a/x', { start: 10, end: 20 })) {
-      chunks.push(String(chunk));
-    }
+    const recorded = await read(service, { start: 10, end: 20 });
 
-    expect(JSON.parse(chunks.join(''))).toEqual({
-      path: 'a/x',
-      options: { start: 10, end: 20 },
-    });
+    expect(recorded.path).toBe('a/x');
+    expect(recorded.options).toEqual({ start: 10, end: 20 });
   });
 
   it('asks for the whole object when no range is given', async () => {
     const { service } = createService();
 
-    const chunks: string[] = [];
-    for await (const chunk of service.createReadStream('a/x')) {
-      chunks.push(String(chunk));
-    }
+    const recorded = await read(service);
 
-    expect(JSON.parse(chunks.join(''))).toEqual({ path: 'a/x' });
+    expect(recorded.options).toBeUndefined();
+  });
+
+  it('tells the client not to retry the read', async () => {
+    // Not a tuning choice. The SDK's retry of a read *stream* destroys the
+    // in-flight request and then pipes into it, which throws where nothing can
+    // catch it and takes the process down — so a read that asks for retries is
+    // a read that can kill the API. `test/h5p-storage-faults.e2e-spec.ts`
+    // drives the same property against a bucket that really answers 503.
+    const { service } = createService();
+
+    const recorded = await read(service);
+
+    expect(recorded.request.maxRetries).toBe(0);
+  });
+
+  it('leaves the retries on every other operation alone', async () => {
+    // The loss is scoped to the download. A `File` is built per call, so a
+    // write — the operation whose retries actually matter, because it is the
+    // one that has to survive a transient 5xx — keeps every one of them.
+    const { service, state } = createService();
+
+    await read(service);
+    await service.put('a/y', Buffer.from('bytes'));
+
+    expect(state.saved.map((write) => write.request.maxRetries)).toEqual([undefined]);
   });
 });

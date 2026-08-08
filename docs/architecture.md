@@ -155,6 +155,57 @@ deletes objects in bulk, so the Cloud Run service account needs `roles/storage.o
 (or `objectViewer` + `objectCreator` + `objectUser`), not merely create-and-read.
 fake-gcs-server has no permissions model, so no local test can catch a missing grant.
 
+_Client assets._ Joubel's browser-side core and editor are **not** shipped by
+`@lumieducation/h5p-server`; they are two separate repositories that npm does not carry.
+`scripts/fetch-h5p-core.ts` downloads them from two pinned **commits** — the repositories' tags
+are WordPress `wp-*` release tags that do not track the `h5pVersion` the library reports — and
+verifies a sha256 over the _extracted tree_ rather than over the archive, because GitHub's
+`codeload` zips are not byte-stable across re-encodings. It runs from the root `postinstall` and
+from the API Dockerfile, and the trees are never committed. A download that does not happen is a
+warning and exit 0, so `pnpm install` works offline; bytes that are _wrong_ always exit 1, and
+`--require` (which the Dockerfile passes) collapses the first case into the second. The root
+`postinstall` also skips when the script itself is not on disk: pnpm runs the root project's
+lifecycle scripts even under `--filter`, so it fires inside the admin and web images too, whose
+build context is package manifests and nothing else — and neither of them has anything to do with
+H5P. The API image, which does, opts in by copying the script and then re-running it with
+`--require`, so a skip there is still a failed build. Assets that
+are missing at boot are a `WARN` and a 503 from `GET /api/h5p/core/*` and
+`GET /api/h5p/editor-assets/*`, never a crash — the rest of the API has nothing to do with H5P.
+
+_Base URL._ Every asset URL in a player model is generated from `H5P_BASE_URL`. It must be
+**absolute** wherever the page's origin differs from the API's, which is every local development
+setup: the admin runs on :4200 and a relative `/api/h5p/core/js/h5p.js` resolves against :4200 and
+404s. In production both are one origin and the relative default is correct. `editorLibraryUrl` is
+overridden to `/editor-assets` because its default, `/editor`, is where the editor _model_ route
+goes — two different things one line apart in the URL space, and the collision would be silent.
+
+_Player language._ `GET /api/h5p/play/:contentId` accepts `?lang`, and **the player's own chrome
+renders in English whatever is asked for** — including `uk`. `H5PPlayer` localizes its labels
+through a `translationCallback`; `h5p.module.ts` passes none, so the constructor's English-only
+default is what runs. That is recorded here rather than fixed because fixing it is not a wiring
+change: `@lumieducation/h5p-server` ships client translations for 29 locales and **Ukrainian is not
+one of them** (nor is it among the 28 server-side ones), so wiring the callback would get `es` for
+free and still render English for this product's own language, which needs strings we write and
+then maintain. The parameter is accepted and threaded through so that doing it later changes the
+module and not the route or its callers. Exercise _content_ is unaffected — that comes out of the
+uploaded package. The e2e suite pins the English chrome, so the day a callback is wired the test
+that fails is the one that says so.
+
+_Who may read H5P content._ `GET /api/h5p/play/:contentId` and `GET /api/h5p/content/:contentId/*`
+are `@Public()`. **What protects them is the unguessable id, not publication state**, and that is a
+decision rather than an oversight: `h5pContentSchema` has no published/draft field, and
+`h5pContent.pageId` is written as `null` and never set, so "is this exercise on a published page?"
+is not answerable from the data today. Content ids are `randomUUID()`, no public route enumerates
+them, and the player model exposes only the content asked for. An unpublished exercise is
+reachable by anyone who already knows its id — which, until a published page links one, is only
+its author.
+
+The invariant this places on future work: **any route that lists or searches `h5pContent` must be
+role-guarded, or must filter by the publication state of the page that references it.** A stronger
+guarantee than that would need `h5pContent.pageId` to be populated plus the page's `status`, and
+would cost a Firestore read per _content file_ request — per image and per audio clip — so it
+needs a cache and is not something to add casually.
+
 ### ADR-008 — The API is ESM
 
 _Why:_ `packages/shared` is ESM, and CommonJS consuming it would need a dual build. TypeScript

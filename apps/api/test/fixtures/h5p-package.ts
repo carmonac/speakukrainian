@@ -39,12 +39,24 @@ export const DEP_LIBRARY_DIR = 'SpeakTest.Dep-1.0';
 /** The one content file in the package, exercising `addFile` and `listFiles`. */
 export const CONTENT_FILE = 'media/clip.txt';
 
+/** Where `PackageOptions.mediaBytes` lands, once the `content/` prefix is stripped. */
+export const MEDIA_FILE = 'media/tone.mp3';
+
 export interface PackageOptions {
   /** Patch version written into both libraries' `library.json`. */
   patchVersion?: number;
   title?: string;
   /** Builds a zip with no `h5p.json`, which the validator must reject. */
   omitH5pJson?: boolean;
+  /**
+   * Adds `content/media/tone.mp3` with these bytes.
+   *
+   * The existing content file is 35 bytes, which a range test cannot say
+   * anything with: a server that buffered the whole object and sliced it
+   * afterwards would answer identically. `mp3` is on
+   * `H5PConfig.contentWhitelist`, so the package still validates.
+   */
+  mediaBytes?: Buffer;
 }
 
 function packageEntries(options: PackageOptions = {}): RawZipEntry[] {
@@ -98,6 +110,10 @@ function packageEntries(options: PackageOptions = {}): RawZipEntry[] {
     },
     { name: `${DEP_LIBRARY_DIR}/dep.js`, content: 'window.SpeakTestDep = {};\n' },
   );
+
+  if (options.mediaBytes) {
+    entries.push({ name: `content/${MEDIA_FILE}`, content: options.mediaBytes });
+  }
 
   return entries;
 }

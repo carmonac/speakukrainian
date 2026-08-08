@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -59,11 +59,18 @@ function createRepositorySpy(failWith?: Error): RepositorySpy {
  */
 function createEditor(
   contentStorage: H5pContentStorage,
-  behaviour: { contentId?: string; metadata?: IContentMetadata; throws?: unknown } = {},
+  behaviour: {
+    contentId?: string;
+    metadata?: IContentMetadata;
+    throws?: unknown;
+    /** Runs after the scan and before the index write, like the real importer. */
+    onImport?: (path: string) => Promise<void>;
+  } = {},
 ): H5PEditor {
   return {
     packageImporter: {
-      addPackageLibrariesAndContent: async (_path: string, user: IUser) => {
+      addPackageLibrariesAndContent: async (path: string, user: IUser) => {
+        await behaviour.onImport?.(path);
         if (behaviour.throws) {
           throw behaviour.throws;
         }
@@ -180,6 +187,34 @@ describe('H5pService.importPackage', () => {
 
     // Multer does not clean up after a successful request.
     await expect(access(uploaded.path)).rejects.toThrow();
+  });
+
+  it('still returns the saved content when the uploaded file cannot be deleted', async () => {
+    // Cleanup is best effort. An import that succeeded and wrote its index
+    // document must not be reported as a 500 because an unlink failed: the
+    // caller would then treat a real, indexed content as failed, and until #32
+    // there is no route that could find or remove it.
+    //
+    // The failure is produced by replacing the uploaded file with a directory
+    // once the importer has read it, which is an `ERR_FS_EISDIR` that
+    // `force: true` does not swallow.
+    const { repository, created } = createRepositorySpy();
+    const service = new H5pService(
+      createEditor(contentStorage, {
+        onImport: async (path) => {
+          await rm(path);
+          await mkdir(path);
+        },
+      }),
+      contentStorage,
+      repository,
+      storage.asStorageService(),
+    );
+
+    await expect(service.importPackage(uploaded, 'editor-1')).resolves.toMatchObject({
+      contentId: 'installed-content',
+    });
+    expect(created).toHaveLength(1);
   });
 
   it('deletes the uploaded file when the import fails too', async () => {

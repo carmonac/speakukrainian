@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "seed:admin": "node --env-file-if-exists=../.env seed-admin.ts",
+    "h5p:fetch": "node fetch-h5p-core.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run"
@@ -12,7 +13,8 @@
   "dependencies": {
     "@google-cloud/firestore": "^8.7.0",
     "@speakukrainian/shared": "workspace:*",
-    "firebase-admin": "^13.6.0"
+    "firebase-admin": "^13.6.0",
+    "yauzl-promise": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

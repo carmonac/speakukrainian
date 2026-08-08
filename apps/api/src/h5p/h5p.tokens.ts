@@ -5,6 +5,7 @@
  * provides it sits in its temporal dead zone by the time a service imports it,
  * and the app crashes at boot with `Cannot access 'X' before initialization`.
  */
+export const H5P_AJAX_ENDPOINT = Symbol('H5P_AJAX_ENDPOINT');
 export const H5P_CONFIG = Symbol('H5P_CONFIG');
 export const H5P_EDITOR = Symbol('H5P_EDITOR');
 export const H5P_PLAYER = Symbol('H5P_PLAYER');
