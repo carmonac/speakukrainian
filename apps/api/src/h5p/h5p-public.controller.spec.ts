@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { BadRequestException, HttpException, Logger } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Env } from '../config/configuration.js';
 import { H5pPublicController } from './h5p-public.controller.js';
 import type { ContentFileResult, H5pServeService, LibraryFileResult } from './h5p-serve.service.js';
 import {
@@ -128,7 +130,13 @@ async function createHarness(): Promise<Harness> {
     }) as unknown as Response['sendFile'];
   };
 
-  const controller = new H5pPublicController(serve, assets);
+  // Long enough that no test here can trip the stalled-read watchdog by
+  // accident; `h5p.responses.spec.ts` is where that timer is driven.
+  const config = {
+    get: (): number => 60_000,
+  } as unknown as ConfigService<Env, true>;
+
+  const controller = new H5pPublicController(serve, assets, config);
   const app = express();
 
   app.get('/h5p/content/:contentId/*path', (req: Request, res: Response, next: NextFunction) => {
@@ -350,6 +358,22 @@ describe('H5pPublicController', () => {
       // The cause and the file, because neither alone is enough to act on.
       expect(logged[0]).toContain('EACCES: permission denied');
       expect(logged[0]).toContain('js/h5p.js');
+    });
+
+    it('answers 500 and logs for a failure that never came from send at all', async () => {
+      // `send` puts a `status` on everything it raises, so an error without one
+      // was thrown by something else — the case with no diagnosis of its own,
+      // and the one that must not be filed as a missing file.
+      const errors = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      harness.failAssetSendWith(new Error('the callback threw'));
+
+      const response = await request(harness.app).get('/h5p/core/js/h5p.js');
+
+      expect(response.status).toBe(500);
+      expect(escapedMessage(harness.escaped())).toContain('could not be read');
+      expect(errors.mock.calls.map(([message]) => String(message))[0]).toContain(
+        'the callback threw',
+      );
     });
 
     it('answers 404 without logging when send refuses the request itself', async () => {
