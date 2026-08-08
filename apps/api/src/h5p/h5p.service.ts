@@ -83,8 +83,16 @@ export class H5pService {
       throw error;
     } finally {
       // Multer does not clean up after a successful request, and the container
-      // filesystem is not ours to litter.
-      await rm(file.path, { force: true });
+      // filesystem is not ours to litter. Best-effort on purpose: `force: true`
+      // covers ENOENT, but any other fs failure here would replace the outcome
+      // of the whole import — an upload that succeeded and wrote its index
+      // document would answer 500, and the caller would treat a real, indexed
+      // content as failed with no route able to find or remove it.
+      await rm(file.path, { force: true }).catch((error: unknown) =>
+        this.logger.warn(
+          `Could not remove the uploaded package at ${file.path}: ${messageOf(error)}`,
+        ),
+      );
     }
   }
 }
@@ -97,6 +105,10 @@ export class H5pService {
  * malformed but reachable, and the machine name alone is more useful to an
  * admin than a thrown error at the end of a successful install.
  */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function mainLibraryUberName(metadata: IContentMetadata): string {
   const dependency = metadata.preloadedDependencies?.find(
     (library) => library.machineName === metadata.mainLibrary,
