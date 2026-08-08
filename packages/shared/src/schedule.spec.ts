@@ -83,6 +83,20 @@ describe('updateScheduleSlotSchema', () => {
     });
   });
 
+  it('refuses to book a slot through the generic patch', () => {
+    const result = updateScheduleSlotSchema.safeParse({ status: 'booked' });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['status']);
+    expect(result.error?.issues[0]?.message).toContain('Phase 2');
+  });
+
+  it('still accepts the statuses an admin owns', () => {
+    for (const status of ['open', 'cancelled', 'completed'] as const) {
+      expect(updateScheduleSlotSchema.parse({ status })).toEqual({ status });
+    }
+  });
+
   it('refuses a time zone the runtime cannot resolve', () => {
     const result = updateScheduleSlotSchema.safeParse({ timeZone: 'Not/AZone' });
 

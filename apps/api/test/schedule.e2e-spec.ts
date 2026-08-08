@@ -320,6 +320,23 @@ describe('schedule slots (e2e)', () => {
     );
   });
 
+  it('refuses to book a slot through the generic patch', async () => {
+    // Booking is Phase 2. Accepting it here would store a slot that reads as
+    // booked with no learner attached, blocking its window for nobody.
+    const slot = await createOne('patch-booked', {
+      startsAt: '2026-05-21T09:00:00Z',
+      endsAt: '2026-05-21T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    });
+
+    const response = await patch(slot.id, { status: 'booked' }).expect(400);
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('status');
+
+    const reread = scheduleSlotSchema.parse((await read(slot.id).expect(200)).body);
+    expect(reread.status).toBe('open');
+    expect(reread.bookedBy).toBeNull();
+  });
+
   it('refuses a slot overlapping an open slot of the same owner', async () => {
     await createOne('overlap', {
       startsAt: '2026-05-07T09:00:00Z',

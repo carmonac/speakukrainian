@@ -89,10 +89,21 @@ export const createScheduleSlotSchema = z.object({
 });
 export type CreateScheduleSlotInput = z.infer<typeof createScheduleSlotSchema>;
 
+/**
+ * `booked` is not a status a patch may set. Booking is Phase 2 and will own
+ * `bookedBy`/`bookedAt` alongside the status; letting the generic patch set it
+ * on its own stores a slot that reads as booked with nobody attached, which
+ * blocks overlap and contradicts `scheduleSlotSchema`'s own promise about
+ * `bookedBy`. Phase 2 replaces this with a booking route, not with a wider enum.
+ */
+export const patchableSlotStatusSchema = slotStatusSchema.exclude(['booked'], {
+  error: 'Booking is Phase 2 — `booked` cannot be set through this route',
+});
+
 export const updateScheduleSlotSchema = createScheduleSlotSchema
   .partial()
   .omit({ recurrence: true })
-  .extend({ status: slotStatusSchema.optional() });
+  .extend({ status: patchableSlotStatusSchema.optional() });
 export type UpdateScheduleSlotInput = z.infer<typeof updateScheduleSlotSchema>;
 
 /**
