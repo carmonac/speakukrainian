@@ -12,10 +12,10 @@ import { BaseRepository, deepConvertTimestamps } from '../infra/firestore/base.r
 import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
 import {
   MAX_SLOT_DURATION_HOURS,
-  MAX_SLOT_DURATION_MS,
   exceedsMaxDuration,
   firstStoredOverlap,
   toInstant,
+  windowLowerBound,
   type SlotDraft,
 } from './schedule.rules.js';
 
@@ -170,10 +170,9 @@ export class ScheduleSlotsRepository extends BaseRepository<ScheduleSlot> {
   /**
    * Slots intersecting `[from, to)`, which is not the same set as slots
    * *starting* in it: one that began before `from` and runs into it intersects
-   * too. Firestore takes an inequality on one field only, so the query's lower
-   * bound is widened by the maximum slot duration and the ones that really do
-   * end before `from` are dropped in memory. That widening is exactly as sound
-   * as {@link MAX_SLOT_DURATION_HOURS} is enforced.
+   * too. The query therefore starts at {@link windowLowerBound}, which is sound
+   * exactly as far as {@link MAX_SLOT_DURATION_HOURS} is enforced, and the slots
+   * that really do end before `from` are dropped in memory.
    *
    * `status` stays in the query rather than the filter because it has an index
    * — `scheduleSlots (status ASC, startsAt ASC)`.
@@ -187,7 +186,7 @@ export class ScheduleSlotsRepository extends BaseRepository<ScheduleSlot> {
       scoped = scoped.where('status', '==', query.status);
     }
     const snapshot = await scoped
-      .where('startsAt', '>=', new Date(Date.parse(from) - MAX_SLOT_DURATION_MS).toISOString())
+      .where('startsAt', '>=', windowLowerBound(from))
       .where('startsAt', '<', to)
       .orderBy('startsAt')
       .limit(MAX_LIST_SLOTS + 1)
@@ -331,9 +330,9 @@ export class ScheduleSlotsRepository extends BaseRepository<ScheduleSlot> {
    * The lower bound is the part that is easy to get wrong. `startsAt < maxEnd`
    * alone matches everything back to 1970, and a lower bound of `minStart`
    * would miss a stored slot that started before the window and ends inside it.
-   * Subtracting {@link MAX_SLOT_DURATION_MS} is complete only because no slot
-   * may be longer than that — the cap is what makes a single-field range query
-   * answer this question at all.
+   * {@link windowLowerBound} is what makes a single-field range query answer
+   * this question at all, and it is complete only because of the duration cap
+   * its doc names.
    *
    * Known limitation: a document hand-written with a longer duration is
    * invisible here. A second inequality on `endsAt` cannot express the OR
@@ -359,7 +358,7 @@ export class ScheduleSlotsRepository extends BaseRepository<ScheduleSlot> {
 
     const query = this.collection
       .where('ownerId', '==', ownerId)
-      .where('startsAt', '>=', new Date(Date.parse(minStart) - MAX_SLOT_DURATION_MS).toISOString())
+      .where('startsAt', '>=', windowLowerBound(minStart))
       .where('startsAt', '<', maxEnd)
       .orderBy('startsAt')
       .limit(MAX_OVERLAP_WINDOW_SLOTS + 1);

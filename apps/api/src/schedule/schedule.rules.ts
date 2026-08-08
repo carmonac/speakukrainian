@@ -44,6 +44,22 @@ export function toInstant(iso: string): string {
   return new Date(iso).toISOString();
 }
 
+/**
+ * The lower bound of a `startsAt` range read that has to catch slots which
+ * began before the window and run into it.
+ *
+ * Firestore takes an inequality on one field only, so both range reads — the
+ * overlap window and the list — filter on `startsAt` and widen the bound by
+ * exactly {@link MAX_SLOT_DURATION_MS}. That widening is complete **only
+ * because** no slot may be longer than {@link MAX_SLOT_DURATION_HOURS}: a slot
+ * overlapping the window must then have started no earlier than this. The two
+ * reads rest on the same argument, so they take the same bound from here —
+ * changing the cap has to move both or neither.
+ */
+export function windowLowerBound(instant: string): string {
+  return new Date(Date.parse(instant) - MAX_SLOT_DURATION_MS).toISOString();
+}
+
 /** Half-open `[startsAt, endsAt)`: 09:00-10:00 and 10:00-11:00 are back-to-back, not overlapping. */
 export function overlaps(a: SlotDraft, b: SlotDraft): boolean {
   return a.startsAt < b.endsAt && b.startsAt < a.endsAt;

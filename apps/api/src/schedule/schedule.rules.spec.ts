@@ -9,6 +9,7 @@ import {
   firstStoredOverlap,
   overlaps,
   toInstant,
+  windowLowerBound,
   type SlotDraft,
 } from './schedule.rules.js';
 
@@ -47,6 +48,20 @@ describe('toInstant', () => {
     expect(toInstant('2026-03-30T09:00:00+02:00')).toBe('2026-03-30T07:00:00.000Z');
     expect(toInstant('2026-03-30T07:00:00Z')).toBe('2026-03-30T07:00:00.000Z');
     expect(toInstant('2026-03-30T07:00:00.000Z')).toBe('2026-03-30T07:00:00.000Z');
+  });
+});
+
+describe('windowLowerBound', () => {
+  it('reaches back exactly one maximum slot duration, normalised', () => {
+    // Both range reads take their lower bound from here, and the bound is only
+    // complete if it reaches back the whole cap: a slot starting a millisecond
+    // later than this and running the full 24 hours still touches the window.
+    const start = '2026-09-07T09:00:00.000Z';
+
+    expect(Date.parse(start) - Date.parse(windowLowerBound(start))).toBe(MAX_SLOT_DURATION_MS);
+    // The bound is used as a query bound, so it has to be normalised like the
+    // stored values it is compared against — an offset spelling sorts elsewhere.
+    expect(windowLowerBound('2026-09-07T11:00:00+02:00')).toBe('2026-09-06T09:00:00.000Z');
   });
 });
 
