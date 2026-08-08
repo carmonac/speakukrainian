@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ScheduleSlot } from '@speakukrainian/shared';
 import {
   MAX_RECURRENCE_SLOTS,
@@ -270,17 +270,25 @@ describe('expandRecurrence', () => {
   });
 
   it('refuses a far-future `until` without walking to it', () => {
-    const started = Date.now();
+    // Every day the walk visits costs a fixed handful of `Intl` reads, so this
+    // counter *is* the number of days walked. A wall-clock bound could not tell
+    // the two implementations apart: 18 000 formats finish inside a second on a
+    // fast machine, and the assertion would pass against the bug it is aimed at.
+    const formatToParts = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
 
-    const result = expandRecurrence(anchorAt('2026-09-07T07:00:00.000Z'), {
-      frequency: 'weekly',
-      daysOfWeek: [1, 3],
-      until: '2076-09-07T00:00:00Z',
-    });
+    try {
+      const result = expandRecurrence(anchorAt('2026-09-07T07:00:00.000Z'), {
+        frequency: 'weekly',
+        daysOfWeek: [1, 3],
+        until: '2076-09-07T00:00:00Z',
+      });
 
-    expect(result).toEqual({ ok: false, reason: 'cap-exceeded' });
-    // A walk that ran to `until` instead of stopping at the cap takes 18 000
-    // iterations of `Intl` formatting; this bounds it well below that.
-    expect(Date.now() - started).toBeLessThan(2_000);
+      expect(result).toEqual({ ok: false, reason: 'cap-exceeded' });
+      // Two weekdays reach the 200-slot cap in about 100 weeks — ~700 days and
+      // ~2 100 reads. Walking to 2076 is ~18 260 days and ~55 000 reads.
+      expect(formatToParts.mock.calls.length).toBeLessThan(5_000);
+    } finally {
+      formatToParts.mockRestore();
+    }
   });
 });
