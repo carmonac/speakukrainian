@@ -52,8 +52,16 @@ export function resolvableTimeZoneCacheSize(): number {
  */
 const ZONE_NAME_START = /^[A-Za-z]/;
 
+/**
+ * Says what the value must be rather than what it was taken for. The rule
+ * refuses everything that is not a zone name, so the likeliest real trigger is a
+ * copy-paste with a leading space, and an earlier wording told that admin their
+ * value was a fixed offset that never observes DST. Choosing between two
+ * messages would mean asking `Intl` about a value on the path that refused it,
+ * which is the shape of bug this field already has one rule against.
+ */
 const NOT_A_ZONE_NAME =
-  'A time zone must be an IANA name such as `Europe/Madrid`; a fixed offset is refused because it never observes DST';
+  'A time zone must be an IANA name such as `Europe/Madrid`; anything else — a fixed offset included, because an offset never observes DST — is refused';
 
 const UNRESOLVABLE_ZONE = 'Unknown IANA time zone — use a name such as `Europe/Madrid`';
 
