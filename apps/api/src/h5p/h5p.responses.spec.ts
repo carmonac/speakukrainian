@@ -144,10 +144,11 @@ describe('rangeCallbackFor', () => {
     expect(error.errorId).toBe('h5p-range:multipart');
   });
 
-  it('refuses a unit that is not bytes', () => {
-    const error = thrownBy(() => rangeCallbackFor(requestWithRange('items=0-9'))(100));
-
-    expect(error.errorId).toBe('h5p-range:multipart');
+  it('serves the whole file for a unit it does not implement', () => {
+    // RFC 9110 §14.2: an unrecognised range unit is ignored. Refusing it would
+    // also have to explain itself, and the only sentence to hand says the
+    // caller asked for two ranges, which they did not.
+    expect(rangeCallbackFor(requestWithRange('items=0-9'))(100)).toBeUndefined();
   });
 });
 

@@ -12,9 +12,12 @@ export type RangeCallback = (fileSize: number) => { start: number; end: number }
  * which is right for JSON that only the admin reads and fatal for these: the
  * admin runs on :4200 and the API on :8080, so a browser refuses every
  * `<script>`, `<link>`, `<img>` and `<audio>` load from here — 200 in a test
- * client, blocked in Chrome. These five routes are the only ones that serve
- * subresources to another origin, so the override lives here rather than in
- * `main.ts`, where it would relax the whole API.
+ * client, blocked in Chrome. Only four routes serve subresources to another
+ * origin — content files, library files, and the core and editor client trees,
+ * which set the same header through `res.sendFile` — so the override lives here
+ * rather than in `main.ts`, where it would relax the whole API. `play` is not
+ * one of them: it is JSON the admin reads with a CORS `fetch`, and it keeps
+ * helmet's `same-origin`.
  */
 const CROSS_ORIGIN_HEADERS: Record<string, string> = {
   'Cross-Origin-Resource-Policy': 'cross-origin',
@@ -63,7 +66,14 @@ export function rangeCallbackFor(req: Request): RangeCallback {
     if (parsed === -2) {
       throw new H5pError('h5p-range:malformed', {}, 400);
     }
-    if (parsed.type !== 'bytes' || parsed.length !== 1) {
+    // A range unit this server does not implement is ignored and the whole
+    // representation served, which is what RFC 9110 §14.2 requires. Refusing it
+    // would also mean answering `Range: items=0-9` with a sentence about
+    // multiple ranges, which describes a mistake the caller did not make.
+    if (parsed.type !== 'bytes') {
+      return undefined;
+    }
+    if (parsed.length !== 1) {
       // Answering a multi-range request needs a `multipart/byteranges` body.
       // Nothing H5P serves needs one, and a wrong single-range answer to it
       // would be silently corrupt data rather than an error.
