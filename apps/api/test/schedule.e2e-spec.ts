@@ -40,6 +40,30 @@ const tag = (label: string): Record<string, string> => ({ [TAG_LOCALE]: `${PREFI
 /** The field path the purge ranges over: the tag locale's entry in the map. */
 const TAG_PATH = `note.${TAG_LOCALE}`;
 
+/**
+ * Refuses to send a body the purge could not find afterwards.
+ *
+ * The purge ranges over `note.<TAG_LOCALE>` for values under `PREFIX`, and
+ * Firestore indexes a map one key at a time — a fixture tagged under another
+ * locale, tagged with some other string, or not tagged at all, survives
+ * teardown and sits in a site-wide collection for every later run's range
+ * assertions to trip over. That is the leak #14 was filed against. Every
+ * successful `post` goes through `tag()` today; this makes that a property of
+ * the suite rather than of each new call site remembering.
+ */
+const assertTagged = (body: object): void => {
+  const note: unknown = (body as { note?: unknown }).note;
+  const tagged =
+    typeof note === 'object' && note !== null
+      ? (note as Record<string, unknown>)[TAG_LOCALE]
+      : undefined;
+  if (typeof tagged !== 'string' || !tagged.startsWith(PREFIX)) {
+    throw new Error(
+      `This suite may only post slots carrying ${TAG_PATH} under "${PREFIX}" — use tag(). Got ${JSON.stringify(note)}`,
+    );
+  }
+};
+
 /** Bounds each purge read the way the repository bounds every other read. */
 const PURGE_LIMIT = 1000;
 
@@ -106,8 +130,13 @@ describe('schedule slots (e2e)', () => {
   const server = (): ReturnType<INestApplication['getHttpServer']> => app.getHttpServer();
   const bearer = (user: TestUser): string => `Bearer ${user.idToken}`;
 
-  const post = (body: object, user: () => TestUser = () => admin): request.Test =>
-    request(server()).post('/api/schedule/slots').set('Authorization', bearer(user())).send(body);
+  const post = (body: object, user: () => TestUser = () => admin): request.Test => {
+    assertTagged(body);
+    return request(server())
+      .post('/api/schedule/slots')
+      .set('Authorization', bearer(user()))
+      .send(body);
+  };
 
   /** Every fixture carries the suite's tag unless the case overrides `note`. */
   const create = async (
@@ -807,6 +836,33 @@ describe('schedule slots (e2e)', () => {
     await request(server())
       .get('/api/schedule/slots?from=2026-08-10T00:00:00Z&to=2026-08-11T00:00:00Z')
       .expect(401);
+  });
+
+  it('refuses to post a fixture its own purge could not find', async () => {
+    // Each of these would create a slot the teardown range over `note.en` never
+    // sees, so it would stay in the site-wide collection and turn up inside a
+    // later run's range assertions. None is sent: the guard runs before the
+    // request is built.
+    const window = {
+      startsAt: '2026-12-21T09:00:00Z',
+      endsAt: '2026-12-21T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    };
+
+    // Tagged, but under a locale the purge does not index.
+    expect(() => post({ ...window, note: { uk: `${PREFIX}/untagged` } })).toThrow(TAG_PATH);
+    // The tag locale, but outside the prefix range the purge sweeps.
+    expect(() => post({ ...window, note: { [TAG_LOCALE]: 'unprefixed' } })).toThrow(PREFIX);
+    // No note at all.
+    expect(() => post(window)).toThrow(TAG_PATH);
+
+    // Refused before the wire, not after: nothing reached the collection.
+    const written = await firestore
+      .collection(COLLECTIONS.scheduleSlots)
+      .where('startsAt', '==', '2026-12-21T09:00:00.000Z')
+      .limit(1)
+      .get();
+    expect(written.empty).toBe(true);
   });
 
   it('finds and deletes its own fixtures in a collection holding more than one purge page', async () => {
