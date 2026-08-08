@@ -201,9 +201,13 @@ export class StorageService {
    * The SDK types this as the wider `NodeJS.ReadableStream`, but it genuinely
    * returns a `Readable` and H5P's `IContentStorage.getFileStream` requires
    * one; narrowing here keeps the cast out of the adapters.
+   *
+   * **Retries are switched off for this one request, and that is deliberate.**
+   * See `withoutStreamRetries`.
    */
   createReadStream(path: string, range?: { start?: number; end?: number }): Readable {
-    return this.bucket.file(path).createReadStream(range ? { ...range } : undefined);
+    const file = withoutStreamRetries(this.bucket.file(path));
+    return file.createReadStream(range ? { ...range } : undefined);
   }
 
   /**
@@ -260,4 +264,62 @@ export class StorageService {
 /** Epoch when the object predates the field, so callers never see `Invalid Date`. */
 function createdAtOf(timeCreated: string | undefined): Date {
   return timeCreated ? new Date(timeCreated) : new Date(0);
+}
+
+/**
+ * Turns off the SDK's retry loop for the requests made through this one `File`.
+ *
+ * **Not a tuning choice — the SDK's retry of a read *stream* kills the
+ * process.** When the bucket answers a media GET with a retryable status (any
+ * 5xx, or 429), `retry-request` destroys the in-flight request stream to start
+ * the next attempt, and `teeny-request` then runs
+ * `pipeline(responseStream, requestStream)` into that now-destroyed stream from
+ * inside its own `response` listener. Node throws `ERR_STREAM_UNABLE_TO_PIPE`
+ * there, inside a promise callback nothing awaits, so it surfaces as an
+ * unhandled rejection and takes the API down — every route, not just this read.
+ * A 403 or a reset connection is fine, because neither is retryable; a routine
+ * transient 503 on one `<audio>` fetch is not.
+ *
+ * `maxRetries: 0` on the request options is what `nodejs-common`'s `makeRequest`
+ * reads to size both `retries` and `noResponseRetries`, and an interceptor is
+ * the only seam that reaches the options `File.createReadStream` builds for
+ * itself. Scoped to this `File` — a fresh one per call — so uploads, metadata
+ * reads, listings and deletes keep every retry the SDK gives them; only the
+ * download loses one.
+ *
+ * **What that costs.** A read that would have been retried transparently now
+ * surfaces as an error on the stream, which the H5P routes answer with a logged
+ * 500. It is a narrow loss: `retry-request` can only retry a stream *before* the
+ * response arrives, so nothing that had already delivered bytes was ever
+ * recoverable, and the caller here is a browser fetching a subresource — it
+ * re-requests on its own. A dead process recovers nothing.
+ *
+ * The end-to-end proof is `test/h5p-storage-faults.e2e-spec.ts`, which points
+ * the client at a stub that answers 503; without this the suite does not fail,
+ * it dies.
+ */
+function withoutStreamRetries(file: File): File {
+  file.interceptors.push({
+    request: (options: RetryableRequestOptions): RetryableRequestOptions => ({
+      ...options,
+      maxRetries: 0,
+    }),
+  });
+  return file;
+}
+
+/**
+ * The part of a request's options this interceptor is about.
+ *
+ * The SDK declares `Interceptor.request` over the `request` library's whole
+ * option union and returns a narrower type of its own that the package does not
+ * export, so neither end of the real signature can be named from here. Every
+ * options object that reaches an interceptor has already been through
+ * `Service.request_`, which sets `uri` before running them, so this describes
+ * the value it is actually handed.
+ */
+interface RetryableRequestOptions {
+  uri: string;
+  /** What `nodejs-common`'s `makeRequest` reads for both of its retry counters. */
+  maxRetries?: number;
 }
