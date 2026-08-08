@@ -163,7 +163,12 @@ verifies a sha256 over the _extracted tree_ rather than over the archive, becaus
 `codeload` zips are not byte-stable across re-encodings. It runs from the root `postinstall` and
 from the API Dockerfile, and the trees are never committed. A download that does not happen is a
 warning and exit 0, so `pnpm install` works offline; bytes that are _wrong_ always exit 1, and
-`--require` (which the Dockerfile passes) collapses the first case into the second. Assets that
+`--require` (which the Dockerfile passes) collapses the first case into the second. The root
+`postinstall` also skips when the script itself is not on disk: pnpm runs the root project's
+lifecycle scripts even under `--filter`, so it fires inside the admin and web images too, whose
+build context is package manifests and nothing else — and neither of them has anything to do with
+H5P. The API image, which does, opts in by copying the script and then re-running it with
+`--require`, so a skip there is still a failed build. Assets that
 are missing at boot are a `WARN` and a 503 from `GET /api/h5p/core/*` and
 `GET /api/h5p/editor-assets/*`, never a crash — the rest of the API has nothing to do with H5P.
 

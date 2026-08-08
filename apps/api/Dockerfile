@@ -16,10 +16,12 @@ COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
 COPY scripts/package.json scripts/
 # The root `postinstall` fetches the H5P client libraries, and pnpm runs the
-# root project's lifecycle scripts even under `--filter` — so the script has to
-# be in the context before the install, or every build fails on a missing file.
-# It also means the download is cached with this layer, which is what we want:
-# the pinned commits change far less often than the sources do.
+# root project's lifecycle scripts even under `--filter`. It skips when this
+# file is not in the context — which is what lets the admin and web images
+# install their subset of the workspace without it — so copying it here is how
+# *this* image opts into the fetch, and it puts the download in this cached
+# layer, which is what we want: the pinned commits change far less often than
+# the sources do.
 COPY scripts/fetch-h5p-core.ts scripts/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile \
@@ -34,6 +36,10 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 # warnings — so this stage runs the same script with `--require`, which turns
 # the offline case into a non-zero exit. When the assets are already there from
 # the layer above it is a no-op.
+#
+# It is also what stands between this image and a *silently* skipped fetch: drop
+# the COPY above and the postinstall says so and carries on, but this line then
+# fails on the missing file.
 FROM deps AS h5p-assets
 RUN node scripts/fetch-h5p-core.ts --require
 

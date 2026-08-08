@@ -13,7 +13,7 @@
     "test": "turbo run test",
     "test:e2e": "turbo run test:e2e",
     "typecheck": "turbo run typecheck",
-    "postinstall": "node scripts/fetch-h5p-core.ts",
+    "postinstall": "node -e \"const f='scripts/fetch-h5p-core.ts';const fs=require('node:fs');if(fs.existsSync(f)){process.exit(require('node:child_process').spawnSync(process.execPath,[f],{stdio:'inherit'}).status??1)}console.log('Skipping the H5P client asset fetch: '+f+' is not part of this install.')\"",
     "h5p:fetch": "pnpm --filter @speakukrainian/scripts run h5p:fetch",
     "format": "prettier --write \"**/*.{ts,html,scss,json,md,mjs,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,html,scss,json,md,mjs,yml,yaml}\"",
