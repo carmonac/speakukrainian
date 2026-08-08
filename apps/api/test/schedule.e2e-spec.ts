@@ -269,6 +269,57 @@ describe('schedule slots (e2e)', () => {
     expect(body.errors?.[0]?.path).toBe('endsAt');
   });
 
+  it.each([
+    ['a zone that does not exist', 'Mars/Olympus'],
+    ['a zone-shaped string', 'Not/AZone'],
+    ['a blank zone', ' '],
+  ])('refuses %s on a single slot and stores nothing', async (_name, timeZone) => {
+    const response = await post({
+      note: `${PREFIX}/bad-zone`,
+      startsAt: '2026-05-18T09:00:00Z',
+      endsAt: '2026-05-18T10:00:00Z',
+      timeZone,
+    }).expect(400);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('timeZone');
+    expect(await listLabelled('bad-zone', '2026-05-18T00:00:00Z', '2026-05-19T00:00:00Z')).toEqual(
+      [],
+    );
+  });
+
+  it('refuses a recurrence in an unknown zone instead of failing on it', async () => {
+    // The expansion hands `timeZone` to `Intl.DateTimeFormat`, which answers an
+    // unknown zone with a RangeError — a 500 on a route that validated its body.
+    const response = await post({
+      note: `${PREFIX}/bad-zone-series`,
+      startsAt: '2026-05-19T09:00:00Z',
+      endsAt: '2026-05-19T10:00:00Z',
+      timeZone: 'Mars/Olympus',
+      recurrence: { frequency: 'weekly', daysOfWeek: [2], until: '2026-06-09T23:59:59Z' },
+    }).expect(400);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('timeZone');
+    expect(
+      await listLabelled('bad-zone-series', '2026-05-19T00:00:00Z', '2026-06-10T00:00:00Z'),
+    ).toEqual([]);
+  });
+
+  it('refuses to patch a slot into an unknown zone', async () => {
+    const slot = await createOne('patch-zone', {
+      startsAt: '2026-05-20T09:00:00Z',
+      endsAt: '2026-05-20T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    });
+
+    const response = await patch(slot.id, { timeZone: 'Not/AZone' }).expect(400);
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('timeZone');
+
+    // The refusal really refused: the stored zone is untouched.
+    expect(scheduleSlotSchema.parse((await read(slot.id).expect(200)).body).timeZone).toBe(
+      'Europe/Madrid',
+    );
+  });
+
   it('refuses a slot overlapping an open slot of the same owner', async () => {
     await createOne('overlap', {
       startsAt: '2026-05-07T09:00:00Z',

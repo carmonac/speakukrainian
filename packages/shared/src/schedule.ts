@@ -5,6 +5,42 @@ export const slotStatusSchema = z.enum(['open', 'booked', 'cancelled', 'complete
 export type SlotStatus = z.infer<typeof slotStatusSchema>;
 
 /**
+ * Zones the runtime has resolved before. Only successful lookups are cached, so
+ * the set is bounded by the zone database however much junk is thrown at it.
+ */
+const resolvableTimeZones = new Set<string>();
+
+function isResolvableTimeZone(value: string): boolean {
+  if (resolvableTimeZones.has(value)) {
+    return true;
+  }
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: value });
+  } catch {
+    return false;
+  }
+  resolvableTimeZones.add(value);
+  return true;
+}
+
+/**
+ * An IANA zone name the runtime can actually resolve.
+ *
+ * The check is a formatter construction rather than a lookup in
+ * `Intl.supportedValuesOf('timeZone')`: that list is canonical names only, and
+ * would refuse the backward-compatibility links (`Asia/Calcutta`, `US/Eastern`)
+ * that `Intl` itself resolves happily.
+ *
+ * It belongs to the schema rather than to the code that expands a recurrence
+ * because both halves of the field have to close: an unresolvable zone thrown
+ * at `Intl.DateTimeFormat` is a `RangeError`, and one merely *stored* is a
+ * document every later reader trips over.
+ */
+export const timeZoneSchema = z.string().min(1).refine(isResolvableTimeZone, {
+  message: 'Unknown IANA time zone — use a name such as `Europe/Madrid`',
+});
+
+/**
  * A window of the admin's time that a learner can book. Times are stored as
  * absolute UTC instants plus the IANA zone they were authored in, so recurring
  * slots survive daylight-saving shifts.
@@ -17,7 +53,7 @@ export const scheduleSlotSchema = z
     startsAt: isoDateTimeSchema,
     endsAt: isoDateTimeSchema,
     /** IANA zone the slot was authored in, e.g. `Europe/Madrid`. */
-    timeZone: z.string().min(1),
+    timeZone: timeZoneSchema,
     status: slotStatusSchema.default('open'),
     /** Set when the slot was generated from a recurrence rule. */
     recurrenceId: z.string().min(1).nullable().default(null),
@@ -47,7 +83,7 @@ export type SlotRecurrence = z.infer<typeof slotRecurrenceSchema>;
 export const createScheduleSlotSchema = z.object({
   startsAt: isoDateTimeSchema,
   endsAt: isoDateTimeSchema,
-  timeZone: z.string().min(1),
+  timeZone: timeZoneSchema,
   note: z.string().max(500).optional(),
   recurrence: slotRecurrenceSchema.optional(),
 });

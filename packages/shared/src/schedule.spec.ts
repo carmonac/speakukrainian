@@ -34,6 +34,36 @@ describe('createScheduleSlotSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it.each([
+    ['a zone that does not exist', 'Mars/Olympus'],
+    ['a zone-shaped string', 'Not/AZone'],
+    ['blank', ' '],
+    ['empty', ''],
+  ])('rejects %s as a time zone', (_name, timeZone) => {
+    // Anything that reaches `Intl.DateTimeFormat` unchecked is a RangeError, and
+    // anything merely stored is a document #15 cannot draw.
+    const result = createScheduleSlotSchema.safeParse({
+      startsAt: '2026-09-01T09:00:00Z',
+      endsAt: '2026-09-01T10:00:00Z',
+      timeZone,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['timeZone']);
+  });
+
+  it('accepts a backward-compatibility link the canonical list omits', () => {
+    // `Intl.supportedValuesOf('timeZone')` is canonical names only; the schema
+    // asks the runtime instead, so an alias every calendar accepts still parses.
+    const result = createScheduleSlotSchema.safeParse({
+      startsAt: '2026-09-01T09:00:00Z',
+      endsAt: '2026-09-01T10:00:00Z',
+      timeZone: 'Asia/Calcutta',
+    });
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('updateScheduleSlotSchema', () => {
@@ -51,6 +81,13 @@ describe('updateScheduleSlotSchema', () => {
     expect(updateScheduleSlotSchema.parse({ status: 'cancelled' })).toEqual({
       status: 'cancelled',
     });
+  });
+
+  it('refuses a time zone the runtime cannot resolve', () => {
+    const result = updateScheduleSlotSchema.safeParse({ timeZone: 'Not/AZone' });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['timeZone']);
   });
 
   it('strips a recurrence rather than honouring it', () => {
