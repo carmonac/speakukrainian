@@ -34,4 +34,16 @@ describe('loadConfig', () => {
       /STORAGE_API_ENDPOINT/,
     );
   });
+
+  it('rejects a stall timeout short enough to cut a healthy read', () => {
+    expect(() => loadConfig({ ...required, H5P_STREAM_STALL_TIMEOUT_MS: '1' })).toThrow(
+      /H5P_STREAM_STALL_TIMEOUT_MS/,
+    );
+    expect(() => loadConfig({ ...required, H5P_STREAM_STALL_TIMEOUT_MS: '999' })).toThrow(
+      /H5P_STREAM_STALL_TIMEOUT_MS/,
+    );
+    expect(
+      loadConfig({ ...required, H5P_STREAM_STALL_TIMEOUT_MS: '1000' }).H5P_STREAM_STALL_TIMEOUT_MS,
+    ).toBe(1000);
+  });
 });

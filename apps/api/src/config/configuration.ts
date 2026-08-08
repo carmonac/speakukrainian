@@ -80,8 +80,14 @@ export const envSchema = z.object({
    * silence, not duration: any byte restarts the clock, and so does a client
    * too slow to take them. Thirty seconds is far longer than a healthy read
    * ever pauses for and far shorter than a browser's own patience.
+   *
+   * The floor is what stops a typo from becoming an outage: any value a healthy
+   * read can reach in a normal pause — a second of scheduling, a slow first
+   * byte from the bucket — would abort every response on the revision that set
+   * it, and it would do so uniformly, so it would not look like a bad value.
+   * A second is below anything worth configuring and above anything accidental.
    */
-  H5P_STREAM_STALL_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  H5P_STREAM_STALL_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(30_000),
 });
 
 export type Env = z.infer<typeof envSchema>;
