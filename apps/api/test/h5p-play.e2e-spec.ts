@@ -13,6 +13,16 @@ import { MAIN_LIBRARY_DIR, MEDIA_FILE, buildH5pPackage } from './fixtures/h5p-pa
 const CONTENT_PREFIX = 'h5p/content/';
 
 /**
+ * The controller's own refusal, and nothing else in the stack says it.
+ *
+ * Every layer below has a guard of its own — the storage path builders raise
+ * their own 400, `send` refuses to leave its root — so a traversal is answered
+ * 4xx either way and only the sentence says *which* guard ran. Asserting it is
+ * what stops the controller's guard being removed with this suite still green.
+ */
+const REFUSED_PATH = 'The requested file path is not valid.';
+
+/**
  * 96 KB, deterministic, and nothing like a run of zeroes: a range assertion is
  * only worth making if the bytes of one slice differ from the bytes of every
  * other, and the 35-byte text file the fixture already carries is too small for
@@ -173,6 +183,9 @@ describe('h5p serving (e2e)', () => {
 
       expect(response.headers['content-type']).toMatch(/^(text|application)\/javascript/);
       expect(response.headers['cross-origin-resource-policy']).toBe('cross-origin');
+      // An hour, not a year: the cache buster on these URLs is the library's
+      // own version, so bumping the pinned commit does not change the URL.
+      expect(response.headers['cache-control']).toBe('public, max-age=3600');
       // A stub or an error page would be far smaller than the real file.
       expect(Buffer.byteLength(response.text)).toBeGreaterThan(1024);
     });
@@ -192,7 +205,8 @@ describe('h5p serving (e2e)', () => {
     ])('refuses %s without serving anything from outside the tree', async (path) => {
       const response = await request(server()).get(path);
 
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBe(400);
+      expect((response.body as ErrorBody).message).toBe(REFUSED_PATH);
       // The status alone would pass for a 200 carrying the wrong file, which is
       // the failure that actually matters.
       expect(response.text).not.toContain('@speakukrainian/api');
@@ -210,6 +224,8 @@ describe('h5p serving (e2e)', () => {
       expect(response.headers['content-length']).toBe(String(MEDIA_BYTES.length));
       expect(response.headers['content-type']).toMatch(/^audio\/mpeg/);
       expect(response.headers['cross-origin-resource-policy']).toBe('cross-origin');
+      // Short and private: a re-save replaces this object under the same URL.
+      expect(response.headers['cache-control']).toBe('private, max-age=300');
       expect(Buffer.from(response.body as Buffer)).toEqual(MEDIA_BYTES);
     });
 
@@ -225,6 +241,7 @@ describe('h5p serving (e2e)', () => {
       expect(response.headers['content-range']).toBe(`bytes 1000-1099/${MEDIA_BYTES.length}`);
       expect(response.headers['content-length']).toBe('100');
       expect(response.headers['content-type']).toMatch(/^audio\/mpeg/);
+      expect(response.headers['cache-control']).toBe('private, max-age=300');
       expect(Buffer.from(response.body as Buffer)).toEqual(MEDIA_BYTES.subarray(1000, 1100));
     });
 
@@ -277,6 +294,7 @@ describe('h5p serving (e2e)', () => {
       );
 
       expect(response.status).toBe(400);
+      expect((response.body as ErrorBody).message).toBe(REFUSED_PATH);
       // The sibling's metadata carries its title; a leak would show it.
       expect(response.text).not.toContain('The other exercise');
       expect(response.text).not.toContain('SpeakTest.Main');
@@ -319,9 +337,11 @@ describe('h5p serving (e2e)', () => {
     });
 
     it('refuses a traversal out of the library prefix', async () => {
-      await request(server())
+      const response = await request(server())
         .get(`/api/h5p/libraries/${MAIN_LIBRARY_DIR}/..%2F..%2Fcontent%2Fh5p.json`)
         .expect(400);
+
+      expect((response.body as ErrorBody).message).toBe(REFUSED_PATH);
     });
   });
 });

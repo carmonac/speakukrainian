@@ -151,6 +151,11 @@ export class H5pPublicController {
    * range handling all come for free and correct. It also refuses to escape
    * `root` — but the path is asserted first anyway, so an attempt is answered
    * by our 400 naming the rule rather than by `send`'s bare 403.
+   *
+   * `dotfiles: 'deny'` is spelled out even though `send`'s default of `ignore`
+   * refuses them too: these trees are fetched from someone else's repository,
+   * so "nothing beginning with a dot is served out of them" is a decision this
+   * route makes rather than one it inherits.
    */
   private async sendAsset(kind: H5pAssetKind, req: Request, res: Response): Promise<void> {
     const path = wildcardPath(req);
