@@ -97,6 +97,10 @@ export class H5pService {
   }
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * `H5P.MultiChoice 1.16` — the whitespace form `h5pContentSchema` documents,
  * not the hyphenated directory form.
@@ -105,10 +109,6 @@ export class H5pService {
  * malformed but reachable, and the machine name alone is more useful to an
  * admin than a thrown error at the end of a successful install.
  */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function mainLibraryUberName(metadata: IContentMetadata): string {
   const dependency = metadata.preloadedDependencies?.find(
     (library) => library.machineName === metadata.mainLibrary,
