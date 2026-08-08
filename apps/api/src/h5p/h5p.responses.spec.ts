@@ -14,6 +14,16 @@ import {
 /** The URL the fake response reports, which is what a log line has to name. */
 const REQUEST_PATH = '/api/h5p/content/abc/media/tone.mp3';
 
+/**
+ * Short enough that a stalled read is observable in a unit test without fake
+ * timers, which would have to stand in for `Date.now` as well and would then be
+ * asserting against their own clock rather than against elapsed silence.
+ */
+const STALL_MS = 50;
+
+/** Long enough that a timer armed for `STALL_MS` has fired several times over. */
+const WELL_PAST_STALL_MS = STALL_MS * 5;
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -65,6 +75,14 @@ interface RecordedResponse {
   statusCode: number | null;
   headers: Map<string, string>;
   headersSent: boolean;
+  /**
+   * Stands in for a client that has stopped taking bytes.
+   *
+   * The sink below is drained as fast as it is written, so the only way to put
+   * a response under backpressure here is to say so — the same way
+   * `headersSent` is said rather than reached.
+   */
+  needsDrain: boolean;
   destroyed: boolean;
   ended: boolean;
   /** Resolves when the response ends, with everything that was written to it. */
@@ -88,6 +106,7 @@ function recordingResponse(): RecordedResponse {
     statusCode: null,
     headers: new Map<string, string>(),
     headersSent: false,
+    needsDrain: false,
     destroyed: false,
     ended: false,
     body: () =>
@@ -120,6 +139,7 @@ function recordingResponse(): RecordedResponse {
   };
   res['getHeader'] = (name: string) => record.headers.get(name);
   Object.defineProperty(sink, 'headersSent', { get: () => record.headersSent });
+  Object.defineProperty(sink, 'writableNeedDrain', { get: () => record.needsDrain });
   const destroy = sink.destroy.bind(sink);
   res['destroy'] = () => {
     record.destroyed = true;
@@ -208,6 +228,7 @@ describe('pipeWholeStream', () => {
       mimetype: 'audio/mpeg',
       contentLength: 10,
       cacheControl: 'private, max-age=300',
+      stallTimeoutMs: STALL_MS,
     });
 
     await expect(record.body()).resolves.toEqual(Buffer.from('abcdefghij'));
@@ -229,6 +250,7 @@ describe('pipeWholeStream', () => {
       mimetype: 'text/javascript',
       contentLength: 1,
       cacheControl: 'public, max-age=31536000',
+      stallTimeoutMs: STALL_MS,
     });
 
     expect(record.headers.get('Cross-Origin-Resource-Policy')).toBe('cross-origin');
@@ -246,6 +268,7 @@ describe('pipePartialStream', () => {
       start: 10,
       end: 19,
       cacheControl: 'private, max-age=300',
+      stallTimeoutMs: STALL_MS,
     });
 
     await expect(record.body()).resolves.toEqual(Buffer.from('0123456789'));
@@ -268,6 +291,7 @@ describe('pipePartialStream', () => {
       start: 0,
       end: 0,
       cacheControl: 'private, max-age=300',
+      stallTimeoutMs: STALL_MS,
     });
 
     expect(record.headers.get('Content-Type')).toBe('audio/mpeg');
@@ -277,7 +301,10 @@ describe('pipePartialStream', () => {
 
 describe('a storage stream that fails', () => {
   /** Attaches a stream that is about to fail, in the shape the routes attach one. */
-  function pipingWholeFile(): { record: RecordedResponse; stream: PassThrough } {
+  function pipingWholeFile(stallTimeoutMs = 60_000): {
+    record: RecordedResponse;
+    stream: PassThrough;
+  } {
     const record = recordingResponse();
     const stream = new PassThrough();
 
@@ -285,6 +312,7 @@ describe('a storage stream that fails', () => {
       mimetype: 'audio/mpeg',
       contentLength: 4096,
       cacheControl: 'private, max-age=300',
+      stallTimeoutMs,
     });
 
     return { record, stream };
@@ -362,5 +390,119 @@ describe('a storage stream that fails', () => {
 
     expect(errors()).toEqual([]);
     expect(record.statusCode).toBe(200);
+  });
+});
+
+describe('a storage stream that goes silent', () => {
+  /**
+   * The failure the `error` handler above cannot see.
+   *
+   * A bucket that drops the connection part way through a body raises neither
+   * `error` nor `end` on the stream the Cloud Storage client hands over —
+   * `node-fetch@2` swallows the premature close — so a `PassThrough` that never
+   * speaks again is the shape production actually produces. Every other test in
+   * this file emits an `Error`, which is what let a hang ship unnoticed.
+   */
+  function pipingWholeFile(): { record: RecordedResponse; stream: PassThrough } {
+    const record = recordingResponse();
+    const stream = new PassThrough();
+
+    pipeWholeStream(record.res, stream, {
+      mimetype: 'audio/mpeg',
+      contentLength: 4096,
+      cacheControl: 'private, max-age=300',
+      stallTimeoutMs: STALL_MS,
+    });
+
+    return { record, stream };
+  }
+
+  const after = (ms: number): Promise<unknown> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('answers 500 rather than holding a response open for a read that never starts', async () => {
+    const errors = captureErrors();
+    const { record, stream } = pipingWholeFile();
+
+    await after(WELL_PAST_STALL_MS);
+
+    expect(record.statusCode).toBe(500);
+    expect(record.ended).toBe(true);
+    expect(record.headers.has('Content-Length')).toBe(false);
+    // The Cloud Storage read is released too; leaving it open is how a bucket
+    // outage turns into an exhausted connection pool.
+    expect(stream.destroyed).toBe(true);
+    expect(errors()).toHaveLength(1);
+    expect(errors()[0]).toContain(REQUEST_PATH);
+    expect(errors()[0]).toContain(`${String(STALL_MS)} ms`);
+  });
+
+  it('breaks a body that stopped arriving, instead of leaving the client to time out', async () => {
+    const errors = captureErrors();
+    const { record, stream } = pipingWholeFile();
+
+    stream.write('the first few bytes');
+    record.headersSent = true;
+    await after(WELL_PAST_STALL_MS);
+
+    expect(record.destroyed).toBe(true);
+    // 200 is already on the wire and the body is short of its `Content-Length`,
+    // so breaking the connection is the only signal left; the log line is the
+    // only trace, which is why silence here was the defect.
+    expect(record.statusCode).toBe(200);
+    expect(errors()).toHaveLength(1);
+    expect(errors()[0]).toContain('truncated');
+  });
+
+  it('keeps waiting while bytes are still arriving', async () => {
+    // A read slower than the timeout but never silent for that long — a big
+    // clip, in other words. Nothing here may be cut off.
+    const errors = captureErrors();
+    const { record, stream } = pipingWholeFile();
+
+    for (let written = 0; written < 5; written++) {
+      stream.write('still going');
+      await after(STALL_MS / 2);
+    }
+    // Ended so the watcher stops with the read, rather than reporting this
+    // finished response to whichever test is running by then.
+    stream.end();
+    await after(STALL_MS);
+
+    expect(errors()).toEqual([]);
+    expect(record.statusCode).toBe(200);
+    // Finished rather than broken: `end` is what a whole body looks like, where
+    // the failures above answer 500 or destroy the connection.
+    expect(record.ended).toBe(true);
+    expect(record.written().toString()).toBe('still going'.repeat(5));
+  });
+
+  it('does not cut off a client that is slower than the bucket', async () => {
+    // `pipe` pauses the source while the response waits to drain, so no bytes
+    // arrive — and counting that as a stall would disconnect every learner on a
+    // slow link. The second half is what says the timer kept re-arming rather
+    // than never being set.
+    const errors = captureErrors();
+    const { record } = pipingWholeFile();
+    record.needsDrain = true;
+
+    await after(WELL_PAST_STALL_MS);
+    expect(errors()).toEqual([]);
+    expect(record.statusCode).toBe(200);
+
+    record.needsDrain = false;
+    await after(WELL_PAST_STALL_MS);
+    expect(record.statusCode).toBe(500);
+  });
+
+  it('says nothing once the response has closed', async () => {
+    // An abandoned seek leaves this timer armed and the stream destroyed; it
+    // must not report an incident for a client that simply went away.
+    const errors = captureErrors();
+    const { record } = pipingWholeFile();
+
+    record.res.emit('close');
+    await after(WELL_PAST_STALL_MS);
+
+    expect(errors()).toEqual([]);
   });
 });

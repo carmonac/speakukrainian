@@ -69,6 +69,19 @@ export const envSchema = z.object({
    * origin and the relative default is right.
    */
   H5P_BASE_URL: z.string().default('/api/h5p'),
+
+  /**
+   * How long a content or library file may deliver nothing at all before the
+   * API gives up on it and answers.
+   *
+   * A bucket that drops a connection part way through a body leaves the Cloud
+   * Storage read stream open and silent — no error, no end — so without a limit
+   * the response hangs for as long as the client will wait. It measures
+   * silence, not duration: any byte restarts the clock, and so does a client
+   * too slow to take them. Thirty seconds is far longer than a healthy read
+   * ever pauses for and far shorter than a browser's own patience.
+   */
+  H5P_STREAM_STALL_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 });
 
 export type Env = z.infer<typeof envSchema>;

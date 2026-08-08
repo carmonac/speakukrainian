@@ -9,10 +9,12 @@ import {
   Res,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiTags } from '@nestjs/swagger';
 import type { IPlayerModel } from '@lumieducation/h5p-server';
 import type { Request, Response } from 'express';
 import { Public } from '../auth/public.decorator.js';
+import type { Env } from '../config/configuration.js';
 import { H5pClientAssets, missingAssetsMessage, type H5pAssetKind } from './h5p.client-assets.js';
 import { wildcardPath } from './h5p.request.js';
 import {
@@ -73,11 +75,15 @@ const ASSET_MAX_AGE = '1h';
 @Controller('h5p')
 export class H5pPublicController {
   private readonly logger = new Logger(H5pPublicController.name);
+  private readonly stallTimeoutMs: number;
 
   constructor(
     private readonly serve: H5pServeService,
     private readonly assets: H5pClientAssets,
-  ) {}
+    config: ConfigService<Env, true>,
+  ) {
+    this.stallTimeoutMs = config.get('H5P_STREAM_STALL_TIMEOUT_MS', { infer: true });
+  }
 
   /**
    * The model `@lumieducation/h5p-webcomponents` renders an exercise from.
@@ -123,6 +129,7 @@ export class H5pPublicController {
         start: file.range.start,
         end: file.range.end,
         cacheControl: CONTENT_CACHE_CONTROL,
+        stallTimeoutMs: this.stallTimeoutMs,
       });
       return;
     }
@@ -131,6 +138,7 @@ export class H5pPublicController {
       mimetype: file.mimetype,
       contentLength: file.totalLength,
       cacheControl: CONTENT_CACHE_CONTROL,
+      stallTimeoutMs: this.stallTimeoutMs,
     });
   }
 
@@ -147,6 +155,7 @@ export class H5pPublicController {
       mimetype: file.mimetype,
       contentLength: file.contentLength,
       cacheControl: LIBRARY_CACHE_CONTROL,
+      stallTimeoutMs: this.stallTimeoutMs,
     });
   }
 

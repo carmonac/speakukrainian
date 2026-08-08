@@ -33,13 +33,24 @@ export const CROSS_ORIGIN_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
 };
 
-export interface WholeStreamOptions {
+/**
+ * How long a read may deliver nothing at all before it is declared dead.
+ *
+ * It measures silence, not duration: any byte from storage restarts the clock,
+ * and so does a client that is too slow to take them, so a big file over a slow
+ * link never trips it. See `pipe` for why the guard has to exist.
+ */
+export interface StallTimeout {
+  stallTimeoutMs: number;
+}
+
+export interface WholeStreamOptions extends StallTimeout {
   mimetype: string;
   contentLength: number;
   cacheControl: string;
 }
 
-export interface PartialStreamOptions {
+export interface PartialStreamOptions extends StallTimeout {
   mimetype: string;
   /** The size of the whole object, which is what `Content-Range` reports after the slash. */
   totalLength: number;
@@ -115,7 +126,7 @@ export function pipeWholeStream(
     'Cache-Control': options.cacheControl,
   });
 
-  pipe(res, stream);
+  pipe(res, stream, options.stallTimeoutMs);
 }
 
 /** 206 with one byte range. */
@@ -137,7 +148,7 @@ export function pipePartialStream(
     'Cache-Control': options.cacheControl,
   });
 
-  pipe(res, stream);
+  pipe(res, stream, options.stallTimeoutMs);
 }
 
 /**
@@ -160,25 +171,46 @@ export function pipePartialStream(
  * these, so without a line here a bucket outage is a wall of failed media
  * requests with nothing anywhere to explain them.
  *
+ * **A read that simply stops is a failure too, and it is the common one.** The
+ * bucket dropping the connection part way through a body raises no `error` and
+ * no `end` on this stream at all: the Cloud Storage client reads its response
+ * through `node-fetch@2`, which pipes the socket into a `PassThrough` and does
+ * not forward the `aborted` that Node raises on a premature close, so the
+ * stream sits open with nothing coming. Without the timer below the response
+ * stays open too, holding a socket, and the learner's clip freezes for as long
+ * as the client is willing to wait — with nothing in the log, because neither
+ * branch above ever runs.
+ *
  * `close` destroys the stream so an abandoned seek — which is every seek, since
  * a media element cancels the request it was reading — does not leave a Cloud
  * Storage read open behind it.
  */
-function pipe(res: Response, stream: Readable): void {
+function pipe(res: Response, stream: Readable, stallTimeoutMs: number): void {
   // `close` also fires when the response finishes normally, which is what makes
   // this the right test for "there is no longer anybody to answer or to warn":
   // the destroy below is itself a plausible cause of the error handler running,
   // and an abandoned seek is not an incident.
   let responseClosed = false;
-  res.on('close', () => {
-    responseClosed = true;
-    stream.destroy();
-  });
+  let reported = false;
+  let stallTimer: NodeJS.Timeout | undefined;
+  let lastByteAt = Date.now();
 
-  stream.on('error', (error: Error) => {
-    if (responseClosed) {
+  const stopWatching = (): void => {
+    if (stallTimer) {
+      clearTimeout(stallTimer);
+      stallTimer = undefined;
+    }
+  };
+
+  const report = (error: Error): void => {
+    // `reported` covers the stalled case reporting itself and then hearing the
+    // consequences of its own `destroy` as a second error: one failure, one log
+    // line, one answer.
+    if (responseClosed || reported) {
       return;
     }
+    reported = true;
+    stopWatching();
 
     if (res.headersSent) {
       logger.error(
@@ -197,7 +229,44 @@ function pipe(res: Response, stream: Readable): void {
     res.removeHeader('Content-Range');
     res.removeHeader('Content-Type');
     res.status(500).end();
+  };
+
+  const checkForStall = (): void => {
+    if (responseClosed) {
+      return;
+    }
+
+    // A response that is waiting to drain has stopped asking for bytes, so
+    // none should be expected: `pipe` pauses the source until the client
+    // catches up. Counting that as silence would cut off every learner whose
+    // connection is slower than the bucket.
+    const silentFor = res.writableNeedDrain ? 0 : Date.now() - lastByteAt;
+    if (silentFor < stallTimeoutMs) {
+      stallTimer = setTimeout(checkForStall, stallTimeoutMs - silentFor);
+      return;
+    }
+
+    // Reported before the stream is destroyed, so that the log names the
+    // silence rather than whatever the destroy makes the stream say about
+    // itself; and destroyed rather than left to time out again, because this
+    // read is never going to speak and its Cloud Storage connection is ours to
+    // release.
+    report(new Error(`storage sent nothing for ${String(stallTimeoutMs)} ms`));
+    stream.destroy();
+  };
+
+  res.on('close', () => {
+    responseClosed = true;
+    stopWatching();
+    stream.destroy();
   });
 
+  stream.on('data', () => {
+    lastByteAt = Date.now();
+  });
+  stream.on('end', stopWatching);
+  stream.on('error', report);
+
+  stallTimer = setTimeout(checkForStall, stallTimeoutMs);
   stream.pipe(res);
 }
