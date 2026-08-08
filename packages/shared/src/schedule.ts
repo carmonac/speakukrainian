@@ -5,13 +5,30 @@ export const slotStatusSchema = z.enum(['open', 'booked', 'cancelled', 'complete
 export type SlotStatus = z.infer<typeof slotStatusSchema>;
 
 /**
- * Zones the runtime has resolved before. Only successful lookups are cached, so
- * the set is bounded by the zone database however much junk is thrown at it.
+ * Zones the runtime has resolved before, keyed by the **lower-cased** name.
+ *
+ * `Intl` matches zone ids case-insensitively, so `Europe/Madrid`,
+ * `europe/madrid` and `eUrOpE/mAdRiD` all resolve to the same zone. Keyed by
+ * the string as received, one zone would occupy 2048 entries and a caller could
+ * grow the set for as long as it kept inventing spellings. Lower-casing
+ * collapses them onto one key — no two zone names differ only by case — and
+ * since failed lookups are never added, the set is then genuinely bounded by
+ * the zone database however much junk is thrown at it.
  */
 const resolvableTimeZones = new Set<string>();
 
+/**
+ * Exported so a test can observe the bound the comment above claims. Nothing in
+ * the application needs it: a cache that silently stopped being bounded is
+ * exactly how the unbounded version shipped.
+ */
+export function resolvableTimeZoneCacheSize(): number {
+  return resolvableTimeZones.size;
+}
+
 function isResolvableTimeZone(value: string): boolean {
-  if (resolvableTimeZones.has(value)) {
+  const key = value.toLowerCase();
+  if (resolvableTimeZones.has(key)) {
     return true;
   }
   try {
@@ -19,7 +36,7 @@ function isResolvableTimeZone(value: string): boolean {
   } catch {
     return false;
   }
-  resolvableTimeZones.add(value);
+  resolvableTimeZones.add(key);
   return true;
 }
 
@@ -35,6 +52,11 @@ function isResolvableTimeZone(value: string): boolean {
  * because both halves of the field have to close: an unresolvable zone thrown
  * at `Intl.DateTimeFormat` is a `RangeError`, and one merely *stored* is a
  * document every later reader trips over.
+ *
+ * The value is stored **as the caller spelled it**. Canonicalising through
+ * `resolvedOptions().timeZone` would rewrite `US/Eastern` to `America/New_York`
+ * behind the admin's back, so anything comparing two `timeZone` values must
+ * compare them case-insensitively rather than with `===`.
  */
 export const timeZoneSchema = z.string().min(1).refine(isResolvableTimeZone, {
   message: 'Unknown IANA time zone — use a name such as `Europe/Madrid`',

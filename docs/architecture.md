@@ -451,6 +451,17 @@ the stored schema as well as the input one, so — as with `endsAt > startsAt` �
 somehow holds an unresolvable zone fails loudly on read rather than reaching a renderer that cannot
 draw it.
 
+**Both time-zone caches are keyed on the lower-cased zone**, and that is the whole of what makes
+them safe. `Intl` matches zone ids case-insensitively, so `Europe/Madrid`, `europe/madrid` and
+`eUrOpE/mAdRiD` all resolve — 2048 spellings of one zone, each of which was a separate entry
+retaining its own `Intl.DateTimeFormat` (~15 KB) for the life of the process, reachable over HTTP by
+any admin token and unbounded. Lower-cased, no two zone names differ, so the caches are bounded by
+the zone database, which is the argument for having them at all; a test in each file asserts the
+cache does not grow when the same zone arrives under a new spelling. The _stored_ value keeps the
+caller's spelling: canonicalising through `resolvedOptions().timeZone` would rewrite `US/Eastern` to
+`America/New_York` behind the admin's back, so anything comparing two `timeZone` values must fold
+case rather than use `===`.
+
 **Ownership is not enforced on writes in Phase 1.** Every mutating route is `@Roles('admin')`, and
 that role is the whole of the check: any admin may patch or delete another admin's slot, or delete
 their whole series, and `GET` is site-wide. Only _overlap_ is per-owner, because two teachers may

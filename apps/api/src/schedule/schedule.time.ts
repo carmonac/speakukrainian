@@ -21,14 +21,31 @@ const DAY_MS = 86_400_000;
 
 /**
  * Constructing a formatter is expensive and a 200-occurrence expansion asks for
- * one several hundred times. The map is keyed by zone and lives for the process:
- * zone rules do not change between two calls, and this module is API-only, so
- * no SSR render shares it.
+ * one several hundred times. The map lives for the process — zone rules do not
+ * change between two calls, and this module is API-only, so no SSR render
+ * shares it.
+ *
+ * The key is the **lower-cased** zone. `Intl` matches zone ids
+ * case-insensitively, so `Europe/Madrid`, `europe/madrid` and `eUrOpE/mAdRiD`
+ * all reach here and all resolve to the same rules; keyed by the string as
+ * received, each spelling would retain its own formatter and a caller could
+ * grow the map until the process ran out of memory. Lower-cased, the map is
+ * bounded by the zone database, which is what makes caching safe at all.
  */
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
+/**
+ * Exported so a test can observe the bound the comment above claims. Nothing in
+ * the application needs it: a cache that silently stopped being bounded is
+ * exactly how the unbounded version shipped.
+ */
+export function timeZoneFormatterCacheSize(): number {
+  return formatters.size;
+}
+
 function formatterFor(timeZone: string): Intl.DateTimeFormat {
-  const cached = formatters.get(timeZone);
+  const key = timeZone.toLowerCase();
+  const cached = formatters.get(key);
   if (cached) {
     return cached;
   }
@@ -45,7 +62,7 @@ function formatterFor(timeZone: string): Intl.DateTimeFormat {
     minute: '2-digit',
     second: '2-digit',
   });
-  formatters.set(timeZone, formatter);
+  formatters.set(key, formatter);
   return formatter;
 }
 

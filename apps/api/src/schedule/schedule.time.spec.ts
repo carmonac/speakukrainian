@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addDaysToWallClock,
+  timeZoneFormatterCacheSize,
   wallClockIn,
   wallClockToInstant,
   weekdayOf,
@@ -28,6 +29,24 @@ describe('Intl time-zone data', () => {
   it('knows Europe/Madrid is an hour ahead of UTC in winter and two in summer', () => {
     expect(zoneOffsetMs(new Date('2026-01-15T12:00:00Z'), 'Europe/Madrid')).toBe(3_600_000);
     expect(zoneOffsetMs(new Date('2026-07-15T12:00:00Z'), 'Europe/Madrid')).toBe(7_200_000);
+  });
+});
+
+describe('the formatter cache', () => {
+  it('holds one formatter per zone however the zone is spelled', () => {
+    // `Intl` matches zone ids case-insensitively, and the schema lets every
+    // spelling through, so all four of these reach `formatterFor`. Keyed by the
+    // string as received, each would retain its own formatter (~15 KB) for the
+    // life of the process and a caller could grow the map without bound.
+    const instant = new Date('2026-07-15T12:00:00Z');
+    const canonical = wallClockIn(instant, 'Pacific/Auckland');
+    const cached = timeZoneFormatterCacheSize();
+
+    for (const spelling of ['pacific/auckland', 'PACIFIC/AUCKLAND', 'pAcIfIc/AuCkLaNd']) {
+      expect(wallClockIn(instant, spelling)).toEqual(canonical);
+    }
+
+    expect(timeZoneFormatterCacheSize()).toBe(cached);
   });
 });
 

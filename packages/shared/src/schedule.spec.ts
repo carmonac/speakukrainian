@@ -3,6 +3,8 @@ import {
   MAX_SCHEDULE_RANGE_DAYS,
   createScheduleSlotSchema,
   listScheduleSlotsQuerySchema,
+  resolvableTimeZoneCacheSize,
+  timeZoneSchema,
   updateScheduleSlotSchema,
 } from './schedule.js';
 
@@ -63,6 +65,35 @@ describe('createScheduleSlotSchema', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe('timeZoneSchema', () => {
+  it('caches a zone once however it is spelled', () => {
+    // `Intl` matches zone ids case-insensitively, so every spelling below is a
+    // *hit* on the same zone. Keyed by the raw string they were three more
+    // entries each, retained for the life of the process, and a caller could
+    // grow the set by inventing spellings — the boundedness the cache is
+    // justified by is only true if the key is normalised.
+    timeZoneSchema.parse('Pacific/Auckland');
+    const cached = resolvableTimeZoneCacheSize();
+
+    for (const spelling of ['pacific/auckland', 'PACIFIC/AUCKLAND', 'pAcIfIc/AuCkLaNd']) {
+      // The value is stored as spelled; only the cache key is normalised.
+      expect(timeZoneSchema.parse(spelling)).toBe(spelling);
+    }
+
+    expect(resolvableTimeZoneCacheSize()).toBe(cached);
+  });
+
+  it('caches nothing for zones it cannot resolve', () => {
+    const cached = resolvableTimeZoneCacheSize();
+
+    for (const junk of ['Mars/Olympus', 'Mars/Olympus2', 'Mars/Olympus3']) {
+      expect(timeZoneSchema.safeParse(junk).success).toBe(false);
+    }
+
+    expect(resolvableTimeZoneCacheSize()).toBe(cached);
   });
 });
 
