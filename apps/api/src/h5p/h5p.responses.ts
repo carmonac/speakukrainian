@@ -1,6 +1,9 @@
 import type { Readable } from 'node:stream';
+import { Logger } from '@nestjs/common';
 import { H5pError } from '@lumieducation/h5p-server';
 import type { Request, Response } from 'express';
+
+const logger = new Logger('H5pResponses');
 
 /** The shape `H5PAjaxEndpoint.getContentFile` asks for. `undefined` means "the whole file". */
 export type RangeCallback = (fileSize: number) => { start: number; end: number } | undefined;
@@ -13,13 +16,16 @@ export type RangeCallback = (fileSize: number) => { start: number; end: number }
  * admin runs on :4200 and the API on :8080, so a browser refuses every
  * `<script>`, `<link>`, `<img>` and `<audio>` load from here — 200 in a test
  * client, blocked in Chrome. Only four routes serve subresources to another
- * origin — content files, library files, and the core and editor client trees,
- * which set the same header through `res.sendFile` — so the override lives here
- * rather than in `main.ts`, where it would relax the whole API. `play` is not
- * one of them: it is JSON the admin reads with a CORS `fetch`, and it keeps
- * helmet's `same-origin`.
+ * origin — content files, library files, and the core and editor client trees —
+ * so the override lives here rather than in `main.ts`, where it would relax the
+ * whole API. `play` is not one of them: it is JSON the admin reads with a CORS
+ * `fetch`, and it keeps helmet's `same-origin`.
+ *
+ * Exported because the asset routes send their bytes with `res.sendFile`
+ * instead of a stream from here, and a second copy of the policy is how the
+ * two drift apart.
  */
-const CROSS_ORIGIN_HEADERS: Record<string, string> = {
+export const CROSS_ORIGIN_HEADERS: Record<string, string> = {
   'Cross-Origin-Resource-Policy': 'cross-origin',
   // Helmet already sets this globally. Repeated here so that these routes keep
   // it even if the global policy is ever narrowed to JSON responses, which is
@@ -48,8 +54,13 @@ export interface PartialStreamOptions {
  * A callback rather than a value because the header cannot be resolved without
  * the file size — `bytes=90-` means "to the end", and only the storage knows
  * where that is. The endpoint calls this after its own `stat`.
+ *
+ * The response is here because of the 416 below: that is the one answer this
+ * function shapes rather than merely refuses, and the size it needs is known
+ * nowhere else. The throw travels back up through the endpoint's own call stack
+ * to the exception filter, which adds no headers of its own.
  */
-export function rangeCallbackFor(req: Request): RangeCallback {
+export function rangeCallbackFor(req: Request, res: Response): RangeCallback {
   return (fileSize: number) => {
     const parsed = req.range(fileSize);
     if (parsed === undefined) {
@@ -59,9 +70,11 @@ export function rangeCallbackFor(req: Request): RangeCallback {
     // `-1` and `-2` are different answers and a media element treats them
     // differently: a range past the end of the file is a 416 carrying the real
     // size, which is how the element learns to ask again, while a header it
-    // could not parse is the client's mistake and a 400.
+    // could not parse is the client's mistake and a 400. RFC 9110 §15.5.17
+    // spells the size as `bytes */<size>` with no range before the slash.
     if (parsed === -1) {
-      throw new H5pError('h5p-range:unsatisfiable', { size: String(fileSize) }, 416);
+      res.set('Content-Range', `bytes */${String(fileSize)}`);
+      throw new H5pError('h5p-range:unsatisfiable', {}, 416);
     }
     if (parsed === -2) {
       throw new H5pError('h5p-range:malformed', {}, 400);
@@ -136,25 +149,54 @@ export function pipePartialStream(
  * fails after one cannot — the only honest answer then is to break the
  * connection rather than append an error to a truncated body.
  *
+ * **A failure before the first byte is a 500, not a 404.**
+ * `H5PAjaxEndpoint.getContentFile` stats the object before it opens a stream,
+ * so by the time this runs the file is known to exist; what is left is a reset
+ * connection, a 5xx from the bucket or expired credentials, and every one of
+ * those is this server's fault. Answering 404 would tell a learner the audio
+ * does not exist and send whoever reads the logs looking for missing content.
+ *
+ * **Both branches log.** Nothing else can: the exception filter never sees
+ * these, so without a line here a bucket outage is a wall of failed media
+ * requests with nothing anywhere to explain them.
+ *
  * `close` destroys the stream so an abandoned seek — which is every seek, since
  * a media element cancels the request it was reading — does not leave a Cloud
  * Storage read open behind it.
  */
 function pipe(res: Response, stream: Readable): void {
-  res.on('close', () => stream.destroy());
+  // `close` also fires when the response finishes normally, which is what makes
+  // this the right test for "there is no longer anybody to answer or to warn":
+  // the destroy below is itself a plausible cause of the error handler running,
+  // and an abandoned seek is not an incident.
+  let responseClosed = false;
+  res.on('close', () => {
+    responseClosed = true;
+    stream.destroy();
+  });
 
-  stream.on('error', () => {
+  stream.on('error', (error: Error) => {
+    if (responseClosed) {
+      return;
+    }
+
     if (res.headersSent) {
+      logger.error(
+        `Reading ${res.req.originalUrl} failed after the response had started, so its body is truncated: ${error.message}`,
+      );
       res.destroy();
       return;
     }
 
+    logger.error(
+      `Reading ${res.req.originalUrl} failed before any byte was written: ${error.message}`,
+    );
     // These describe a body that is not going to arrive, and `Content-Length`
     // in particular would leave the client waiting for bytes.
     res.removeHeader('Content-Length');
     res.removeHeader('Content-Range');
     res.removeHeader('Content-Type');
-    res.status(404).end();
+    res.status(500).end();
   });
 
   stream.pipe(res);

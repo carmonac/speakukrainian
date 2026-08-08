@@ -1,9 +1,22 @@
 import { PassThrough, Readable } from 'node:stream';
+import { Logger } from '@nestjs/common';
 import { H5pError } from '@lumieducation/h5p-server';
 import express from 'express';
 import type { Request, Response } from 'express';
-import { describe, expect, it } from 'vitest';
-import { pipePartialStream, pipeWholeStream, rangeCallbackFor } from './h5p.responses.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  pipePartialStream,
+  pipeWholeStream,
+  rangeCallbackFor,
+  type RangeCallback,
+} from './h5p.responses.js';
+
+/** The URL the fake response reports, which is what a log line has to name. */
+const REQUEST_PATH = '/api/h5p/content/abc/media/tone.mp3';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /**
  * A real Express request carrying one header, so `req.range()` under test is
@@ -14,6 +27,24 @@ function requestWithRange(header?: string): Request {
   return Object.assign(Object.create(express.request) as Request, {
     headers: header === undefined ? {} : { range: header },
   });
+}
+
+/** The callback under test, and the response it may set a header on before throwing. */
+function rangeCallback(header?: string): { call: RangeCallback; record: RecordedResponse } {
+  const record = recordingResponse();
+  return { call: rangeCallbackFor(requestWithRange(header), record.res), record };
+}
+
+/**
+ * Starts capturing what `Logger.error` is told, and hands back a reader for it.
+ *
+ * The log line is the outcome under test here rather than a detail of it: a
+ * stream that fails is never seen by the exception filter, so this is the only
+ * trace such a failure leaves anywhere.
+ */
+function captureErrors(): () => string[] {
+  const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  return () => spy.mock.calls.map(([message]) => String(message));
 }
 
 /** The `H5pError` a call threw, or a failure saying it did not throw at all. */
@@ -72,12 +103,18 @@ function recordingResponse(): RecordedResponse {
     record.statusCode = code;
     return record.res;
   };
-  res['set'] = (values: Record<string, string>) => {
-    for (const [name, value] of Object.entries(values)) {
-      record.headers.set(name, value);
+  // Both of Express's shapes: the whole-header object, and the single header
+  // `rangeCallbackFor` sets on its way to a 416.
+  res['set'] = (values: Record<string, string> | string, value?: string) => {
+    const entries = typeof values === 'string' ? [[values, value ?? '']] : Object.entries(values);
+    for (const [name, header] of entries) {
+      record.headers.set(String(name), String(header));
     }
     return record.res;
   };
+  // Express sets this on every response, and a log line about a failed read is
+  // worth nothing without the URL that was being read.
+  res['req'] = { originalUrl: REQUEST_PATH };
   res['removeHeader'] = (name: string) => {
     record.headers.delete(name);
   };
@@ -101,45 +138,56 @@ function recordingResponse(): RecordedResponse {
 
 describe('rangeCallbackFor', () => {
   it('asks for the whole file when the request carries no Range', () => {
-    expect(rangeCallbackFor(requestWithRange())(100)).toBeUndefined();
+    expect(rangeCallback().call(100)).toBeUndefined();
   });
 
   it('reads a closed range', () => {
-    expect(rangeCallbackFor(requestWithRange('bytes=10-19'))(100)).toEqual({ start: 10, end: 19 });
+    expect(rangeCallback('bytes=10-19').call(100)).toEqual({ start: 10, end: 19 });
   });
 
   it('reads the open-ended form a media element actually sends', () => {
     // `bytes=90-` is what an `<audio>` element sends when a learner drags the
     // scrubber; only the file size can close it, which is why this is a
     // callback and not a value.
-    expect(rangeCallbackFor(requestWithRange('bytes=90-'))(100)).toEqual({ start: 90, end: 99 });
+    expect(rangeCallback('bytes=90-').call(100)).toEqual({ start: 90, end: 99 });
   });
 
   it('reads a suffix range', () => {
-    expect(rangeCallbackFor(requestWithRange('bytes=-10'))(100)).toEqual({ start: 90, end: 99 });
+    expect(rangeCallback('bytes=-10').call(100)).toEqual({ start: 90, end: 99 });
   });
 
-  it('answers a range past the end of the file with 416, not 400', () => {
-    // A media element treats these differently: 416 carries the real size and
-    // teaches it to ask again, where 400 is a dead end. Conflating the parser's
-    // `-1` with its `-2` is how that happens.
-    const error = thrownBy(() => rangeCallbackFor(requestWithRange('bytes=200-300'))(100));
+  it('answers a range past the end of the file with 416 carrying the real size', () => {
+    // A media element treats a 416 and a 400 differently, and the size is the
+    // difference: `Content-Range: bytes */<size>` (RFC 9110 §15.5.17) is how it
+    // learns what to ask for instead, where a 400 is a dead end. Conflating the
+    // parser's `-1` with its `-2` loses the status; leaving the header off
+    // loses the only part of the answer that is actionable.
+    const { call, record } = rangeCallback('bytes=200-300');
+
+    const error = thrownBy(() => call(100));
 
     expect(error.httpStatusCode).toBe(416);
     expect(error.errorId).toBe('h5p-range:unsatisfiable');
+    expect(record.headers.get('Content-Range')).toBe('bytes */100');
   });
 
-  it('answers a header it cannot parse with 400', () => {
-    const error = thrownBy(() => rangeCallbackFor(requestWithRange('bytes=abc'))(100));
+  it('answers a header it cannot parse with 400 and no Content-Range', () => {
+    // Nothing is known about what the caller should have asked for, so there is
+    // no size to report — and a `bytes */…` on a 400 would be an answer to a
+    // question they did not ask.
+    const { call, record } = rangeCallback('bytes=abc');
+
+    const error = thrownBy(() => call(100));
 
     expect(error.httpStatusCode).toBe(400);
     expect(error.errorId).toBe('h5p-range:malformed');
+    expect(record.headers.has('Content-Range')).toBe(false);
   });
 
   it('refuses a multi-range request rather than answering part of it', () => {
     // The correct answer is a `multipart/byteranges` body. Serving only the
     // first range instead would be silently wrong data, not an error.
-    const error = thrownBy(() => rangeCallbackFor(requestWithRange('bytes=0-9,20-29'))(100));
+    const error = thrownBy(() => rangeCallback('bytes=0-9,20-29').call(100));
 
     expect(error.errorId).toBe('h5p-range:multipart');
   });
@@ -148,7 +196,7 @@ describe('rangeCallbackFor', () => {
     // RFC 9110 §14.2: an unrecognised range unit is ignored. Refusing it would
     // also have to explain itself, and the only sentence to hand says the
     // caller asked for two ranges, which they did not.
-    expect(rangeCallbackFor(requestWithRange('items=0-9'))(100)).toBeUndefined();
+    expect(rangeCallback('items=0-9').call(100)).toBeUndefined();
   });
 });
 
@@ -228,7 +276,8 @@ describe('pipePartialStream', () => {
 });
 
 describe('a storage stream that fails', () => {
-  it('answers 404 and clears the headers that promised a body, when nothing has been written', async () => {
+  /** Attaches a stream that is about to fail, in the shape the routes attach one. */
+  function pipingWholeFile(): { record: RecordedResponse; stream: PassThrough } {
     const record = recordingResponse();
     const stream = new PassThrough();
 
@@ -237,10 +286,24 @@ describe('a storage stream that fails', () => {
       contentLength: 4096,
       cacheControl: 'private, max-age=300',
     });
-    stream.destroy(new Error('the object is not there'));
-    await new Promise((resolve) => setImmediate(resolve));
 
-    expect(record.statusCode).toBe(404);
+    return { record, stream };
+  }
+
+  const settle = (): Promise<unknown> => new Promise((resolve) => setImmediate(resolve));
+
+  it('answers 500, not 404, and clears the headers that promised a body', async () => {
+    // The endpoint stats the object before it opens a stream, so by the time
+    // this runs the file is known to exist and what failed is the read. A 404
+    // would tell a learner their audio does not exist and send whoever reads
+    // the logs looking for missing content instead of for a bucket.
+    const errors = captureErrors();
+    const { record, stream } = pipingWholeFile();
+
+    stream.destroy(new Error('socket hang up'));
+    await settle();
+
+    expect(record.statusCode).toBe(500);
     // Answered rather than left hanging: with `@Res()` in the controller,
     // Nest's exception filter cannot do this for us.
     expect(record.ended).toBe(true);
@@ -249,42 +312,55 @@ describe('a storage stream that fails', () => {
     expect(record.headers.has('Content-Length')).toBe(false);
     expect(record.headers.has('Content-Type')).toBe(false);
     expect(record.written()).toEqual(Buffer.alloc(0));
+    expect(errors()).toHaveLength(1);
+    expect(errors()[0]).toContain(REQUEST_PATH);
+    expect(errors()[0]).toContain('socket hang up');
   });
 
   it('breaks the connection rather than writing a second status, once bytes have gone out', async () => {
-    const record = recordingResponse();
-    const stream = new PassThrough();
+    const errors = captureErrors();
+    const { record, stream } = pipingWholeFile();
 
-    pipeWholeStream(record.res, stream, {
-      mimetype: 'audio/mpeg',
-      contentLength: 4096,
-      cacheControl: 'private, max-age=300',
-    });
     stream.write('some bytes');
     record.headersSent = true;
     stream.destroy(new Error('the connection to the bucket dropped'));
-    await new Promise((resolve) => setImmediate(resolve));
+    await settle();
 
     expect(record.destroyed).toBe(true);
-    // 200 was already on the wire; a 404 appended to a truncated body would be
-    // a lie the client cannot see.
+    // 200 was already on the wire; a 500 appended to a truncated body would be
+    // a lie the client cannot see. The log line is the only place this failure
+    // is visible at all, which is why it is asserted rather than assumed.
     expect(record.statusCode).toBe(200);
+    expect(errors()).toHaveLength(1);
+    expect(errors()[0]).toContain('the connection to the bucket dropped');
   });
 
   it('destroys the storage stream when the client goes away mid-seek', async () => {
     // Every seek ends this way: a media element cancels the request it was
     // reading. Without this each one leaks an open Cloud Storage read.
-    const record = recordingResponse();
-    const stream = new PassThrough();
+    const { record, stream } = pipingWholeFile();
 
-    pipeWholeStream(record.res, stream, {
-      mimetype: 'audio/mpeg',
-      contentLength: 4096,
-      cacheControl: 'private, max-age=300',
-    });
     record.res.emit('close');
-    await new Promise((resolve) => setImmediate(resolve));
+    await settle();
 
     expect(stream.destroyed).toBe(true);
+  });
+
+  it('says nothing about a stream that fails after the response has closed', async () => {
+    // The destroy above is itself a plausible cause of a stream error, and an
+    // abandoned seek is not an incident: logging it would put a line in the log
+    // for every seek a learner makes and bury the outage this logging is for.
+    const errors = captureErrors();
+    const { record, stream } = pipingWholeFile();
+
+    record.res.emit('close');
+    // Emitted rather than destroyed: the `close` handler has already destroyed
+    // it, and a stream reports the consequences of that itself — a Cloud
+    // Storage read answers a cancelled request with `Premature close`.
+    stream.emit('error', new Error('Premature close'));
+    await settle();
+
+    expect(errors()).toEqual([]);
+    expect(record.statusCode).toBe(200);
   });
 });

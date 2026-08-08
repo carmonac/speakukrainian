@@ -2,14 +2,18 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { BadRequestException, HttpException } from '@nestjs/common';
+import { BadRequestException, HttpException, Logger } from '@nestjs/common';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { H5pPublicController } from './h5p-public.controller.js';
 import type { ContentFileResult, H5pServeService, LibraryFileResult } from './h5p-serve.service.js';
-import type { H5pAssetKind, H5pClientAssets } from './h5p.client-assets.js';
+import {
+  missingAssetsMessage,
+  type H5pAssetKind,
+  type H5pClientAssets,
+} from './h5p.client-assets.js';
 import type { RangeCallback } from './h5p.responses.js';
 
 /**
@@ -41,8 +45,23 @@ interface Harness {
   asked: () => string[];
   /** The exception the route let escape, which the global filter answers in the real app. */
   escaped: () => unknown;
+  /** Whether the fetched client trees are on disk, which the asset routes check first. */
+  setInstalled: (installed: boolean) => void;
+  /**
+   * Makes `res.sendFile` fail with a given error instead of reading the tree.
+   *
+   * A real `EACCES` would need a directory this process may not read, which is
+   * not a state a test can create when it runs as root — and the mapping under
+   * test is of `send`'s `status`, not of any particular syscall.
+   */
+  failAssetSendWith: (error: Error | null) => void;
   reset: () => void;
   cleanup: () => Promise<void>;
+}
+
+/** An error in the shape `send` raises, which carries the status it chose. */
+function sendError(message: string, status: number): Error {
+  return Object.assign(new Error(message), { status });
 }
 
 async function createHarness(): Promise<Harness> {
@@ -90,10 +109,24 @@ async function createHarness(): Promise<Harness> {
     },
   } as unknown as H5pServeService;
 
+  let installed = true;
+  let sendFailure: Error | null = null;
+
   const assets = {
-    isInstalled: (): Promise<boolean> => Promise.resolve(true),
+    isInstalled: (): Promise<boolean> => Promise.resolve(installed),
     rootOf: (kind: H5pAssetKind): string => roots[kind],
   } as unknown as H5pClientAssets;
+
+  /** Stands in for `send` failing on the tree itself rather than on the path asked for. */
+  const withFailingSendFile = (res: Response): void => {
+    if (!sendFailure) {
+      return;
+    }
+    const failure = sendFailure;
+    res.sendFile = ((_path: string, _options: unknown, callback: (error?: Error) => void) => {
+      callback(failure);
+    }) as unknown as Response['sendFile'];
+  };
 
   const controller = new H5pPublicController(serve, assets);
   const app = express();
@@ -105,9 +138,11 @@ async function createHarness(): Promise<Harness> {
     controller.libraryFile(named(req, 'ubername'), req, res).catch(next);
   });
   app.get('/h5p/core/*path', (req: Request, res: Response, next: NextFunction) => {
+    withFailingSendFile(res);
     controller.coreAsset(req, res).catch(next);
   });
   app.get('/h5p/editor-assets/*path', (req: Request, res: Response, next: NextFunction) => {
+    withFailingSendFile(res);
     controller.editorAsset(req, res).catch(next);
   });
   app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
@@ -121,9 +156,17 @@ async function createHarness(): Promise<Harness> {
     app,
     asked: () => [...asked],
     escaped: () => escaped,
+    setInstalled: (value: boolean) => {
+      installed = value;
+    },
+    failAssetSendWith: (error: Error | null) => {
+      sendFailure = error;
+    },
     reset: () => {
       asked.length = 0;
       escaped = undefined;
+      installed = true;
+      sendFailure = null;
     },
     cleanup: () => rm(base, { recursive: true, force: true }),
   };
@@ -161,6 +204,10 @@ describe('H5pPublicController', () => {
 
   beforeEach(() => {
     harness.reset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('the traversal guard on every wildcard route', () => {
@@ -245,11 +292,74 @@ describe('H5pPublicController', () => {
       expect(response.text).toContain('window.H5P');
     });
 
-    it('never serves a dotfile out of the tree', async () => {
+    it('never serves a dotfile out of the tree, and does not call it a server fault', async () => {
+      const errors = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
       const response = await request(harness.app).get('/h5p/core/.htpasswd');
 
       expect(response.status).toBe(404);
       expect(response.text).not.toContain(SECRET);
+      // `send` refuses this with a 403 and the route answers 404, which is a
+      // decision about the request rather than an incident: logging it would
+      // put a line in the log for every probe.
+      expect(errors).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['core', '/h5p/core/js/h5p.js'],
+      ['editor', '/h5p/editor-assets/scripts/h5peditor.js'],
+    ] as const)('answers 503 for the %s tree when it was never fetched', async (kind, path) => {
+      // A 404 per file sends whoever hits it looking for a wrong URL. This is a
+      // server that was never finished installing, and only a status of its own
+      // says so — `pnpm install` on a machine with no network leaves exactly
+      // this state.
+      harness.setInstalled(false);
+
+      const response = await request(harness.app).get(path);
+
+      expect(response.status).toBe(503);
+      expect(escapedMessage(harness.escaped())).toBe(missingAssetsMessage(kind));
+      expect(escapedMessage(harness.escaped())).toContain('pnpm h5p:fetch');
+    });
+
+    it('refuses a traversal before it checks whether the tree is there', async () => {
+      // Otherwise a server missing its assets answers a probe with a 503, which
+      // says more about this server than the probe deserves.
+      harness.setInstalled(false);
+
+      const response = await request(harness.app).get('/h5p/core/js/..%2f..%2foutside.txt');
+
+      expect(response.status).toBe(400);
+      expect(escapedMessage(harness.escaped())).toBe('The requested file path is not valid.');
+    });
+
+    it('answers 500 and logs when the tree itself cannot be read', async () => {
+      // `send` blames the request for a missing file and a dotfile. Anything
+      // else — a directory this process may not read, a disk error — is this
+      // installation's fault, and reporting it as a 404 hides an outage behind
+      // a message about a file that is actually there.
+      const errors = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      harness.failAssetSendWith(sendError('EACCES: permission denied', 500));
+
+      const response = await request(harness.app).get('/h5p/core/js/h5p.js');
+
+      const logged = errors.mock.calls.map(([message]) => String(message));
+      expect(response.status).toBe(500);
+      expect(escapedMessage(harness.escaped())).toContain('could not be read');
+      expect(logged).toHaveLength(1);
+      // The cause and the file, because neither alone is enough to act on.
+      expect(logged[0]).toContain('EACCES: permission denied');
+      expect(logged[0]).toContain('js/h5p.js');
+    });
+
+    it('answers 404 without logging when send refuses the request itself', async () => {
+      const errors = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      harness.failAssetSendWith(sendError('ENOENT: no such file or directory', 404));
+
+      const response = await request(harness.app).get('/h5p/core/js/absent.js');
+
+      expect(response.status).toBe(404);
+      expect(errors).not.toHaveBeenCalled();
     });
   });
 });

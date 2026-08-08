@@ -1,7 +1,8 @@
 import {
-  BadRequestException,
   Controller,
   Get,
+  InternalServerErrorException,
+  Logger,
   Param,
   Query,
   Req,
@@ -13,8 +14,13 @@ import type { IPlayerModel } from '@lumieducation/h5p-server';
 import type { Request, Response } from 'express';
 import { Public } from '../auth/public.decorator.js';
 import { H5pClientAssets, missingAssetsMessage, type H5pAssetKind } from './h5p.client-assets.js';
-import { joinContentFilePath } from './h5p.paths.js';
-import { pipePartialStream, pipeWholeStream, rangeCallbackFor } from './h5p.responses.js';
+import { wildcardPath } from './h5p.request.js';
+import {
+  CROSS_ORIGIN_HEADERS,
+  pipePartialStream,
+  pipeWholeStream,
+  rangeCallbackFor,
+} from './h5p.responses.js';
 import { H5pServeService } from './h5p-serve.service.js';
 
 /**
@@ -66,6 +72,8 @@ const ASSET_MAX_AGE = '1h';
 @ApiTags('h5p')
 @Controller('h5p')
 export class H5pPublicController {
+  private readonly logger = new Logger(H5pPublicController.name);
+
   constructor(
     private readonly serve: H5pServeService,
     private readonly assets: H5pClientAssets,
@@ -96,7 +104,11 @@ export class H5pPublicController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    const file = await this.serve.contentFile(contentId, wildcardPath(req), rangeCallbackFor(req));
+    const file = await this.serve.contentFile(
+      contentId,
+      wildcardPath(req),
+      rangeCallbackFor(req, res),
+    );
 
     if (file.range) {
       pipePartialStream(res, file.stream, {
@@ -156,6 +168,12 @@ export class H5pPublicController {
    * refuses them too: these trees are fetched from someone else's repository,
    * so "nothing beginning with a dot is served out of them" is a decision this
    * route makes rather than one it inherits.
+   *
+   * A failure `send` blames on the request — a missing file, a dotfile — is a
+   * 404, and the two are deliberately indistinguishable. Anything else is a
+   * fault of this server's own installation, such as a tree it may not read, so
+   * it is logged and answered 500 rather than quietly reported as a file that
+   * does not exist.
    */
   private async sendAsset(kind: H5pAssetKind, req: Request, res: Response): Promise<void> {
     const path = wildcardPath(req);
@@ -166,7 +184,7 @@ export class H5pPublicController {
       throw new ServiceUnavailableException(missingAssetsMessage(kind));
     }
 
-    res.set({ 'Cross-Origin-Resource-Policy': 'cross-origin' });
+    res.set(CROSS_ORIGIN_HEADERS);
 
     await new Promise<void>((resolve, reject) => {
       res.sendFile(
@@ -182,32 +200,30 @@ export class H5pPublicController {
           reject(error);
         },
       );
-    }).catch(() => {
+    }).catch((error: unknown) => {
+      if (sendFailureStatus(error) >= 500) {
+        this.logger.error(
+          `Serving "${path}" from the H5P ${kind} client tree failed: ${String(error)}`,
+        );
+        throw new InternalServerErrorException(
+          `The H5P ${kind} client library could not be read on this server.`,
+        );
+      }
+
       res.status(404).end();
     });
   }
 }
 
 /**
- * The `*path` wildcard, joined and asserted.
+ * The status `send` failed with, or 500 when it named none.
  *
- * Express 5 decodes each segment before handing it over, so
- * `media/..%2f..%2fx` arrives as `['media', '../../x']` — a per-segment check
- * sees two ordinary names. `joinContentFilePath` is where the assert runs after
- * the join, which is the only order that catches it.
- *
- * Its `H5pError` becomes a `BadRequestException` here rather than being carried
- * further: every one of these four routes refuses the path before it reaches
- * `StorageService` or `send`, and the caller is told the same thing whichever
- * one they asked.
+ * `send` sets `status` on the errors it raises: 404 for a missing file, 403 for
+ * a dotfile, 500 for a `stat` that failed for any other reason. An error
+ * without one did not come from `send` at all, and neither case is the
+ * caller's.
  */
-function wildcardPath(req: Request): string {
-  const raw: unknown = (req.params as Record<string, unknown>)['path'];
-  const segments = Array.isArray(raw) ? raw.map((segment) => String(segment)) : String(raw ?? '');
-
-  try {
-    return joinContentFilePath(segments);
-  } catch {
-    throw new BadRequestException('The requested file path is not valid.');
-  }
+function sendFailureStatus(error: unknown): number {
+  const status: unknown = error instanceof Error ? (error as { status?: unknown }).status : null;
+  return typeof status === 'number' ? status : 500;
 }

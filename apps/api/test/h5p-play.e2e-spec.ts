@@ -258,11 +258,17 @@ describe('h5p serving (e2e)', () => {
       expect(Buffer.from(response.body as Buffer)).toEqual(MEDIA_BYTES.subarray(start));
     });
 
-    it('answers 416 for a range past the end of the file', async () => {
-      await request(server())
+    it('answers 416 for a range past the end of the file, carrying the real size', async () => {
+      const response = await request(server())
         .get(mediaUrl())
         .set('Range', `bytes=${MEDIA_BYTES.length + 10}-`)
         .expect(416);
+
+      // RFC 9110 §15.5.17. This is what a media element reads to learn what it
+      // should have asked for; without it a seek past the end is a dead end.
+      // Asserted on the wire because the header is set inside the H5P
+      // endpoint's own call stack and has to survive the exception filter.
+      expect(response.headers['content-range']).toBe(`bytes */${MEDIA_BYTES.length}`);
     });
 
     it('answers without a token, and answers a student the same way', async () => {
