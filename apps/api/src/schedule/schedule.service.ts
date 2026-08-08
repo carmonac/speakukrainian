@@ -153,6 +153,13 @@ export class ScheduleService {
         throw new UnprocessableEntityException(
           `That window already holds more than ${failure.limit} slots for this owner`,
         );
+      case 'series-too-large':
+        // Neither a window nor an owner is involved here, so it says neither:
+        // an admin told "that window holds too many slots for this owner" goes
+        // looking in the wrong place entirely.
+        throw new UnprocessableEntityException(
+          `That series still has more than ${failure.limit} occurrences to come, which is more than one delete can remove — remove some occurrences individually first`,
+        );
       case 'invalid':
         // The `errors` key matches what `ZodValidationPipe` produces, so a
         // client renders both kinds of validation failure the same way.

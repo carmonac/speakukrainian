@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException, UnprocessableEntityException } fr
 import { describe, expect, it } from 'vitest';
 import type { CreateScheduleSlotInput, ScheduleSlot } from '@speakukrainian/shared';
 import {
+  MAX_SERIES_DELETE_SLOTS,
   type ScheduleDeleteResult,
   type ScheduleListResult,
   type ScheduleSeriesDeleteResult,
@@ -266,6 +267,22 @@ describe('ScheduleService failures', () => {
     const { service } = createService({ remove: { ok: false, reason: 'not-found' } });
 
     await expect(service.remove('slot-id')).rejects.toThrow(NotFoundException);
+  });
+
+  it('describes a series too large to delete as a series, not as a window', async () => {
+    const { service } = createService({
+      series: { ok: false, reason: 'series-too-large', limit: MAX_SERIES_DELETE_SLOTS },
+    });
+
+    const failure = await service.removeSeries('series-id').catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(UnprocessableEntityException);
+    const { message } = failure as UnprocessableEntityException;
+    expect(message).toContain('series');
+    expect(message).toContain(String(MAX_SERIES_DELETE_SLOTS));
+    // Neither a window nor an owner is involved in deleting a series, and an
+    // admin told otherwise looks in the wrong place.
+    expect(message).not.toMatch(/window|owner/);
   });
 
   it('asks the caller to narrow a range that holds too many slots', async () => {

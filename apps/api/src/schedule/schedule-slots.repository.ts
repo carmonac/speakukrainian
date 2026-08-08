@@ -29,6 +29,19 @@ export const MAX_OVERLAP_WINDOW_SLOTS = 2000;
 /** A range read is bounded by the range *and* by this: the response is a plain array. */
 export const MAX_LIST_SLOTS = 1000;
 
+/**
+ * The most occurrences one series delete may remove. This is not a policy
+ * number: Firestore commits at most 500 writes in one batch, and the delete is
+ * one batch, so reading further would only assemble a commit the server
+ * rejects. The emulator does not enforce the limit, which is exactly why the
+ * number is stated here and pinned by a test rather than trusted to `test:e2e`.
+ *
+ * Deliberately not `MAX_RECURRENCE_SLOTS`: this API cannot create a series
+ * longer than 200, so the only way past that is hand-written documents joining
+ * one — the very case the read exists to clean up.
+ */
+export const MAX_SERIES_DELETE_SLOTS = 500;
+
 /** `id` is the document id, so it is not duplicated inside the document body. */
 export function toDocumentData(slot: ScheduleSlot): Record<string, unknown> {
   const { id: _id, ...data } = slot;
@@ -51,6 +64,7 @@ export type ScheduleWriteFailure =
   | { reason: 'cap-exceeded'; limit: number }
   | { reason: 'recurrence-empty' }
   | { reason: 'window-too-dense'; limit: number }
+  | { reason: 'series-too-large'; limit: number }
   | { reason: 'invalid'; issues: z.core.$ZodIssue[] };
 
 export type ScheduleWriteRejection = { ok: false } & ScheduleWriteFailure;
@@ -286,17 +300,20 @@ export class ScheduleSlotsRepository extends BaseRepository<ScheduleSlot> {
    * untestable through the API today.
    *
    * The overflow refusal is defensive: this API cannot create a series longer
-   * than the cap, but a hand-written document can join one.
+   * than the cap, but a hand-written document can join one. It is bounded at
+   * {@link MAX_SERIES_DELETE_SLOTS} because the deletes go out as one batch, and
+   * a batch holds 500 writes — refusing is the only honest answer to a series
+   * that cannot be removed in one commit.
    */
   async removeSeries(recurrenceId: string, from: string): Promise<ScheduleSeriesDeleteResult> {
     const snapshot = await this.collection
       .where('recurrenceId', '==', recurrenceId)
       .where('startsAt', '>=', toInstant(from))
       .orderBy('startsAt')
-      .limit(MAX_OVERLAP_WINDOW_SLOTS + 1)
+      .limit(MAX_SERIES_DELETE_SLOTS + 1)
       .get();
-    if (snapshot.size > MAX_OVERLAP_WINDOW_SLOTS) {
-      return { ok: false, reason: 'window-too-dense', limit: MAX_OVERLAP_WINDOW_SLOTS };
+    if (snapshot.size > MAX_SERIES_DELETE_SLOTS) {
+      return { ok: false, reason: 'series-too-large', limit: MAX_SERIES_DELETE_SLOTS };
     }
 
     const batch = this.firestore.batch();
