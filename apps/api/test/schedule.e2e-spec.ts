@@ -273,9 +273,14 @@ describe('schedule slots (e2e)', () => {
     ['a zone that does not exist', 'Mars/Olympus'],
     ['a zone-shaped string', 'Not/AZone'],
     ['a blank zone', ' '],
-    // `Intl` resolves this one; the field refuses it because an offset never
-    // observes DST, so a series authored in it would drift half the year.
+    // `Intl` resolves these two; the field refuses them because an offset never
+    // observes DST, so a series authored in one would drift half the year. The
+    // second is spelled with U+2212 MINUS SIGN, which `Intl` reads as a sign
+    // just like the ASCII one — it is written as an escape because rendered it
+    // is indistinguishable, and it is here because a rule that named the ASCII
+    // signs accepted it and stored it.
     ['a fixed offset', '+05:30'],
+    ['a fixed offset signed with U+2212', '\u221205:30'],
   ])('refuses %s on a single slot and stores nothing', async (_name, timeZone) => {
     const response = await post({
       note: `${PREFIX}/bad-zone`,
@@ -319,6 +324,9 @@ describe('schedule slots (e2e)', () => {
 
     const offset = await patch(slot.id, { timeZone: '+05:30' }).expect(400);
     expect((offset.body as IssueBody).errors?.[0]?.path).toBe('timeZone');
+
+    const unicodeOffset = await patch(slot.id, { timeZone: '\u221205:30' }).expect(400);
+    expect((unicodeOffset.body as IssueBody).errors?.[0]?.path).toBe('timeZone');
 
     // The refusal really refused: the stored zone is untouched.
     expect(scheduleSlotSchema.parse((await read(slot.id).expect(200)).body).timeZone).toBe(

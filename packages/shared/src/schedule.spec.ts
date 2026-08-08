@@ -96,13 +96,75 @@ describe('timeZoneSchema', () => {
     expect(resolvableTimeZoneCacheSize()).toBe(cached);
   });
 
-  it.each(['+05:30', '+23:00', '-08', '+0530'])('refuses the fixed offset %s', (timeZone) => {
+  // The U+2212 spellings are written as escapes on purpose: rendered, they are
+  // indistinguishable from the ASCII ones, and the difference is the whole
+  // point — the ASCII spelling was refused while the U+2212 one was stored.
+  it.each([
+    ['+05:30', 'ASCII plus'],
+    ['+23:00', 'ASCII plus, the largest offset'],
+    ['-08', 'ASCII hyphen-minus, hours only'],
+    ['+0530', 'ASCII plus, no separator'],
+    ['\u221205:30', 'U+2212 minus sign'],
+    ['\u221208', 'U+2212 minus sign, hours only'],
+    ['\u22120530', 'U+2212 minus sign, no separator'],
+  ])('refuses the fixed offset %s (%s) and caches nothing for it', (timeZone) => {
     // `Intl` resolves all of these; the field refuses them because an offset
-    // never observes DST, which is the one thing it exists to survive.
+    // never observes DST, which is the one thing it exists to survive. Since
+    // `Intl` resolves them, they are also the inputs that can grow the cache on
+    // a path the schema refuses — so the size is part of the assertion.
+    const cached = resolvableTimeZoneCacheSize();
+
     const result = timeZoneSchema.safeParse(timeZone);
 
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.message).toContain('DST');
+    expect(resolvableTimeZoneCacheSize()).toBe(cached);
+  });
+
+  it('refuses every fixed offset the runtime resolves, whichever sign spells it', () => {
+    // A sweep rather than a handful of examples: the previous rule tested for a
+    // leading `+` or `-` and let all 1440 U+2212 spellings through. Sweeping
+    // every sign the runtime accepts against every hour and minute is what
+    // makes "no offset gets through" a measurement instead of a claim.
+    const cached = resolvableTimeZoneCacheSize();
+    const accepted = new Set<string>();
+
+    for (const sign of ['+', '-', '\u2212']) {
+      for (let hour = 0; hour < 24; hour += 1) {
+        const hh = String(hour).padStart(2, '0');
+        for (let minute = 0; minute < 60; minute += 1) {
+          const mm = String(minute).padStart(2, '0');
+          for (const spelling of [`${sign}${hh}:${mm}`, `${sign}${hh}${mm}`]) {
+            if (timeZoneSchema.safeParse(spelling).success) {
+              accepted.add(spelling);
+            }
+          }
+        }
+      }
+      for (let hour = 0; hour < 24; hour += 1) {
+        const spelling = `${sign}${String(hour).padStart(2, '0')}`;
+        if (timeZoneSchema.safeParse(spelling).success) {
+          accepted.add(spelling);
+        }
+      }
+    }
+
+    expect([...accepted]).toEqual([]);
+    expect(resolvableTimeZoneCacheSize()).toBe(cached);
+  });
+
+  it('accepts every zone name the runtime knows, so the refusal costs no real zone', () => {
+    // The other half of the rule in `ZONE_NAME_START`. Refusing everything that
+    // does not start with an ASCII letter is only exact if no zone name starts
+    // with anything else, and that is a property of whichever zone database the
+    // runtime carries — so ask the runtime, rather than pin a list that a later
+    // tzdata could outgrow.
+    const canonical = Intl.supportedValuesOf('timeZone');
+    expect(canonical.length).toBeGreaterThan(300);
+
+    const refused = canonical.filter((zone) => !timeZoneSchema.safeParse(zone).success);
+
+    expect(refused).toEqual([]);
   });
 
   it.each(['UTC', 'Etc/GMT+5', 'Asia/Kolkata'])(

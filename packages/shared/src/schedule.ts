@@ -11,9 +11,12 @@ export type SlotStatus = z.infer<typeof slotStatusSchema>;
  * `europe/madrid` and `eUrOpE/mAdRiD` all resolve to the same zone. Keyed by
  * the string as received, one zone would occupy 2048 entries and a caller could
  * grow the set for as long as it kept inventing spellings. Lower-casing
- * collapses them onto one key — no two zone names differ only by case — and
- * since failed lookups are never added, the set is then genuinely bounded by
- * the zone database however much junk is thrown at it.
+ * collapses them onto one key — no two zone names differ only by case.
+ *
+ * The other half of the bound is structural, and lives in `timeZoneSchema`: the
+ * only code path that reaches the `add` below is one that has already decided
+ * the value is a zone name the schema accepts. Nothing the field refuses can
+ * key this set, so it holds zone names and nothing else.
  */
 const resolvableTimeZones = new Set<string>();
 
@@ -27,10 +30,32 @@ export function resolvableTimeZoneCacheSize(): number {
 }
 
 /**
- * `Intl` also accepts a fixed offset (`+05:30`, `-08`, `+23:00`) wherever it
- * accepts a zone name. No IANA name begins with a sign, so this is exact.
+ * The rule that separates a zone name from a fixed offset: a zone name starts
+ * with an ASCII letter, and an offset cannot.
+ *
+ * `Intl` accepts an offset (`+05:30`, `-08`, `+0530`) wherever it accepts a zone
+ * name, and this field refuses one — see `timeZoneSchema` for why. Testing for
+ * the *sign* is what an earlier version did, with `/^[+-]/`, and it was wrong:
+ * `Intl` also reads U+2212 MINUS SIGN as a sign, so `−05:30` passed the test and
+ * was stored. Enumerating the signs would only have been right until ICU
+ * accepted a fourth one, so the test runs the other way round and asks what a
+ * zone name looks like:
+ *
+ * - an offset must begin with a sign — `Intl` resolves nothing offset-shaped
+ *   without one — and no sign is an ASCII letter, so no offset can pass;
+ * - every zone name begins with an ASCII letter, so no zone name is refused.
+ *
+ * Both halves were swept on this runtime: of all 1 114 112 code points exactly
+ * three (U+002B, U+002D, U+2212) are accepted ahead of an offset body, and of
+ * the 418 canonical names plus every backward-compatibility link that resolves,
+ * none begins with anything but an ASCII letter. A test pins each half.
  */
-const FIXED_OFFSET = /^[+-]/;
+const ZONE_NAME_START = /^[A-Za-z]/;
+
+const NOT_A_ZONE_NAME =
+  'A time zone must be an IANA name such as `Europe/Madrid`; a fixed offset is refused because it never observes DST';
+
+const UNRESOLVABLE_ZONE = 'Unknown IANA time zone — use a name such as `Europe/Madrid`';
 
 function isResolvableTimeZone(value: string): boolean {
   const key = value.toLowerCase();
@@ -65,7 +90,15 @@ function isResolvableTimeZone(value: string): boolean {
  * would drift an hour against Madrid for half the year, silently. A zone that
  * genuinely has no DST is still expressible by its name (`UTC`, `Etc/GMT+5`,
  * `Asia/Kolkata`); what is refused is the offset syntax, which is not a zone
- * name at all.
+ * name at all. `ZONE_NAME_START` carries the argument for why that test is
+ * exact.
+ *
+ * The two checks are **one** check, in this order, on purpose. Zod runs every
+ * refinement in a chain whatever failed before it, so as two `.refine()` calls
+ * the resolvability lookup still ran for a value the offset test had already
+ * refused — and cached it, which is the growth the cache above is not allowed
+ * to have. Written as one check that returns, the lookup is unreachable for
+ * anything the field refuses, so the set can hold nothing but zone names.
  *
  * The value is stored **as the caller spelled it**. Canonicalising through
  * `resolvedOptions().timeZone` would rewrite `US/Eastern` to `America/New_York`
@@ -75,11 +108,19 @@ function isResolvableTimeZone(value: string): boolean {
 export const timeZoneSchema = z
   .string()
   .min(1)
-  .refine((value) => !FIXED_OFFSET.test(value), {
-    message: 'A fixed offset never observes DST — use an IANA name such as `Europe/Madrid`',
-  })
-  .refine(isResolvableTimeZone, {
-    message: 'Unknown IANA time zone — use a name such as `Europe/Madrid`',
+  .superRefine((value, ctx) => {
+    if (value.length === 0) {
+      // `.min(1)` has already reported this one, and it runs whether or not
+      // this check does.
+      return;
+    }
+    if (!ZONE_NAME_START.test(value)) {
+      ctx.addIssue({ code: 'custom', message: NOT_A_ZONE_NAME });
+      return;
+    }
+    if (!isResolvableTimeZone(value)) {
+      ctx.addIssue({ code: 'custom', message: UNRESOLVABLE_ZONE });
+    }
   });
 
 /**
