@@ -455,19 +455,36 @@ A **fixed offset is refused** even though `Intl` accepts `+05:30` or `+23:00` wh
 zone name, because an offset never observes a transition: a series authored in `+02:00` would drift
 an hour against Madrid for half the year, quietly defeating the only reason the field exists. A zone
 that genuinely has no DST is still expressible by name (`UTC`, `Etc/GMT+5`, `Asia/Kolkata`) and a
-slot authored in one simply never shifts. Only the offset _syntax_ is refused, and no IANA name
-begins with a sign, so the test is exact.
+slot authored in one simply never shifts.
 
-**Both time-zone caches are keyed on the lower-cased zone**, and that is the whole of what makes
-them safe. `Intl` matches zone ids case-insensitively, so `Europe/Madrid`, `europe/madrid` and
+The refusal is written as **"a zone name starts with an ASCII letter"**, not as "the value does not
+start with a sign". The first version tested `/^[+-]/` and was bypassed by `−05:30`: `Intl` reads
+U+2212 MINUS SIGN as a sign too, so that offset parsed, was stored, and pinned its own formatter.
+Adding U+2212 to the character class would have been right only until ICU accepted a fourth sign, so
+the test asks the opposite question. It is exact in both directions, and each direction is swept
+rather than argued: across all 1 114 112 code points exactly three (U+002B, U+002D, U+2212) are
+accepted ahead of an offset body and `Intl` resolves nothing offset-shaped without one, so no offset
+can start with a letter; and of the 418 canonical names plus every backward-compatibility link that
+resolves, none starts with anything but a letter, so no real zone is refused. A test pins each half
+— one sweeps every offset spelling of all three signs, the other feeds the runtime's whole zone list
+through the schema.
+
+**Both time-zone caches are keyed on the lower-cased zone**, and that is half of what makes them
+safe. `Intl` matches zone ids case-insensitively, so `Europe/Madrid`, `europe/madrid` and
 `eUrOpE/mAdRiD` all resolve — 2048 spellings of one zone, each of which was a separate entry
 retaining its own `Intl.DateTimeFormat` (~15 KB) for the life of the process, reachable over HTTP by
-any admin token and unbounded. Lower-cased, no two zone names differ, so the caches are bounded by
-the zone database, which is the argument for having them at all; a test in each file asserts the
-cache does not grow when the same zone arrives under a new spelling. The _stored_ value keeps the
-caller's spelling: canonicalising through `resolvedOptions().timeZone` would rewrite `US/Eastern` to
-`America/New_York` behind the admin's back, so anything comparing two `timeZone` values must fold
-case rather than use `===`.
+any admin token and unbounded. Lower-cased, no two zone names differ.
+
+The other half is structural, and it is why `timeZoneSchema` runs its two checks as **one**
+refinement that returns early rather than as two chained `.refine()` calls. Zod runs every
+refinement in a chain whatever failed before it, so the chained version still looked `+05:30` up —
+and cached it — after the offset check had already refused it, which put the entire offset syntax
+(8712 spellings across the three signs) into a set documented as bounded by the zone database. As
+one check, the lookup is unreachable for anything the field refuses, so nothing but a zone name can
+key it. That is the same reason the API's formatter map is bounded: every caller passes a value this
+schema accepted. The _stored_ value keeps the caller's spelling — canonicalising through
+`resolvedOptions().timeZone` would rewrite `US/Eastern` to `America/New_York` behind the admin's
+back, so anything comparing two `timeZone` values must fold case rather than use `===`.
 
 **Ownership is not enforced on writes in Phase 1.** Every mutating route is `@Roles('admin')`, and
 that role is the whole of the check: any admin may patch or delete another admin's slot, or delete

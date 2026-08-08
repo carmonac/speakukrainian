@@ -29,8 +29,14 @@ const DAY_MS = 86_400_000;
  * case-insensitively, so `Europe/Madrid`, `europe/madrid` and `eUrOpE/mAdRiD`
  * all reach here and all resolve to the same rules; keyed by the string as
  * received, each spelling would retain its own formatter and a caller could
- * grow the map until the process ran out of memory. Lower-cased, the map is
- * bounded by the zone database, which is what makes caching safe at all.
+ * grow the map until the process ran out of memory.
+ *
+ * Lower-casing bounds the map at one entry per zone; what bounds the number of
+ * zones is that every caller passes a value `timeZoneSchema` accepted, which is
+ * a zone name and never a fixed offset. That is not decoration: `Intl` resolves
+ * an offset here too, and the offset syntax alone spans thousands of distinct
+ * ids, each of which would pin its own formatter. If this ever gains a caller
+ * whose zone has not been through the schema, that caller has to validate it.
  */
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
