@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_LOCALES } from './locale.js';
 import {
   MAX_SCHEDULE_RANGE_DAYS,
   MAX_SLOT_NOTE_LENGTH,
@@ -77,6 +78,23 @@ describe('slot notes', () => {
     ...(note === undefined ? {} : { note }),
   });
 
+  const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+
+  /**
+   * Distinct codes `localeCodeSchema` accepts (`zaa`, `zab`, …), so a case can
+   * hold more locales than the site can without any of them being refused for
+   * its spelling — the bound under test is the count, not the key.
+   */
+  const localeCodes = (count: number): string[] =>
+    Array.from(
+      { length: count },
+      (_unused, index) =>
+        `z${LETTERS[Math.floor(index / LETTERS.length)]}${LETTERS[index % LETTERS.length]}`,
+    );
+
+  const noteIn = (codes: string[]): Record<string, string> =>
+    Object.fromEntries(codes.map((code) => [code, 'x']));
+
   it('accepts a note in several locales and round-trips it', () => {
     const note = { en: 'Bring your workbook', uk: 'Візьміть зошит', es: 'Trae tu cuaderno' };
 
@@ -123,6 +141,33 @@ describe('slot notes', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.path).toEqual(['note', 'not a locale']);
+  });
+
+  it(`accepts a translation in each of ${MAX_LOCALES} locales`, () => {
+    // The cap is the number of locales the site can hold, so a note that fills
+    // every one of them is authored content and has to parse.
+    const note = noteIn(localeCodes(MAX_LOCALES));
+
+    const result = createScheduleSlotSchema.safeParse(slotWith(note));
+
+    expect(result.success).toBe(true);
+    expect(Object.keys(result.data?.note ?? {})).toHaveLength(MAX_LOCALES);
+  });
+
+  it(`refuses a note carrying more than ${MAX_LOCALES} locales`, () => {
+    // Every key is a valid locale code and every value is one character, so
+    // what is refused is the *number* of translations. Without this the
+    // per-locale bound bounds nothing: 500 characters under each of a few
+    // hundred invented codes is a note of any size the caller likes, and one
+    // range read carries up to `MAX_LIST_SLOTS` of them.
+    const result = createScheduleSlotSchema.safeParse(
+      slotWith(noteIn(localeCodes(MAX_LOCALES + 1))),
+    );
+
+    expect(result.success).toBe(false);
+    // Against the note, not one locale: no single entry is the one too many.
+    expect(result.error?.issues[0]?.path).toEqual(['note']);
+    expect(result.error?.issues[0]?.message).toContain(String(MAX_LOCALES));
   });
 });
 

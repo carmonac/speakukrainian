@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { auditSchema, isoDateTimeSchema, localeCodeSchema } from './common.js';
+import { MAX_LOCALES } from './locale.js';
 
 export const slotStatusSchema = z.enum(['open', 'booked', 'cancelled', 'completed']);
 export type SlotStatus = z.infer<typeof slotStatusSchema>;
@@ -138,8 +139,22 @@ export const timeZoneSchema = z
  */
 export const MAX_SLOT_NOTE_LENGTH = 500;
 
+/** Reported against the note as a whole: no one locale is the one too many. */
+const TOO_MANY_LOCALES = `A note cannot carry more than ${MAX_LOCALES} locales — the most the site can have`;
+
 /**
  * Free-form note shown to the learner before booking, as localized plain text.
+ *
+ * Bounded twice, and it needs both: `MAX_SLOT_NOTE_LENGTH` characters in each
+ * locale, and at most `MAX_LOCALES` entries. The per-locale bound alone bounds
+ * nothing — a caller can invent locale codes faster than the site can have
+ * locales, and one `MAX_LIST_SLOTS` range read then carries however many they
+ * cared to write. `MAX_LOCALES` is the domain's own number rather than one
+ * chosen for this field: a note can only usefully hold a translation for a
+ * locale that exists, and the locales route refuses to create more than that,
+ * so nothing refused here could have been authored. It is a cap and not the
+ * live locale count, which would cost a locales read on every write and make a
+ * stored note fail validation the day a locale is deleted.
  *
  * Plain text and not `richTextSchema`: this route runs no `RichTextSanitizer`,
  * `scheduleSlotSchema` carries no `audioAssets`/`imageAssets` for the orphan
@@ -147,7 +162,9 @@ export const MAX_SLOT_NOTE_LENGTH = 500;
  * carries up to `MAX_LIST_SLOTS` of these. A locale with no translation falls
  * back per ADR-009, and a slot with no note at all shows nothing.
  */
-export const slotNoteSchema = z.record(localeCodeSchema, z.string().max(MAX_SLOT_NOTE_LENGTH));
+export const slotNoteSchema = z
+  .record(localeCodeSchema, z.string().max(MAX_SLOT_NOTE_LENGTH))
+  .refine((note) => Object.keys(note).length <= MAX_LOCALES, { message: TOO_MANY_LOCALES });
 
 /**
  * A window of the admin's time that a learner can book. Times are stored as

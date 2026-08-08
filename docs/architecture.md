@@ -512,14 +512,25 @@ administering their own calendars, or admins who are not all trusted with each o
 Booking is the related Phase 2 hole and is closed the other way: `booked` is excluded from the patch
 schema outright, so no route can produce a slot that reads as booked with no `bookedBy`.
 
-**A slot's `note` is localized plain text** — `LocalizedText`, bounded at `MAX_SLOT_NOTE_LENGTH`
-_per locale_ so a sixth translation never invalidates text already authored in five — and not
-`RichText`. It is shown to a learner, so rule 2 makes it localized; what it is not is rich, because
-this route runs no `RichTextSanitizer` as every other rich text field's does, `scheduleSlotSchema`
-carries no `audioAssets`/`imageAssets` for the orphan sweep to read so any embedded media would be
-untracked, and one `MAX_LIST_SLOTS` range read would otherwise carry a thousand HTML bodies. Rule 3
-still holds: the admin authors it in `LocalizedRichTextEditor` with `[inlineOnly]="true"` through
+**A slot's `note` is localized plain text** — `LocalizedText`, not `RichText`. It is shown to a
+learner, so rule 2 makes it localized; what it is not is rich, because this route runs no
+`RichTextSanitizer` as every other rich text field's does, `scheduleSlotSchema` carries no
+`audioAssets`/`imageAssets` for the orphan sweep to read so any embedded media would be untracked,
+and one `MAX_LIST_SLOTS` range read would otherwise carry a thousand HTML bodies. Rule 3 still
+holds: the admin authors it in `LocalizedRichTextEditor` with `[inlineOnly]="true"` through
 `toPlainLocalized`/`fromPlainLocalized`, the same way `section.title` and `page.title` are authored.
+
+That last reason only counts if the note is actually bounded, so it is bounded **twice**: at
+`MAX_SLOT_NOTE_LENGTH` _per locale_, so a sixth translation never invalidates text already authored
+in five, and at `MAX_LOCALES` _entries_. The second bound is not optional decoration — a per-locale
+bound on a `Record<LocaleCode, string>` bounds nothing on its own, because a caller can invent
+locale codes indefinitely, and 500 characters under each of a few hundred of them is a note of any
+size they like, multiplied by a recurrence on write and by `MAX_LIST_SLOTS` on read. `MAX_LOCALES`
+is reused rather than a number chosen for this field: a note can only usefully hold a translation
+for a locale that exists, and the locales route refuses to create more than that, so nothing this
+refuses could have been authored. It is the cap and not the live locale count, which would cost a
+locales read on every write and would fail a stored note the day a locale is deleted. The same
+reasoning applies to every other localized field, and none of them enforces it yet.
 
 _Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
 document hand-written with a duration over 24 h is invisible to the overlap check; and overlap

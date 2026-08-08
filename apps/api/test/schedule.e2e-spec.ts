@@ -5,6 +5,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   COLLECTIONS,
+  MAX_LOCALES,
   MAX_SCHEDULE_RANGE_DAYS,
   MAX_SLOT_NOTE_LENGTH,
   scheduleSlotSchema,
@@ -56,6 +57,19 @@ const BALLAST_COUNT = 1100;
 
 /** Under Firestore's 500-write limit for one batch. */
 const BALLAST_BATCH = 400;
+
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+
+/**
+ * Distinct codes `localeCodeSchema` accepts (`zaa`, `zab`, …), three letters so
+ * none of them can collide with `TAG_LOCALE` and overwrite the tag.
+ */
+const spareLocaleCodes = (count: number): string[] =>
+  Array.from(
+    { length: count },
+    (_unused, index) =>
+      `z${LETTERS[Math.floor(index / LETTERS.length)]}${LETTERS[index % LETTERS.length]}`,
+  );
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -316,6 +330,29 @@ describe('schedule slots (e2e)', () => {
     expect(await listLabelled('long-note', '2026-05-25T00:00:00Z', '2026-05-26T00:00:00Z')).toEqual(
       [],
     );
+  });
+
+  it('refuses a note carrying more locales than the site can hold', async () => {
+    // Every value is one character, so this is refused for the number of
+    // translations and nothing else. The per-locale bound on its own leaves the
+    // note unbounded — 500 characters under each of a few hundred invented
+    // codes, multiplied by a recurrence and again by a range read.
+    const note: Record<string, string> = { ...tag('many-locales') };
+    for (const code of spareLocaleCodes(MAX_LOCALES)) {
+      note[code] = 'x';
+    }
+
+    const response = await post({
+      note,
+      startsAt: '2026-05-26T09:00:00Z',
+      endsAt: '2026-05-26T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    }).expect(400);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('note');
+    expect(
+      await listLabelled('many-locales', '2026-05-26T00:00:00Z', '2026-05-27T00:00:00Z'),
+    ).toEqual([]);
   });
 
   it.each([
