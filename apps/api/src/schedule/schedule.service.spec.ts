@@ -215,7 +215,7 @@ describe('ScheduleService create', () => {
 });
 
 describe('ScheduleService failures', () => {
-  it('maps an overlap with a stored slot to 409', async () => {
+  it('maps an overlap with a stored slot to 409 naming the slot it collided with', async () => {
     const { service } = createService({
       write: {
         ok: false,
@@ -225,7 +225,13 @@ describe('ScheduleService failures', () => {
       },
     });
 
-    await expect(service.create(singleSlot, 'admin-uid')).rejects.toThrow(ConflictException);
+    const failure = await service.create(singleSlot, 'admin-uid').catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ConflictException);
+    // Without the id the message says only that *something* is in the way, and
+    // the admin has to find it themselves.
+    expect((failure as ConflictException).message).toContain('other-slot');
+    expect((failure as ConflictException).message).toContain('2026-09-07T07:00:00.000Z');
   });
 
   it('names the duration cap', async () => {

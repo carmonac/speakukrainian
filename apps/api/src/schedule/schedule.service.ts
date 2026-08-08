@@ -127,8 +127,12 @@ export class ScheduleService {
       case 'not-found':
         throw new NotFoundException('Schedule slot not found');
       case 'overlap':
+        // The conflicting slot's id is in the message because it is the only
+        // thing that makes the refusal actionable: the calendar can take the
+        // admin to the slot they collided with instead of leaving them to find
+        // it by eye in a range that may hold hundreds.
         throw new ConflictException(
-          `A slot starting at ${failure.startsAt} overlaps an existing slot for this owner`,
+          `A slot starting at ${failure.startsAt} overlaps the existing slot \`${failure.conflictId}\` for this owner`,
         );
       case 'self-overlap':
         // Naming the request rather than a stored slot matters: an admin told
