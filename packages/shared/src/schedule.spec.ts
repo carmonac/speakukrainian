@@ -153,12 +153,18 @@ describe('timeZoneSchema', () => {
     expect(resolvableTimeZoneCacheSize()).toBe(cached);
   });
 
-  it('accepts every zone name the runtime knows, so the refusal costs no real zone', () => {
+  it('accepts every canonical zone name the runtime lists', () => {
     // The other half of the rule in `ZONE_NAME_START`. Refusing everything that
     // does not start with an ASCII letter is only exact if no zone name starts
     // with anything else, and that is a property of whichever zone database the
     // runtime carries — so ask the runtime, rather than pin a list that a later
     // tzdata could outgrow.
+    //
+    // `supportedValuesOf` is canonical names only — about 420 of the ~600 ids
+    // the runtime resolves. The backward-compatibility links it omits are what
+    // the `Asia/Calcutta` case above covers; reading the on-disk tz database to
+    // sweep the rest would make this suite depend on its environment, which is
+    // the wrong trade for `packages/shared`.
     const canonical = Intl.supportedValuesOf('timeZone');
     expect(canonical.length).toBeGreaterThan(300);
 

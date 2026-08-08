@@ -476,8 +476,8 @@ rather than argued: across all 1 114 112 code points exactly three (U+002B, U+00
 accepted ahead of an offset body and `Intl` resolves nothing offset-shaped without one, so no offset
 can start with a letter; and of the 418 canonical names plus every backward-compatibility link that
 resolves, none starts with anything but a letter, so no real zone is refused. A test pins each half
-— one sweeps every offset spelling of all three signs, the other feeds the runtime's whole zone list
-through the schema.
+— one sweeps every offset spelling of all three signs, the other feeds the runtime's canonical zone
+list through the schema, with an explicit case for a backward-compatibility link that list omits.
 
 **Both time-zone caches are keyed on the lower-cased zone**, and that is half of what makes them
 safe. `Intl` matches zone ids case-insensitively, so `Europe/Madrid`, `europe/madrid` and
