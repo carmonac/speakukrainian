@@ -441,6 +441,16 @@ refused instead of assembling a commit the server would reject. It is bounded th
 the very case the refusal exists to let an admin clean up. The Firestore emulator does not enforce
 the 500-write limit, so this one is pinned by a unit test against a double that does.
 
+**The range read answers with a bare `ScheduleSlot[]`, not the `Page<T>` every other list route
+returns.** A calendar is not a cursor list: #15 draws a whole visible range at once, and half a week
+followed by a `nextCursor` is not something a calendar can render. The mandatory, 366-day-capped
+range is the bound that pagination would otherwise supply, and the 422 at `MAX_LIST_SLOTS = 1000` is
+what replaces "fetch the next page" — the honest answer to a range holding more slots than one
+response should carry is to ask for a narrower range, not to hand back a page of it and let the
+caller believe the week is empty after Wednesday. This is a deliberate exception for a bounded
+range read, not a second house pattern: a list route with no natural range still returns `Page<T>`
+from `BaseRepository.paginate`.
+
 `timeZone` is validated as **a zone the runtime can actually resolve**, in `packages/shared` rather
 than in the API, because both halves of the field have to close: an unresolvable zone handed to
 `Intl.DateTimeFormat` is a `RangeError`, and one that is merely stored is a document every later
