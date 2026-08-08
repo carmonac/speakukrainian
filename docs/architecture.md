@@ -174,6 +174,18 @@ setup: the admin runs on :4200 and a relative `/api/h5p/core/js/h5p.js` resolves
 overridden to `/editor-assets` because its default, `/editor`, is where the editor _model_ route
 goes — two different things one line apart in the URL space, and the collision would be silent.
 
+_Player language._ `GET /api/h5p/play/:contentId` accepts `?lang`, and **the player's own chrome
+renders in English whatever is asked for** — including `uk`. `H5PPlayer` localizes its labels
+through a `translationCallback`; `h5p.module.ts` passes none, so the constructor's English-only
+default is what runs. That is recorded here rather than fixed because fixing it is not a wiring
+change: `@lumieducation/h5p-server` ships client translations for 29 locales and **Ukrainian is not
+one of them** (nor is it among the 28 server-side ones), so wiring the callback would get `es` for
+free and still render English for this product's own language, which needs strings we write and
+then maintain. The parameter is accepted and threaded through so that doing it later changes the
+module and not the route or its callers. Exercise _content_ is unaffected — that comes out of the
+uploaded package. The e2e suite pins the English chrome, so the day a callback is wired the test
+that fails is the one that says so.
+
 _Who may read H5P content._ `GET /api/h5p/play/:contentId` and `GET /api/h5p/content/:contentId/*`
 are `@Public()`. **What protects them is the unguessable id, not publication state**, and that is a
 decision rather than an oversight: `h5pContentSchema` has no published/draft field, and

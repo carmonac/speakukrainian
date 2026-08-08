@@ -17,7 +17,18 @@ import { H5P_AJAX_ENDPOINT, H5P_PLAYER } from './h5p.tokens.js';
  */
 const ANONYMOUS_USER: IUser = { id: 'anonymous', name: 'Anonymous', email: '', type: 'local' };
 
-/** The language the player localizes its own chrome into when none is asked for. */
+/**
+ * What `H5PPlayer.render` is told when the request asks for no language.
+ *
+ * It is the only language the chrome is ever rendered in today, whatever is
+ * asked for: the player's `translationCallback` defaults to an English-only
+ * `SimpleTranslator` and `h5p.module.ts` passes none, so `uk` and `es` and a
+ * locale that does not exist all come back with English labels. The parameter
+ * is threaded through anyway so that wiring a callback is a change to the
+ * module and not to the routes. ADR-007 records the decision; the library's own
+ * client translations do not include Ukrainian, so undoing it needs strings we
+ * write.
+ */
 const DEFAULT_LANGUAGE = 'en';
 
 export interface ContentFileResult {

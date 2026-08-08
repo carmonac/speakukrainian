@@ -82,6 +82,12 @@ export class H5pPublicController {
   /**
    * The model `@lumieducation/h5p-webcomponents` renders an exercise from.
    *
+   * `?lang` selects the language of the player's own chrome — its fullscreen
+   * and copyright labels — and **today every value of it renders English**,
+   * because no `translationCallback` is wired. It is accepted and threaded
+   * through so that wiring one later needs no change to this route or to its
+   * callers. ADR-007 records that decision and what it will take to undo it.
+   *
    * Note for whoever adds the authoring routes: `POST h5p/content` means
    * "install an uploaded package" and must keep meaning that, so a save route
    * needs its own path rather than the same one with a body.

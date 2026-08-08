@@ -37,7 +37,12 @@ interface PlayerModelBody {
   scripts: string[];
   styles: string[];
   dependencies: { machineName: string }[];
-  integration: { url: string; contents: Record<string, unknown> };
+  integration: {
+    url: string;
+    contents: Record<string, unknown>;
+    /** The player's own labels — its fullscreen and copyright chrome, not the exercise. */
+    l10n: { H5P: Record<string, string> };
+  };
 }
 
 interface ErrorBody {
@@ -148,8 +153,30 @@ describe('h5p serving (e2e)', () => {
       expect(body.message).not.toContain('import');
     });
 
-    it('answers 400 for an id that is not a path-safe atom', async () => {
-      await request(server()).get('/api/h5p/play/not%2Fan%2Fid').expect(400);
+    it('answers 400 for an id that is not a path-safe atom, without blaming a package', async () => {
+      const response = await request(server()).get('/api/h5p/play/not%2Fan%2Fid').expect(400);
+
+      // Nobody uploaded anything: this is a GET with a bad id in the URL.
+      expect((response.body as ErrorBody).message).toBe('That path is not valid.');
+    });
+
+    it('renders the player chrome in English whatever language is asked for', async () => {
+      // The decision ADR-007 records, pinned where it is observable. `H5PPlayer`
+      // has no `translationCallback`, and the library ships no Ukrainian client
+      // translation to give it, so `?lang` selects nothing today. The day one is
+      // wired this is the test that says so.
+      const [fallback, ukrainian, spanish] = await Promise.all([
+        request(server()).get(`/api/h5p/play/${exercise.contentId}`).expect(200),
+        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk`).expect(200),
+        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=es`).expect(200),
+      ]);
+
+      const chrome = (response: { body: unknown }): Record<string, string> =>
+        (response.body as PlayerModelBody).integration.l10n.H5P;
+
+      expect(chrome(ukrainian)['fullscreen']).toBe('Fullscreen');
+      expect(chrome(ukrainian)).toEqual(chrome(fallback));
+      expect(chrome(spanish)).toEqual(chrome(fallback));
     });
 
     it('serves every asset URL it advertises', async () => {

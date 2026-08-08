@@ -78,7 +78,12 @@ describe('playerModel', () => {
     await expect(service.playerModel('abc')).resolves.toEqual(MODEL);
   });
 
-  it('renders in the language it is given, and in English otherwise', async () => {
+  it('falls back to English rather than to no language at all', async () => {
+    // What this pins is the default and the fact that `?lang` is not dropped on
+    // the way through. It says nothing about the chrome that comes back: the
+    // player has no `translationCallback`, so every language renders English
+    // labels today, and the assertion that pins *that* is in the e2e suite,
+    // against a real `H5PPlayer` — see ADR-007.
     const languages: (string | undefined)[] = [];
     const player: Pick<H5PPlayer, 'render'> = {
       render: async (_contentId, _user, language) => {
