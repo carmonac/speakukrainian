@@ -513,14 +513,19 @@ Booking is the related Phase 2 hole and is closed the other way: `booked` is exc
 schema outright, so no route can produce a slot that reads as booked with no `bookedBy`.
 
 **A slot's `note` is localized plain text** — `LocalizedText`, not `RichText`. It is shown to a
-learner, so rule 2 makes it localized; what it is not is rich, because this route runs no
-`RichTextSanitizer` as every other rich text field's does, `scheduleSlotSchema` carries no
-`audioAssets`/`imageAssets` for the orphan sweep to read so any embedded media would be untracked,
-and one `MAX_LIST_SLOTS` range read would otherwise carry a thousand HTML bodies. Rule 3 still
-holds: the admin authors it in `LocalizedRichTextEditor` with `[inlineOnly]="true"` through
-`toPlainLocalized`/`fromPlainLocalized`, the same way `section.title` and `page.title` are authored.
+learner, so rule 2 makes it localized; what it is not is rich, and **two reasons decide that**: this
+route runs no `RichTextSanitizer` as every other rich text field's does, and `scheduleSlotSchema`
+carries no `audioAssets`/`imageAssets` for the orphan sweep to read, so any embedded media would be
+untracked. Size is the third reason and the weakest of them — a note filled to its bounds is ~51 KB
+on the wire, so a `MAX_LIST_SLOTS` range read has a ~51 MB ceiling either way and sheer volume does
+not separate rich from plain. What it separates them on is whether a bound can be written down at
+all: `richTextSchema` is `z.record(localeCodeSchema, z.string())` with **no** per-entry bound, so
+choosing it would have meant a note with no length limit whatsoever, plus markup overhead on top.
+Rule 3 still holds: the admin authors it in `LocalizedRichTextEditor` with `[inlineOnly]="true"`
+through `toPlainLocalized`/`fromPlainLocalized`, the same way `section.title` and `page.title` are
+authored.
 
-That last reason only counts if the note is actually bounded, so it is bounded **twice**: at
+Having a bound to write down only helps if it is written down, so the note is bounded **twice**: at
 `MAX_SLOT_NOTE_LENGTH` _per locale_, so a sixth translation never invalidates text already authored
 in five, and at `MAX_LOCALES` _entries_. The second bound is not optional decoration — a per-locale
 bound on a `Record<LocaleCode, string>` bounds nothing on its own, because a caller can invent

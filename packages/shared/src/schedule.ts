@@ -148,19 +148,22 @@ const TOO_MANY_LOCALES = `A note cannot carry more than ${MAX_LOCALES} locales �
  * Bounded twice, and it needs both: `MAX_SLOT_NOTE_LENGTH` characters in each
  * locale, and at most `MAX_LOCALES` entries. The per-locale bound alone bounds
  * nothing — a caller can invent locale codes faster than the site can have
- * locales, and one `MAX_LIST_SLOTS` range read then carries however many they
- * cared to write. `MAX_LOCALES` is the domain's own number rather than one
- * chosen for this field: a note can only usefully hold a translation for a
- * locale that exists, and the locales route refuses to create more than that,
- * so nothing refused here could have been authored. It is a cap and not the
- * live locale count, which would cost a locales read on every write and make a
- * stored note fail validation the day a locale is deleted.
+ * locales, and the API answers a range with a whole page of slots at once, each
+ * carrying however many they cared to write. `MAX_LOCALES` is the domain's own
+ * number rather than one chosen for this field: a note can only usefully hold a
+ * translation for a locale that exists, and the locales route refuses to create
+ * more than that, so nothing refused here could have been authored. It is a cap
+ * and not the live locale count, which would cost a locales read on every write
+ * and make a stored note fail validation the day a locale is deleted.
  *
- * Plain text and not `richTextSchema`: this route runs no `RichTextSanitizer`,
+ * Plain text and not `richTextSchema`, decided by two things: this route runs
+ * no `RichTextSanitizer` as every other rich text field's write path does, and
  * `scheduleSlotSchema` carries no `audioAssets`/`imageAssets` for the orphan
- * sweep to read so any embedded media would be untracked, and one range read
- * carries up to `MAX_LIST_SLOTS` of these. A locale with no translation falls
- * back per ADR-009, and a slot with no note at all shows nothing.
+ * sweep to read, so any embedded media would be untracked. Size is the third
+ * reason and it is about bounds, not bytes — `richTextSchema` puts no bound on
+ * an entry, so rich text would have meant a note with no length bound at all.
+ * A locale with no translation falls back per ADR-009, and a slot with no note
+ * at all shows nothing.
  */
 export const slotNoteSchema = z
   .record(localeCodeSchema, z.string().max(MAX_SLOT_NOTE_LENGTH))

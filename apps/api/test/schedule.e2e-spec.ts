@@ -48,8 +48,12 @@ const TAG_PATH = `note.${TAG_LOCALE}`;
  * locale, tagged with some other string, or not tagged at all, survives
  * teardown and sits in a site-wide collection for every later run's range
  * assertions to trip over. That is the leak #14 was filed against. Every
- * successful `post` goes through `tag()` today; this makes that a property of
+ * successful write goes through `tag()` today; this makes that a property of
  * the suite rather than of each new call site remembering.
+ *
+ * The trade: a slot with *no* note can no longer be created over HTTP from
+ * here, so that round trip is covered at the schema and service level instead
+ * (`accepts a slot with no note at all`, `omits the key when there is none`).
  */
 const assertTagged = (body: object): void => {
   const note: unknown = (body as { note?: unknown }).note;
@@ -180,11 +184,16 @@ describe('schedule slots (e2e)', () => {
   const read = (id: string): request.Test =>
     request(server()).get(`/api/schedule/slots/${id}`).set('Authorization', bearer(admin));
 
-  const patch = (id: string, body: object): request.Test =>
-    request(server())
+  /** A patch rewriting `note` rewrites the tag, so it is guarded like a post. */
+  const patch = (id: string, body: object): request.Test => {
+    if ('note' in body) {
+      assertTagged(body);
+    }
+    return request(server())
       .patch(`/api/schedule/slots/${id}`)
       .set('Authorization', bearer(admin))
       .send(body);
+  };
 
   const remove = (id: string, user: () => TestUser = () => admin): request.Test =>
     request(server()).delete(`/api/schedule/slots/${id}`).set('Authorization', bearer(user()));
@@ -838,31 +847,29 @@ describe('schedule slots (e2e)', () => {
       .expect(401);
   });
 
-  it('refuses to post a fixture its own purge could not find', async () => {
-    // Each of these would create a slot the teardown range over `note.en` never
+  it('refuses to write a fixture its own purge could not find', () => {
+    // Each of these would leave a slot the teardown range over `note.en` never
     // sees, so it would stay in the site-wide collection and turn up inside a
-    // later run's range assertions. None is sent: the guard runs before the
-    // request is built.
-    const window = {
+    // later run's range assertions. Nothing is sent, and that is a property of
+    // where the guard runs — before the request object exists — rather than an
+    // outcome the collection could be queried for.
+    const slotWindow = {
       startsAt: '2026-12-21T09:00:00Z',
       endsAt: '2026-12-21T10:00:00Z',
       timeZone: 'Europe/Madrid',
     };
 
     // Tagged, but under a locale the purge does not index.
-    expect(() => post({ ...window, note: { uk: `${PREFIX}/untagged` } })).toThrow(TAG_PATH);
+    expect(() => post({ ...slotWindow, note: { uk: `${PREFIX}/untagged` } })).toThrow(TAG_PATH);
     // The tag locale, but outside the prefix range the purge sweeps.
-    expect(() => post({ ...window, note: { [TAG_LOCALE]: 'unprefixed' } })).toThrow(PREFIX);
+    expect(() => post({ ...slotWindow, note: { [TAG_LOCALE]: 'unprefixed' } })).toThrow(PREFIX);
     // No note at all.
-    expect(() => post(window)).toThrow(TAG_PATH);
+    expect(() => post(slotWindow)).toThrow(TAG_PATH);
 
-    // Refused before the wire, not after: nothing reached the collection.
-    const written = await firestore
-      .collection(COLLECTIONS.scheduleSlots)
-      .where('startsAt', '==', '2026-12-21T09:00:00.000Z')
-      .limit(1)
-      .get();
-    expect(written.empty).toBe(true);
+    // A patch can untag a slot the same way a post can fail to tag one.
+    expect(() => patch(UNKNOWN_ID, { note: { uk: `${PREFIX}/untagged` } })).toThrow(TAG_PATH);
+    // But only a patch that touches `note`: every other one is left alone.
+    expect(() => patch(UNKNOWN_ID, { status: 'cancelled' })).not.toThrow();
   });
 
   it('finds and deletes its own fixtures in a collection holding more than one purge page', async () => {
