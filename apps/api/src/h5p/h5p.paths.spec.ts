@@ -16,6 +16,19 @@ import {
 
 const LIBRARY = { machineName: 'H5P.MultiChoice', majorVersion: 1, minorVersion: 16 };
 
+/** The `H5pError` a call threw, or a failure saying it threw something else. */
+function thrownBy(call: () => unknown): H5pError {
+  try {
+    call();
+  } catch (error) {
+    if (error instanceof H5pError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error('Expected the call to throw an H5pError.');
+}
+
 describe('assertSafeRelativePath', () => {
   it.each([
     ['content.json'],
@@ -134,16 +147,17 @@ describe('library paths', () => {
     expect(() => libraryObjectPath(LIBRARY, '../../../x')).toThrow(H5pError);
   });
 
-  it.each([['../evil'], ['a/../..'], ['/etc'], ['a\\b']])(
-    'never builds a prefix from the library name %j',
+  it.each([['../evil'], ['a/../..'], ['/etc'], ['a\\b'], ['..'], ['']])(
+    'refuses to build a prefix from the library name %j',
     (machineName) => {
-      // The contract, not the mechanism. Today it is `LibraryName.toUberName`'s
-      // own pattern that refuses these first — `libraryPrefix`'s assert is the
-      // module's uniform rule sitting behind it, and it is genuinely unreachable
-      // while that pattern holds. Asserting the outcome rather than which of the
-      // two threw is what keeps this true if either changes; asserting the
-      // assert's own `H5pError` would only pin the current order.
-      expect(() => libraryPrefix({ machineName, majorVersion: 1, minorVersion: 0 })).toThrow();
+      // `H5pError` rather than a bare `Error`, which is what says this module's
+      // own rule ran: `LibraryName.toUberName` would refuse these too, but with
+      // a plain `Error` that the mapper turns into a 500 rather than the 400
+      // this is.
+      const build = (): string => libraryPrefix({ machineName, majorVersion: 1, minorVersion: 0 });
+
+      expect(build).toThrow(H5pError);
+      expect(thrownBy(build).httpStatusCode).toBe(400);
     },
   );
 

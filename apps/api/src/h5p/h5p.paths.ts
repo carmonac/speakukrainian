@@ -96,16 +96,16 @@ export function contentObjectPath(contentId: ContentId, filename: string): strin
 
 /** `h5p/libraries/<Machine.Name-major.minor>/`. */
 export function libraryPrefix(library: ILibraryName): string {
-  const ubername = LibraryName.toUberName(library);
   // The library-file route builds this from an ubername in the request URL, so
-  // the rule every other builder in this module follows applies here too.
-  //
-  // Not a fix for anything reachable today: `LibraryName.fromUberName`'s pattern
-  // is `^([\w.]+)-(\d+)\.(\d+)$`, so the worst a machine name of `..` can
-  // produce is the segment `..-1.0`, which is not a `..` segment. It is here so
-  // that the guard lives in the builder and cannot be forgotten by the next
-  // caller, which is the property this module is built on.
-  assertSafeRelativePath(ubername);
+  // the rule every other builder in this module follows applies here too — and
+  // it runs on the machine name, ahead of `toUberName`, for two reasons. It is
+  // the only part of an ubername a caller controls freely, the versions being
+  // numbers; and `toUberName` refuses a name its own pattern rejects with a
+  // plain `Error`, which would surface as a 500 where this is a 400 about the
+  // request. A machine name that satisfies this rule cannot produce an unsafe
+  // ubername, because all `toUberName` appends is `-<major>.<minor>`.
+  assertSafeRelativePath(library.machineName);
+  const ubername = LibraryName.toUberName(library);
   return `${STORAGE_PREFIXES.h5pLibraries}/${ubername}/`;
 }
 
