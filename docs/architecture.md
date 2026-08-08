@@ -451,6 +451,13 @@ the stored schema as well as the input one, so — as with `endsAt > startsAt` �
 somehow holds an unresolvable zone fails loudly on read rather than reaching a renderer that cannot
 draw it.
 
+A **fixed offset is refused** even though `Intl` accepts `+05:30` or `+23:00` wherever it accepts a
+zone name, because an offset never observes a transition: a series authored in `+02:00` would drift
+an hour against Madrid for half the year, quietly defeating the only reason the field exists. A zone
+that genuinely has no DST is still expressible by name (`UTC`, `Etc/GMT+5`, `Asia/Kolkata`) and a
+slot authored in one simply never shifts. Only the offset _syntax_ is refused, and no IANA name
+begins with a sign, so the test is exact.
+
 **Both time-zone caches are keyed on the lower-cased zone**, and that is the whole of what makes
 them safe. `Intl` matches zone ids case-insensitively, so `Europe/Madrid`, `europe/madrid` and
 `eUrOpE/mAdRiD` all resolve — 2048 spellings of one zone, each of which was a separate entry

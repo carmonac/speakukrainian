@@ -95,6 +95,22 @@ describe('timeZoneSchema', () => {
 
     expect(resolvableTimeZoneCacheSize()).toBe(cached);
   });
+
+  it.each(['+05:30', '+23:00', '-08', '+0530'])('refuses the fixed offset %s', (timeZone) => {
+    // `Intl` resolves all of these; the field refuses them because an offset
+    // never observes DST, which is the one thing it exists to survive.
+    const result = timeZoneSchema.safeParse(timeZone);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toContain('DST');
+  });
+
+  it.each(['UTC', 'Etc/GMT+5', 'Asia/Kolkata'])(
+    'accepts %s, a named zone that never shifts',
+    (timeZone) => {
+      expect(timeZoneSchema.parse(timeZone)).toBe(timeZone);
+    },
+  );
 });
 
 describe('updateScheduleSlotSchema', () => {

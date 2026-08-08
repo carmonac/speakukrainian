@@ -26,6 +26,12 @@ export function resolvableTimeZoneCacheSize(): number {
   return resolvableTimeZones.size;
 }
 
+/**
+ * `Intl` also accepts a fixed offset (`+05:30`, `-08`, `+23:00`) wherever it
+ * accepts a zone name. No IANA name begins with a sign, so this is exact.
+ */
+const FIXED_OFFSET = /^[+-]/;
+
 function isResolvableTimeZone(value: string): boolean {
   const key = value.toLowerCase();
   if (resolvableTimeZones.has(key)) {
@@ -53,14 +59,28 @@ function isResolvableTimeZone(value: string): boolean {
  * at `Intl.DateTimeFormat` is a `RangeError`, and one merely *stored* is a
  * document every later reader trips over.
  *
+ * A **fixed offset is refused** even though `Intl` resolves it. The field
+ * exists so that a recurrence keeps its local time across a daylight-saving
+ * change, and an offset never observes one — a series authored in `+02:00`
+ * would drift an hour against Madrid for half the year, silently. A zone that
+ * genuinely has no DST is still expressible by its name (`UTC`, `Etc/GMT+5`,
+ * `Asia/Kolkata`); what is refused is the offset syntax, which is not a zone
+ * name at all.
+ *
  * The value is stored **as the caller spelled it**. Canonicalising through
  * `resolvedOptions().timeZone` would rewrite `US/Eastern` to `America/New_York`
  * behind the admin's back, so anything comparing two `timeZone` values must
  * compare them case-insensitively rather than with `===`.
  */
-export const timeZoneSchema = z.string().min(1).refine(isResolvableTimeZone, {
-  message: 'Unknown IANA time zone — use a name such as `Europe/Madrid`',
-});
+export const timeZoneSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !FIXED_OFFSET.test(value), {
+    message: 'A fixed offset never observes DST — use an IANA name such as `Europe/Madrid`',
+  })
+  .refine(isResolvableTimeZone, {
+    message: 'Unknown IANA time zone — use a name such as `Europe/Madrid`',
+  });
 
 /**
  * A window of the admin's time that a learner can book. Times are stored as

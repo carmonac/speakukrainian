@@ -273,6 +273,9 @@ describe('schedule slots (e2e)', () => {
     ['a zone that does not exist', 'Mars/Olympus'],
     ['a zone-shaped string', 'Not/AZone'],
     ['a blank zone', ' '],
+    // `Intl` resolves this one; the field refuses it because an offset never
+    // observes DST, so a series authored in it would drift half the year.
+    ['a fixed offset', '+05:30'],
   ])('refuses %s on a single slot and stores nothing', async (_name, timeZone) => {
     const response = await post({
       note: `${PREFIX}/bad-zone`,
@@ -304,7 +307,7 @@ describe('schedule slots (e2e)', () => {
     ).toEqual([]);
   });
 
-  it('refuses to patch a slot into an unknown zone', async () => {
+  it('refuses to patch a slot into an unknown zone or a fixed offset', async () => {
     const slot = await createOne('patch-zone', {
       startsAt: '2026-05-20T09:00:00Z',
       endsAt: '2026-05-20T10:00:00Z',
@@ -313,6 +316,9 @@ describe('schedule slots (e2e)', () => {
 
     const response = await patch(slot.id, { timeZone: 'Not/AZone' }).expect(400);
     expect((response.body as IssueBody).errors?.[0]?.path).toBe('timeZone');
+
+    const offset = await patch(slot.id, { timeZone: '+05:30' }).expect(400);
+    expect((offset.body as IssueBody).errors?.[0]?.path).toBe('timeZone');
 
     // The refusal really refused: the stored zone is untouched.
     expect(scheduleSlotSchema.parse((await read(slot.id).expect(200)).body).timeZone).toBe(
