@@ -6,13 +6,14 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import {
+  MAX_LOCALES,
   SEED_LOCALES,
   type CreateLocaleInput,
   type ListLocalesQuery,
   type Locale,
   type UpdateLocaleInput,
 } from '@speakukrainian/shared';
-import { LocalesRepository, MAX_LOCALES } from './locales.repository.js';
+import { LocalesRepository } from './locales.repository.js';
 import { SEED_ACTOR, SEED_LOCALE_DEFINITIONS, isSeedDefault } from './locales.seed.js';
 
 @Injectable()
