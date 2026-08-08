@@ -30,9 +30,17 @@ import { ScheduleService } from './schedule.service.js';
 
 /**
  * Staff-only throughout: booking a slot is Phase 2 and will need its own
- * projected read route. Writing is `admin`, because a slot is an offer of a
- * particular person's time; editors read the calendar but do not publish time
- * on someone's behalf.
+ * projected read route. Reading is `editor` and writing is `admin`, because a
+ * slot commits someone's time and an editor's job is the content tree.
+ *
+ * **The role is the whole of the check.** `PATCH` and `DELETE` are deliberately
+ * not owner-scoped in Phase 1 — any admin may edit or delete another admin's
+ * slots, including a whole series. Only *overlap* is per-owner, because two
+ * teachers may legitimately offer the same hour. Admins are a handful of
+ * trusted staff and the list route is site-wide for the same reason. What would
+ * change it: teachers administering their own calendars, or admins who are not
+ * all trusted with each other's time. ADR-014 records the decision and what
+ * enforcing ownership would cost.
  *
  * `:id` and `recurrenceId` are both validated with `documentIdSchema` — the
  * first so a hand-crafted path segment never reaches `collection.doc()`, the

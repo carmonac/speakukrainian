@@ -433,7 +433,33 @@ overlap check and the "slots intersecting a range" read start missing slots. The
 `WriteBatch`, not a transaction — a Firestore transaction locks the documents it reads, not the
 query range, so it buys nothing against a concurrent insert (the same fact `SectionsRepository`
 documents about sibling slugs) — and `MAX_RECURRENCE_SLOTS = 200` sits well under the 500-write
-batch limit so a series is never split across commits.
+batch limit so a series is never split across commits. **Every write this module makes is one batch
+under that limit**, deleting a series included: `MAX_SERIES_DELETE_SLOTS = 500` is the batch limit
+itself rather than a policy number, and a series holding more future occurrences than that is
+refused instead of assembling a commit the server would reject. It is bounded there, not at the
+200-occurrence creation cap, because a series can only exceed 200 through hand-written documents —
+the very case the refusal exists to let an admin clean up. The Firestore emulator does not enforce
+the 500-write limit, so this one is pinned by a unit test against a double that does.
+
+`timeZone` is validated as **a zone the runtime can actually resolve**, in `packages/shared` rather
+than in the API, because both halves of the field have to close: an unresolvable zone handed to
+`Intl.DateTimeFormat` is a `RangeError`, and one that is merely stored is a document every later
+reader trips over. The check constructs a formatter rather than searching
+`Intl.supportedValuesOf('timeZone')`, whose canonical-names-only list would refuse the
+backward-compatibility links (`Asia/Calcutta`, `US/Eastern`) that `Intl` resolves happily. It is on
+the stored schema as well as the input one, so — as with `endsAt > startsAt` — a document that
+somehow holds an unresolvable zone fails loudly on read rather than reaching a renderer that cannot
+draw it.
+
+**Ownership is not enforced on writes in Phase 1.** Every mutating route is `@Roles('admin')`, and
+that role is the whole of the check: any admin may patch or delete another admin's slot, or delete
+their whole series, and `GET` is site-wide. Only _overlap_ is per-owner, because two teachers may
+legitimately offer the same hour. This is a decision, not an oversight — admins are a handful of
+trusted staff, and the alternative costs an `ownerId` argument through the repository, an
+owner-prefixed index, and a `403` path with nothing behind it today. What would change it: teachers
+administering their own calendars, or admins who are not all trusted with each other's time.
+Booking is the related Phase 2 hole and is closed the other way: `booked` is excluded from the patch
+schema outright, so no route can produce a slot that reads as booked with no `bookedBy`.
 
 _Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
 document hand-written with a duration over 24 h is invisible to the overlap check; and overlap
