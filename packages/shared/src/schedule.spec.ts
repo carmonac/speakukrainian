@@ -158,8 +158,8 @@ describe('slot notes', () => {
     // Every key is a valid locale code and every value is one character, so
     // what is refused is the *number* of translations. Without this the
     // per-locale bound bounds nothing: 500 characters under each of a few
-    // hundred invented codes is a note of any size the caller likes, and one
-    // range read carries up to `MAX_LIST_SLOTS` of them.
+    // hundred invented codes is a note of any size the caller likes, and the
+    // API answers a range with a whole page of such slots at once.
     const result = createScheduleSlotSchema.safeParse(
       slotWith(noteIn(localeCodes(MAX_LOCALES + 1))),
     );
