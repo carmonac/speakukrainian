@@ -660,7 +660,10 @@ accepted only if the bytes can be that type.
 **The rule lives in `packages/shared` (`media-signatures.ts`), so the admin's pre-check and the API's
 check are literally the same function.** The allow-list was already shared for that reason and the
 byte check has the same failure mode if it drifts. The admin reads the first `MEDIA_SIGNATURE_BYTES`
-of the file and refuses locally; that is a courtesy, and the API's check is the guarantee.
+of the file and refuses locally; that is a courtesy, and the API's check is the guarantee. They share
+the precedence as well as the rule — type, then bytes, then size at both ends — because a file that
+is both the wrong format and oversize would otherwise be refused for one reason locally and a
+different one by the API.
 
 **The table is hand-written rather than a dependency.** Anything in `packages/shared` ships into the
 admin bundle and the SSR site, and the check is a comparison of ≤12 header bytes for nine formats.
@@ -679,6 +682,14 @@ since a file offered as an MP3 is never Layer I or II and admitting them would r
 is the tightest rule in the table and therefore the one most likely to refuse a real file, so it is
 pinned both by fixtures written from the spec and by the leading bytes lame and ffmpeg actually
 write, across all three MPEG versions.
+
+**The ID3 rule reads the whole 10-byte header for the same reason.** Three ASCII letters were the
+loosest claim left in the table once the frame sync had been tightened, so the version and revision
+bytes — where `FF` is reserved — and the four size bytes — stored synchsafe, so their high bits are
+always clear — have to hold values a tag can, and all ten have to be there. That costs nothing
+against real files, because every tag carries the full header whatever revision it is. The flags byte
+is deliberately not checked: v2.2, v2.3 and v2.4 each define a different set of bits, so refusing an
+unknown one would refuse a future revision rather than a renamed text file.
 
 **Detection reports a container, and the declared type is what gets stored.** `iso-bmff` and `ebml`
 cannot choose between the audio and the video type, so the bytes prove "this is an ISO-BMFF file" and
@@ -705,11 +716,23 @@ an already-stored SVG still parses, renders and resolves; only new uploads are r
 means sanitizing the bytes on upload, which was always the right guard for it, not exempting it from
 this one.
 
-**Two things are deliberately left open.** A corrupt file with a valid header still uploads — a valid
-ID3 tag on garbage is accepted, because deciding playability needs decoding, not header inspection.
-And an MP4 or WebM carrying a video track, declared as `audio/mp4` or `audio/webm`, is
-indistinguishable at the container level and is accepted; it lands in an `<audio>` element and plays
-its audio track. Both are content-quality outcomes rather than security ones.
+**Two things are deliberately left open.** The first is that a header is all that is read, so garbage
+behind a well-formed one is stored: an ID3v2 header whose version, revision and synchsafe size are
+sane says nothing about the frames after it, and deciding playability needs decoding rather than
+header inspection.
+
+The second is that a container header proves the **box structure, not the payload**. `iso-bmff` is
+the sharp case: the check is `ftyp` at offset 4 and nothing more, so `ftypheic`, `ftypqt  `,
+`ftypjp2 ` and `ftyp3gp4` all satisfy `audio/mp4`, and a `photo.heic` renamed to `.m4a` gets a 201
+and a silent `<audio>` node — the same product harm the issue reported, reached by a deliberate
+rename rather than an accidental one. An MP4 or WebM carrying a video track is the same residual in
+its milder form: it is accepted, lands in an `<audio>` element and plays its audio track. Both are
+content-quality outcomes rather than security ones.
+
+_Rejected: an allow-list of ISO-BMFF major brands._ The set that is legitimately audio or MP4 is long
+and open-ended — `M4A `, `M4B `, `mp41`, `mp42`, `isom`, `iso2`, `iso4`, `mmp4`, `dash`, `f4a `, and
+`qt  ` from some muxers — so an allow-list closes a narrow, deliberate misuse while adding the one
+risk this whole change carries: refusing a real file from a muxer nobody tested against.
 
 _Rejected: a custom multer storage engine that inspects the first chunk and aborts at 16 bytes._ It
 would have to reimplement `memoryStorage`'s buffering and error propagation, and the only saving is
