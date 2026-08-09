@@ -108,10 +108,13 @@ describe('HttpExceptionFilter', () => {
       expect(line).not.toMatch(/\n\s+at /);
     });
 
-    it('answers malformed JSON 400 without echoing the fragment it choked on', () => {
-      // Nest maps a `SyntaxError` to `BadRequestException` before the filter
-      // sees it, so this case guards the filter's own behaviour if that
-      // mapping ever changes; the end-to-end status is pinned by the e2e suite.
+    it('takes no wording from a parse failure it maps itself', () => {
+      // Not the path a malformed body takes today: Nest's `mapExternalException`
+      // converts the `SyntaxError` to a `BadRequestException` above the filter,
+      // and the `HttpException` branch then forwards V8's parse message — which
+      // quotes a fragment of the caller's body — verbatim (ADR-015 records why
+      // that is accepted). This pins the 4xx branch below, so that if that
+      // mapping ever changes the fragment does not start coming from here.
       const answer = run(
         Object.assign(new SyntaxError('Unexpected end of JSON input'), {
           expose: true,
@@ -220,9 +223,31 @@ describe('HttpExceptionFilter', () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it('keeps a status outside 4xx a 500 even when it is exposed', () => {
-      expect(run(Object.assign(new Error('x'), { expose: true, status: 399 })).status).toBe(500);
-      expect(run(Object.assign(new Error('x'), { expose: true, status: 500 })).status).toBe(500);
+    it('keeps a status below 4xx a 500 even when it is exposed', () => {
+      const answer = run(Object.assign(new Error('x'), { expose: true, status: 399 }));
+
+      expect(answer.status).toBe(500);
+      expect(answer.body['message']).toBe('Internal server error');
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('keeps an exposed 5xx a 500 with its stack logged', () => {
+      // 503 rather than 500: an exposed 500 answers 500 whether or not the upper
+      // bound is checked, so it cannot fail on the property this test names.
+      const thrown = Object.assign(new Error('upstream refused'), {
+        expose: true,
+        status: 503,
+        statusCode: 503,
+      });
+
+      const answer = run(thrown);
+
+      expect(answer.status).toBe(500);
+      expect(answer.body['message']).toBe('Internal server error');
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0]?.[1]).toBe(thrown.stack);
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('requires expose to be the boolean, not something truthy', () => {
