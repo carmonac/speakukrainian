@@ -69,7 +69,13 @@ export const scheduleWeekResolver: ResolveFn<ScheduleWeekData> = async (route) =
 
   if (requested === null || !sameCivilDate(requested, monday)) {
     return new RedirectCommand(
-      router.createUrlTree(['/schedule'], { queryParams: { from: formatCivilDate(monday) } }),
+      router.createUrlTree(['/schedule'], {
+        // Every other param carried over by hand rather than with
+        // `queryParamsHandling: 'merge'`: the router's current URL during a
+        // resolver is still the screen being navigated away from, so `merge`
+        // would merge the params of the page the admin came from.
+        queryParams: { ...route.queryParams, from: formatCivilDate(monday) },
+      }),
       // Replaced, so paging back through the browser's history does not bounce
       // off the uncanonical URL the admin arrived on.
       { replaceUrl: true },

@@ -243,6 +243,20 @@ describe('SchedulePage', () => {
     expect(nav.currentEntry?.url).toContain('/schedule?from=2026-03-02');
   });
 
+  it('keeps the rest of the query string when it canonicalises the week', async () => {
+    setup();
+    const router = TestBed.inject(Router);
+    await open('/schedule?from=2026-03-04&status=open');
+
+    // `from` is the only param this screen reads today, so the loss would only
+    // show once another one exists — and only on the uncanonical path, which
+    // no amount of clicking reaches.
+    expect(router.parseUrl(router.url).queryParams).toEqual({
+      from: '2026-03-02',
+      status: 'open',
+    });
+  });
+
   it('moves a week forward and back through the URL, re-reading each time', async () => {
     const { queries } = setup({
       byWeek: {
