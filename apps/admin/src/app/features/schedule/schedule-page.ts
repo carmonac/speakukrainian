@@ -4,7 +4,6 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import type { SlotStatus } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
-import { BROWSER_TIME_ZONE } from '../../core/time/browser-time-zone';
 import {
   NO_SLOTS_THIS_WEEK,
   SLOTS_LOAD_FAILED,
@@ -44,16 +43,22 @@ import {
 export class SchedulePage {
   private readonly defaultCode = inject(LocalesStore).defaultCode;
 
-  /**
-   * Read once, at construction, and only to decide which column is highlighted
-   * and where Today points. Left open over midnight both go stale until the
-   * next navigation, which is acceptable on an authoring screen and cheaper
-   * than a timer waking a tab all night.
-   */
-  private readonly today = todayIn(inject(BROWSER_TIME_ZONE), new Date());
-
   /** Resolved by `scheduleWeekResolver` and bound by `withComponentInputBinding()`. */
   readonly weekData = input.required<ScheduleWeekData>();
+
+  /**
+   * Which day the highlighted column and Today's link mean, on the clock the
+   * grid is drawn on — read from the resolved week rather than from
+   * `BROWSER_TIME_ZONE`, so the two cannot disagree. They are the same value
+   * today, because the resolver reads that same token; the day a `?tz=`
+   * override lands they stop being, and the failure would be "today" drawn on
+   * the wrong column of a grid built for another zone.
+   *
+   * Recomputed per navigation, not on a clock: left open over midnight it goes
+   * stale until the next one, which is acceptable on an authoring screen and
+   * cheaper than a timer waking a tab all night.
+   */
+  private readonly today = computed(() => todayIn(this.weekData().viewZone, new Date()));
 
   protected readonly loadFailed = SLOTS_LOAD_FAILED;
   protected readonly noSlots = NO_SLOTS_THIS_WEEK;
@@ -62,7 +67,7 @@ export class SchedulePage {
 
   protected readonly columns = computed(() => {
     const data = this.weekData();
-    return buildWeek(data.monday, data.viewZone, data.slots, this.defaultCode(), this.today);
+    return buildWeek(data.monday, data.viewZone, data.slots, this.defaultCode(), this.today());
   });
 
   protected readonly weekLabel = computed(
@@ -77,9 +82,9 @@ export class SchedulePage {
   // handlers, so a middle click opens a week in a new tab.
   protected readonly previousWeek = computed(() => this.weekParams(-7));
   protected readonly nextWeek = computed(() => this.weekParams(7));
-  protected readonly thisWeek: Record<string, string> = {
-    from: formatCivilDate(startOfWeek(this.today)),
-  };
+  protected readonly thisWeek = computed<Record<string, string>>(() => ({
+    from: formatCivilDate(startOfWeek(this.today())),
+  }));
 
   protected statusLabel(status: SlotStatus): string {
     return SLOT_STATUS_LABELS[status];

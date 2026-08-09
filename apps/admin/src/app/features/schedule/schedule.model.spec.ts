@@ -77,6 +77,21 @@ describe('parseCivilDate', () => {
     expect(parseCivilDate(undefined)).toBeNull();
     expect(parseCivilDate('nonsense')).toBeNull();
   });
+
+  it('refuses a real date in a year no slot can be scheduled in', () => {
+    // `9999-12-27` is the one that matters. Its week ends in the year 10000,
+    // which `toISOString` spells `+010000-01-02T22:00:00.000Z` and the API
+    // rejects — so left in, one unusable `?from=` fails differently from every
+    // other one.
+    expect(parseCivilDate('9999-12-27')).toBeNull();
+    expect(parseCivilDate('3000-01-01')).toBeNull();
+    expect(parseCivilDate('1969-12-29')).toBeNull();
+    expect(parseCivilDate('0000-01-03')).toBeNull();
+
+    // The bounds themselves are dates, not the first refusal.
+    expect(parseCivilDate('1970-01-01')).toEqual({ year: 1970, month: 1, day: 1 });
+    expect(parseCivilDate('2999-12-31')).toEqual({ year: 2999, month: 12, day: 31 });
+  });
 });
 
 describe('startOfWeek', () => {

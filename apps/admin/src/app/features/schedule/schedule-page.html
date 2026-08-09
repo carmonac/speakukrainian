@@ -16,7 +16,7 @@
         <mat-icon>chevron_left</mat-icon>
         Previous
       </a>
-      <a matButton routerLink="/schedule" [queryParams]="thisWeek" class="schedule__this-week">Today</a>
+      <a matButton routerLink="/schedule" [queryParams]="thisWeek()" class="schedule__this-week">Today</a>
       <a matButton routerLink="/schedule" [queryParams]="nextWeek()" class="schedule__next">
         Next
         <mat-icon>chevron_right</mat-icon>

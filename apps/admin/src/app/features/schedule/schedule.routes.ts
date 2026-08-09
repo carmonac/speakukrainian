@@ -11,8 +11,9 @@ export const routes: Routes = [
     loadComponent: () => import('./schedule-page').then((m) => m.SchedulePage),
     title: 'Schedule slots',
     resolve: { weekData: scheduleWeekResolver },
-    // The default, spelled out because the whole screen depends on it: without
-    // it, moving to the next week would change `?from=` and never re-resolve.
+    // Angular's default is `paramsChange`, which ignores a query-param change:
+    // without this, moving to the next week would change `?from=` and never
+    // re-resolve.
     runGuardsAndResolvers: 'paramsOrQueryParamsChange',
   },
 ];

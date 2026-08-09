@@ -1,4 +1,5 @@
-import { signal } from '@angular/core';
+import { PlatformNavigation } from '@angular/common';
+import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { Router, provideRouter, withComponentInputBinding } from '@angular/router';
@@ -9,12 +10,15 @@ import type { ListScheduleSlotsQuery, LocaleCode, ScheduleSlot } from '@speakukr
 import { LocalesStore } from '../../core/locales/locales.store';
 import { BROWSER_TIME_ZONE } from '../../core/time/browser-time-zone';
 import { NO_SLOTS_THIS_WEEK, SLOTS_LOAD_FAILED } from './schedule-messages';
-import { SchedulePage } from './schedule-page';
-import { scheduleWeekResolver } from './schedule-week.resolver';
 import { ScheduleApi } from './schedule.api';
+import { routes } from './schedule.routes';
 
 const MADRID = 'Europe/Madrid';
 const KYIV = 'Europe/Kyiv';
+
+/** Any other admin screen, so the schedule can be arrived at from somewhere. */
+@Component({ selector: 'app-elsewhere-stub', template: 'elsewhere' })
+class Elsewhere {}
 
 /**
  * Wednesday 4 March 2026, so "today's week" is the week of Monday 2 March in
@@ -77,14 +81,17 @@ function setup(options: Options = {}): Recorded {
   TestBed.configureTestingModule({
     providers: [
       provideNoopAnimations(),
+      // The shipped table, mounted the way `app.routes.ts` mounts it — never a
+      // copy of it. A spec that restates `resolve` and `runGuardsAndResolvers`
+      // asserts its own literal: every routing expectation below would hold
+      // while the real route had lost the line, which is exactly how a week
+      // that never re-reads ships green.
       provideRouter(
         [
-          {
-            path: 'schedule',
-            component: SchedulePage,
-            resolve: { weekData: scheduleWeekResolver },
-            runGuardsAndResolvers: 'paramsOrQueryParamsChange',
-          },
+          { path: 'schedule', loadChildren: () => routes },
+          // Somewhere to arrive from, so a canonicalising redirect has a
+          // previous entry to leave in the history.
+          { path: 'sections', component: Elsewhere },
         ],
         withComponentInputBinding(),
       ),
@@ -186,6 +193,9 @@ describe('SchedulePage', () => {
       '2026-03-07',
       '2026-03-08',
     ]);
+    // Today is Wednesday on the clock the grid is drawn on, and that is the
+    // clock the highlight has to be read on too.
+    expect(root(harness).querySelector('.is-today')?.getAttribute('data-date')).toBe('2026-03-04');
   });
 
   it('redirects a missing week to the Monday of today’s week', async () => {
@@ -214,6 +224,23 @@ describe('SchedulePage', () => {
     // Every request is a real week: nothing unparseable reached the API, and
     // the redirect settled rather than looping.
     expect(queries.every((query) => query.from === '2026-03-01T22:00:00.000Z')).toBe(true);
+  });
+
+  it('canonicalises in place, without leaving the uncanonical URL in the history', async () => {
+    setup();
+    const nav = TestBed.inject(PlatformNavigation);
+    const harness = await RouterTestingHarness.create('/sections');
+    const before = nav.entries().length;
+
+    await harness.navigateByUrl('/schedule?from=2026-03-04');
+
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+    // Replaced, not pushed. An uncanonical `?from=` is only reachable by hand,
+    // so the entry the redirect replaces is the address the admin typed; pushed
+    // instead, it would sit behind the corrected week and Back would land on it
+    // and be redirected forward again, with no way off the screen.
+    expect(nav.entries()).toHaveLength(before);
+    expect(nav.currentEntry?.url).toContain('/schedule?from=2026-03-02');
   });
 
   it('moves a week forward and back through the URL, re-reading each time', async () => {

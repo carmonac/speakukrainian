@@ -33,6 +33,17 @@ export interface CivilDate {
 
 const CIVIL_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * A week nobody can schedule in, at both ends. The upper bound is the one that
+ * earns its keep: `9999-12-27`'s week ends in the year 10000, which
+ * `toISOString` spells in the expanded-year form (`+010000-01-02T22:00:00.000Z`)
+ * and the API refuses with a 422. Refusing the date here sends it to this week
+ * like every other unusable `?from=`, instead of drawing an empty grid behind an
+ * error toast.
+ */
+const MIN_YEAR = 1970;
+const MAX_YEAR = 2999;
+
 function atMidnight(date: CivilDate): WallClock {
   return { ...date, hour: 0, minute: 0, second: 0 };
 }
@@ -42,8 +53,9 @@ function pad(value: number, width = 2): string {
 }
 
 /**
- * `null` for anything that is not a real calendar date, which the caller turns
- * into a redirect to this week.
+ * `null` for anything that is not a real calendar date, or is one outside
+ * {@link MIN_YEAR}…{@link MAX_YEAR}, which the caller turns into a redirect to
+ * this week.
  *
  * The shape test is not enough on its own: `Date.UTC` happily normalises
  * `2026-02-31` into 3 March, so a typed URL would silently open a week the
@@ -57,6 +69,9 @@ export function parseCivilDate(value: string | null | undefined): CivilDate | nu
   const year = Number(value.slice(0, 4));
   const month = Number(value.slice(5, 7));
   const day = Number(value.slice(8, 10));
+  if (year < MIN_YEAR || year > MAX_YEAR) {
+    return null;
+  }
   const utc = new Date(Date.UTC(year, month - 1, day));
   if (
     utc.getUTCFullYear() !== year ||
@@ -219,12 +234,12 @@ export interface DayColumn {
 /**
  * The seven columns to draw, in Monday-first order.
  *
- * **Geometry is one clock, labels are the slot's clock.** A slot lands in the
- * day column its `startsAt` falls on *in the view zone*, because a grid whose
- * rows are drawn on different clocks says two slots clash when they do not. The
- * chip then says which clock it was authored on, which is what stops a slot
- * authored 23:30 Friday in Madrid, drawn in Saturday's column from Kyiv, from
- * reading as a placement bug.
+ * **Geometry is one clock, labels are the slot's clock** (ADR-014). A slot
+ * lands in the day column its `startsAt` falls on *in the view zone*, because a
+ * grid whose rows are drawn on different clocks says two slots clash when they
+ * do not. The chip then says which clock it was authored on, which is what
+ * stops a slot authored 23:30 Friday in Madrid, drawn in Saturday's column from
+ * Kyiv, from reading as a placement bug.
  *
  * Every column is emitted even when empty, so the grid does not reflow around a
  * quiet day. A slot outside all seven columns is drawn in the first one rather
@@ -284,7 +299,7 @@ export function buildWeek(
 }
 
 /**
- * The second time line, or `null` when it would say nothing new.
+ * The second time line, or `null` when it would say nothing new (ADR-014).
  *
  * The zone check alone is not enough, and a real browser is where that shows.
  * Chromium answers `Europe/Kiev` for a machine set to `Europe/Kyiv`, so every
