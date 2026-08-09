@@ -1,7 +1,12 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
-import type { CreateLocaleInput, Locale, UpdateLocaleInput } from '@speakukrainian/shared';
-import { LocalesRepository, MAX_LOCALES } from './locales.repository.js';
+import {
+  MAX_LOCALES,
+  type CreateLocaleInput,
+  type Locale,
+  type UpdateLocaleInput,
+} from '@speakukrainian/shared';
+import { LocalesRepository } from './locales.repository.js';
 import { LocalesService } from './locales.service.js';
 
 interface RepositoryFake {

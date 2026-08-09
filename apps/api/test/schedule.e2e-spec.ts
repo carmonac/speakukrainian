@@ -5,7 +5,9 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   COLLECTIONS,
+  MAX_LOCALES,
   MAX_SCHEDULE_RANGE_DAYS,
+  MAX_SLOT_NOTE_LENGTH,
   scheduleSlotSchema,
   type ScheduleSlot,
 } from '@speakukrainian/shared';
@@ -22,6 +24,50 @@ import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
  */
 const PREFIX = 'e2e-schedule';
 
+/**
+ * The locale the tag is written under, and the one the purge queries.
+ *
+ * `note` is a `Record<LocaleCode, string>`, and Firestore indexes a map one key
+ * at a time — `note.en` and `note.uk` are separate index entries. A fixture
+ * written under any locale but this one would be invisible to the purge, so the
+ * write and the query take the constant rather than each spelling it.
+ */
+const TAG_LOCALE = 'en';
+
+/** The one shape of a fixture tag, so no `post` body can spell it differently. */
+const tag = (label: string): Record<string, string> => ({ [TAG_LOCALE]: `${PREFIX}/${label}` });
+
+/** The field path the purge ranges over: the tag locale's entry in the map. */
+const TAG_PATH = `note.${TAG_LOCALE}`;
+
+/**
+ * Refuses to send a body the purge could not find afterwards.
+ *
+ * The purge ranges over `note.<TAG_LOCALE>` for values under `PREFIX`, and
+ * Firestore indexes a map one key at a time — a fixture tagged under another
+ * locale, tagged with some other string, or not tagged at all, survives
+ * teardown and sits in a site-wide collection for every later run's range
+ * assertions to trip over. That is the leak #14 was filed against. Every
+ * successful write goes through `tag()` today; this makes that a property of
+ * the suite rather than of each new call site remembering.
+ *
+ * The trade: a slot with *no* note can no longer be created over HTTP from
+ * here, so that round trip is covered at the schema and service level instead
+ * (`accepts a slot with no note at all`, `omits the key when there is none`).
+ */
+const assertTagged = (body: object): void => {
+  const note: unknown = (body as { note?: unknown }).note;
+  const tagged =
+    typeof note === 'object' && note !== null
+      ? (note as Record<string, unknown>)[TAG_LOCALE]
+      : undefined;
+  if (typeof tagged !== 'string' || !tagged.startsWith(PREFIX)) {
+    throw new Error(
+      `This suite may only post slots carrying ${TAG_PATH} under "${PREFIX}" — use tag(). Got ${JSON.stringify(note)}`,
+    );
+  }
+};
+
 /** Bounds each purge read the way the repository bounds every other read. */
 const PURGE_LIMIT = 1000;
 
@@ -30,6 +76,28 @@ const MAX_PURGE_PASSES = 20;
 
 /** 20 characters, the shape of a Firestore auto-id, and not one that exists. */
 const UNKNOWN_ID = 'zzzz0000zzzz0000zzzz';
+
+/**
+ * Untagged documents the purge has to see past — more than `PURGE_LIMIT`, so a
+ * single bounded read cannot hold both them and the fixture.
+ */
+const BALLAST_COUNT = 1100;
+
+/** Under Firestore's 500-write limit for one batch. */
+const BALLAST_BATCH = 400;
+
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+
+/**
+ * Distinct codes `localeCodeSchema` accepts (`zaa`, `zab`, …), three letters so
+ * none of them can collide with `TAG_LOCALE` and overwrite the tag.
+ */
+const spareLocaleCodes = (count: number): string[] =>
+  Array.from(
+    { length: count },
+    (_unused, index) =>
+      `z${LETTERS[Math.floor(index / LETTERS.length)]}${LETTERS[index % LETTERS.length]}`,
+  );
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -66,8 +134,13 @@ describe('schedule slots (e2e)', () => {
   const server = (): ReturnType<INestApplication['getHttpServer']> => app.getHttpServer();
   const bearer = (user: TestUser): string => `Bearer ${user.idToken}`;
 
-  const post = (body: object, user: () => TestUser = () => admin): request.Test =>
-    request(server()).post('/api/schedule/slots').set('Authorization', bearer(user())).send(body);
+  const post = (body: object, user: () => TestUser = () => admin): request.Test => {
+    assertTagged(body);
+    return request(server())
+      .post('/api/schedule/slots')
+      .set('Authorization', bearer(user()))
+      .send(body);
+  };
 
   /** Every fixture carries the suite's tag unless the case overrides `note`. */
   const create = async (
@@ -75,7 +148,7 @@ describe('schedule slots (e2e)', () => {
     body: Record<string, unknown>,
     user: () => TestUser = () => admin,
   ): Promise<ScheduleSlot[]> => {
-    const response = await post({ note: `${PREFIX}/${label}`, ...body }, user).expect(201);
+    const response = await post({ note: tag(label), ...body }, user).expect(201);
     return (response.body as unknown[]).map((slot) => scheduleSlotSchema.parse(slot));
   };
 
@@ -105,17 +178,22 @@ describe('schedule slots (e2e)', () => {
     const response = await listRange(from, to, extra).expect(200);
     return (response.body as unknown[])
       .map((slot) => scheduleSlotSchema.parse(slot))
-      .filter((slot) => slot.note === `${PREFIX}/${label}`);
+      .filter((slot) => slot.note?.[TAG_LOCALE] === `${PREFIX}/${label}`);
   };
 
   const read = (id: string): request.Test =>
     request(server()).get(`/api/schedule/slots/${id}`).set('Authorization', bearer(admin));
 
-  const patch = (id: string, body: object): request.Test =>
-    request(server())
+  /** A patch rewriting `note` rewrites the tag, so it is guarded like a post. */
+  const patch = (id: string, body: object): request.Test => {
+    if ('note' in body) {
+      assertTagged(body);
+    }
+    return request(server())
       .patch(`/api/schedule/slots/${id}`)
       .set('Authorization', bearer(admin))
       .send(body);
+  };
 
   const remove = (id: string, user: () => TestUser = () => admin): request.Test =>
     request(server()).delete(`/api/schedule/slots/${id}`).set('Authorization', bearer(user()));
@@ -126,24 +204,25 @@ describe('schedule slots (e2e)', () => {
       .set('Authorization', bearer(user()));
 
   /**
-   * Runs at setup as well as teardown: a run killed before its teardown would
-   * otherwise leave slots that the site-wide list query keeps returning.
+   * Deletes every slot whose tag starts with `prefix` — the whole suite's tag,
+   * or one case's sub-namespace under it.
    *
    * The tag filter is in the *query*, not in memory: a bounded read of the
    * whole collection filtered afterwards silently purges nothing once the
    * collection holds more than a page of other documents, and the suite then
-   * fails on fixtures it cannot see. A prefix range over `note` is exact, and
-   * needs no composite index — Firestore indexes single fields on its own, and
-   * a document with no `note` is simply not in that index.
+   * fails on fixtures it cannot see. A prefix range over `note.en` is exact and
+   * needs no composite index — Firestore single-field-indexes each subfield of
+   * a map on its own, and a document with no `note`, or a `note` carrying no
+   * entry under this locale, is simply not in that index.
    *
    * It pages, because one bounded read cannot assume it is the last.
    */
-  const purge = async (): Promise<void> => {
+  const purgeTagged = async (prefix: string): Promise<void> => {
     for (let pass = 0; pass < MAX_PURGE_PASSES; pass += 1) {
       const snapshot = await firestore
         .collection(COLLECTIONS.scheduleSlots)
-        .where('note', '>=', PREFIX)
-        .where('note', '<', `${PREFIX}\uffff`)
+        .where(TAG_PATH, '>=', prefix)
+        .where(TAG_PATH, '<', `${prefix}\uffff`)
         .limit(PURGE_LIMIT)
         .get();
       if (snapshot.empty) {
@@ -152,9 +231,15 @@ describe('schedule slots (e2e)', () => {
       await Promise.all(snapshot.docs.map((doc) => doc.ref.delete()));
     }
     throw new Error(
-      `Purge gave up after ${MAX_PURGE_PASSES} passes — more than ${MAX_PURGE_PASSES * PURGE_LIMIT} slots are tagged "${PREFIX}"`,
+      `Purge gave up after ${MAX_PURGE_PASSES} passes — more than ${MAX_PURGE_PASSES * PURGE_LIMIT} slots are tagged "${prefix}"`,
     );
   };
+
+  /**
+   * Runs at setup as well as teardown: a run killed before its teardown would
+   * otherwise leave slots that the site-wide list query keeps returning.
+   */
+  const purge = (): Promise<void> => purgeTagged(PREFIX);
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -259,7 +344,7 @@ describe('schedule slots (e2e)', () => {
     ['before', '2026-05-06T08:00:00Z'],
   ])('refuses a slot whose endsAt is %s its startsAt', async (_name, endsAt) => {
     const response = await post({
-      note: `${PREFIX}/backwards`,
+      note: tag('backwards'),
       startsAt: '2026-05-06T09:00:00Z',
       endsAt,
       timeZone: 'Europe/Madrid',
@@ -267,6 +352,45 @@ describe('schedule slots (e2e)', () => {
 
     const body = response.body as IssueBody;
     expect(body.errors?.[0]?.path).toBe('endsAt');
+  });
+
+  it('refuses a note longer than the bound in one locale and stores nothing', async () => {
+    // The bound is per locale, so the refusal has to name the locale that broke
+    // it — an admin with four tabs open cannot act on `note` alone.
+    const response = await post({
+      note: { ...tag('long-note'), uk: 'я'.repeat(MAX_SLOT_NOTE_LENGTH + 1) },
+      startsAt: '2026-05-25T09:00:00Z',
+      endsAt: '2026-05-25T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    }).expect(400);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('note.uk');
+    expect(await listLabelled('long-note', '2026-05-25T00:00:00Z', '2026-05-26T00:00:00Z')).toEqual(
+      [],
+    );
+  });
+
+  it('refuses a note carrying more locales than the site can hold', async () => {
+    // Every value is one character, so this is refused for the number of
+    // translations and nothing else. The per-locale bound on its own leaves the
+    // note unbounded — 500 characters under each of a few hundred invented
+    // codes, multiplied by a recurrence and again by a range read.
+    const note: Record<string, string> = { ...tag('many-locales') };
+    for (const code of spareLocaleCodes(MAX_LOCALES)) {
+      note[code] = 'x';
+    }
+
+    const response = await post({
+      note,
+      startsAt: '2026-05-26T09:00:00Z',
+      endsAt: '2026-05-26T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    }).expect(400);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('note');
+    expect(
+      await listLabelled('many-locales', '2026-05-26T00:00:00Z', '2026-05-27T00:00:00Z'),
+    ).toEqual([]);
   });
 
   it.each([
@@ -283,7 +407,7 @@ describe('schedule slots (e2e)', () => {
     ['a fixed offset signed with U+2212', '\u221205:30'],
   ])('refuses %s on a single slot and stores nothing', async (_name, timeZone) => {
     const response = await post({
-      note: `${PREFIX}/bad-zone`,
+      note: tag('bad-zone'),
       startsAt: '2026-05-18T09:00:00Z',
       endsAt: '2026-05-18T10:00:00Z',
       timeZone,
@@ -299,7 +423,7 @@ describe('schedule slots (e2e)', () => {
     // The expansion hands `timeZone` to `Intl.DateTimeFormat`, which answers an
     // unknown zone with a RangeError — a 500 on a route that validated its body.
     const response = await post({
-      note: `${PREFIX}/bad-zone-series`,
+      note: tag('bad-zone-series'),
       startsAt: '2026-05-19T09:00:00Z',
       endsAt: '2026-05-19T10:00:00Z',
       timeZone: 'Mars/Olympus',
@@ -359,7 +483,7 @@ describe('schedule slots (e2e)', () => {
     });
 
     await post({
-      note: `${PREFIX}/overlap`,
+      note: tag('overlap'),
       startsAt: '2026-05-07T09:30:00Z',
       endsAt: '2026-05-07T10:30:00Z',
       timeZone: 'Europe/Madrid',
@@ -417,7 +541,7 @@ describe('schedule slots (e2e)', () => {
     });
 
     await post({
-      note: `${PREFIX}/series-collision`,
+      note: tag('series-collision'),
       startsAt: '2026-11-03T10:00:00Z',
       endsAt: '2026-11-03T11:00:00Z',
       timeZone: 'Europe/Madrid',
@@ -435,7 +559,7 @@ describe('schedule slots (e2e)', () => {
 
   it('refuses a recurrence that collides with itself and writes nothing', async () => {
     const response = await post({
-      note: `${PREFIX}/self-overlap`,
+      note: tag('self-overlap'),
       startsAt: '2026-06-01T09:00:00Z',
       endsAt: '2026-06-01T10:00:00Z',
       timeZone: 'Europe/Madrid',
@@ -450,7 +574,7 @@ describe('schedule slots (e2e)', () => {
 
   it('refuses a recurrence past the cap, naming the cap', async () => {
     const response = await post({
-      note: `${PREFIX}/cap`,
+      note: tag('cap'),
       startsAt: '2026-06-02T09:00:00Z',
       endsAt: '2026-06-02T10:00:00Z',
       timeZone: 'Europe/Madrid',
@@ -601,7 +725,7 @@ describe('schedule slots (e2e)', () => {
     );
     expect(cancelled.status).toBe('cancelled');
     expect(cancelled.timeZone).toBe('Europe/Kyiv');
-    expect(cancelled.note).toBe(`${PREFIX}/patch-status`);
+    expect(cancelled.note).toEqual(tag('patch-status'));
     expect(cancelled.startsAt).toBe(slot.startsAt);
     expect(cancelled.endsAt).toBe(slot.endsAt);
 
@@ -694,7 +818,7 @@ describe('schedule slots (e2e)', () => {
 
     await post(
       {
-        note: `${PREFIX}/roles`,
+        note: tag('roles'),
         startsAt: '2026-08-11T09:00:00Z',
         endsAt: '2026-08-11T10:00:00Z',
         timeZone: 'Europe/Madrid',
@@ -721,5 +845,91 @@ describe('schedule slots (e2e)', () => {
     await request(server())
       .get('/api/schedule/slots?from=2026-08-10T00:00:00Z&to=2026-08-11T00:00:00Z')
       .expect(401);
+  });
+
+  it('refuses to write a fixture its own purge could not find', () => {
+    // Each of these would leave a slot the teardown range over `note.en` never
+    // sees, so it would stay in the site-wide collection and turn up inside a
+    // later run's range assertions. Nothing is sent, and that is a property of
+    // where the guard runs — before the request object exists — rather than an
+    // outcome the collection could be queried for.
+    const slotWindow = {
+      startsAt: '2026-12-21T09:00:00Z',
+      endsAt: '2026-12-21T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    };
+
+    // Tagged, but under a locale the purge does not index.
+    expect(() => post({ ...slotWindow, note: { uk: `${PREFIX}/untagged` } })).toThrow(TAG_PATH);
+    // The tag locale, but outside the prefix range the purge sweeps.
+    expect(() => post({ ...slotWindow, note: { [TAG_LOCALE]: 'unprefixed' } })).toThrow(PREFIX);
+    // No note at all.
+    expect(() => post(slotWindow)).toThrow(TAG_PATH);
+
+    // A patch can untag a slot the same way a post can fail to tag one.
+    expect(() => patch(UNKNOWN_ID, { note: { uk: `${PREFIX}/untagged` } })).toThrow(TAG_PATH);
+    // But only a patch that touches `note`: every other one is left alone.
+    expect(() => patch(UNKNOWN_ID, { status: 'cancelled' })).not.toThrow();
+  });
+
+  it('finds and deletes its own fixtures in a collection holding more than one purge page', async () => {
+    // The condition the query-side filter was written for. An in-memory filter
+    // over one bounded read purges nothing here, and the suite then fails on
+    // fixtures it can neither see nor clean up.
+    const tagged = await createOne('purge-scale', {
+      startsAt: '2026-12-14T09:00:00Z',
+      endsAt: '2026-12-14T10:00:00Z',
+      timeZone: 'Europe/Madrid',
+    });
+    await read(tagged.id).expect(200);
+
+    // Written straight to Firestore from the document the route just wrote, so
+    // the shape is exactly what the repository reads back; the branch under
+    // test is about how many *other* documents the collection holds, and 1100
+    // round trips through the route would buy nothing but minutes.
+    const collection = firestore.collection(COLLECTIONS.scheduleSlots);
+    const { note: _note, ...untagged } = (await collection.doc(tagged.id).get()).data()!;
+    const ballastIds = Array.from(
+      { length: BALLAST_COUNT },
+      // `!` (U+0021) sorts ahead of every character a Firestore auto-id can
+      // hold, so a purge reading the collection unfiltered pages through
+      // ballast alone and never reaches the fixture. The ids are deterministic
+      // so a killed run leaves documents the next one overwrites and deletes.
+      (_unused, index) => `!e2e-ballast-${String(index).padStart(4, '0')}`,
+    );
+
+    for (let from = 0; from < ballastIds.length; from += BALLAST_BATCH) {
+      const batch = firestore.batch();
+      for (const id of ballastIds.slice(from, from + BALLAST_BATCH)) {
+        // No fixture shares this owner, so no overlap window reads them, and no
+        // range this suite asserts on reaches 2099, so no list assertion does.
+        batch.set(collection.doc(id), {
+          ...untagged,
+          ownerId: 'e2e-ballast-owner',
+          startsAt: '2099-01-01T09:00:00.000Z',
+          endsAt: '2099-01-01T10:00:00.000Z',
+        });
+      }
+      await batch.commit();
+    }
+
+    try {
+      await purgeTagged(`${PREFIX}/purge-scale`);
+
+      await read(tagged.id).expect(404);
+      // And only what it tagged: the ballast on both ends of the ordering is
+      // still there.
+      for (const id of [ballastIds[0]!, ballastIds.at(-1)!]) {
+        expect((await collection.doc(id).get()).exists).toBe(true);
+      }
+    } finally {
+      for (let from = 0; from < ballastIds.length; from += BALLAST_BATCH) {
+        const cleanup = firestore.batch();
+        for (const id of ballastIds.slice(from, from + BALLAST_BATCH)) {
+          cleanup.delete(collection.doc(id));
+        }
+        await cleanup.commit();
+      }
+    }
   });
 });

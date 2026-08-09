@@ -5,6 +5,13 @@
  * Europe/Madrid"), and every occurrence has to keep that local time across a
  * daylight-saving change. That means the conversion has to run per occurrence,
  * from civil date fields, and never from elapsed milliseconds.
+ *
+ * It lives in `packages/shared` rather than in the API because the admin
+ * composes wall-clock times too: writing an offset-bearing ISO string needs the
+ * offset at the instant being computed, which is the circularity the ±24 h
+ * probe in `wallClockToInstant` exists to break (ADR-014). A second
+ * implementation of that arithmetic would be wrong by an hour for any wall
+ * clock within ~14 h of a transition, and invisibly so.
  */
 
 /** A civil date and time with no zone attached. `month` is 1-12. */
@@ -22,8 +29,10 @@ const DAY_MS = 86_400_000;
 /**
  * Constructing a formatter is expensive and a 200-occurrence expansion asks for
  * one several hundred times. The map lives for the process — zone rules do not
- * change between two calls, and this module is API-only, so no SSR render
- * shares it.
+ * change between two calls — and since the module is shared, an SSR process
+ * keeps one map across every render it serves while a browser tab keeps its
+ * own. What makes that safe is the bound below, not the lifetime: one entry per
+ * lower-cased zone, and the number of zones is itself bounded.
  *
  * The key is the **lower-cased** zone. `Intl` matches zone ids
  * case-insensitively, so `Europe/Madrid`, `europe/madrid` and `eUrOpE/mAdRiD`
@@ -35,8 +44,10 @@ const DAY_MS = 86_400_000;
  * zones is that every caller passes a value `timeZoneSchema` accepted, which is
  * a zone name and never a fixed offset. That is not decoration: `Intl` resolves
  * an offset here too, and the offset syntax alone spans thousands of distinct
- * ids, each of which would pin its own formatter. If this ever gains a caller
- * whose zone has not been through the schema, that caller has to validate it.
+ * ids, each of which would pin its own formatter. Any caller whose zone has not
+ * been through `timeZoneSchema` has to validate it first — a live obligation on
+ * the admin, where the zone can come straight off a form field and never touch
+ * the API before it reaches here.
  */
 const formatters = new Map<string, Intl.DateTimeFormat>();
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { auditSchema, isoDateTimeSchema } from './common.js';
+import { auditSchema, isoDateTimeSchema, localeCodeSchema } from './common.js';
+import { MAX_LOCALES } from './locale.js';
 
 export const slotStatusSchema = z.enum(['open', 'booked', 'cancelled', 'completed']);
 export type SlotStatus = z.infer<typeof slotStatusSchema>;
@@ -132,6 +133,43 @@ export const timeZoneSchema = z
   });
 
 /**
+ * Longest a note may be **in each locale**, not in total across them: a total
+ * bound would make the sixth translation fail for text already authored in five
+ * languages, and report it against whichever locale happened to be saved last.
+ */
+export const MAX_SLOT_NOTE_LENGTH = 500;
+
+/** Reported against the note as a whole: no one locale is the one too many. */
+const TOO_MANY_LOCALES = `A note cannot carry more than ${MAX_LOCALES} locales — the most the site can have`;
+
+/**
+ * Free-form note shown to the learner before booking, as localized plain text.
+ *
+ * Bounded twice, and it needs both: `MAX_SLOT_NOTE_LENGTH` characters in each
+ * locale, and at most `MAX_LOCALES` entries. The per-locale bound alone bounds
+ * nothing — a caller can invent locale codes faster than the site can have
+ * locales, and the API answers a range with a whole page of slots at once, each
+ * carrying however many they cared to write. `MAX_LOCALES` is the domain's own
+ * number rather than one chosen for this field: a note can only usefully hold a
+ * translation for a locale that exists, and the locales route refuses to create
+ * more than that, so nothing refused here could have been authored. It is a cap
+ * and not the live locale count, which would cost a locales read on every write
+ * and make a stored note fail validation the day a locale is deleted.
+ *
+ * Plain text and not `richTextSchema`, decided by two things: this route runs
+ * no `RichTextSanitizer` as every other rich text field's write path does, and
+ * `scheduleSlotSchema` carries no `audioAssets`/`imageAssets` for the orphan
+ * sweep to read, so any embedded media would be untracked. Size is the third
+ * reason and it is about bounds, not bytes — `richTextSchema` puts no bound on
+ * an entry, so rich text would have meant a note with no length bound at all.
+ * A locale with no translation falls back per ADR-009, and a slot with no note
+ * at all shows nothing.
+ */
+export const slotNoteSchema = z
+  .record(localeCodeSchema, z.string().max(MAX_SLOT_NOTE_LENGTH))
+  .refine((note) => Object.keys(note).length <= MAX_LOCALES, { message: TOO_MANY_LOCALES });
+
+/**
  * A window of the admin's time that a learner can book. Times are stored as
  * absolute UTC instants plus the IANA zone they were authored in, so recurring
  * slots survive daylight-saving shifts.
@@ -148,8 +186,7 @@ export const scheduleSlotSchema = z
     status: slotStatusSchema.default('open'),
     /** Set when the slot was generated from a recurrence rule. */
     recurrenceId: z.string().min(1).nullable().default(null),
-    /** Free-form note shown to the learner before booking. */
-    note: z.string().max(500).optional(),
+    note: slotNoteSchema.optional(),
     /** Populated once `status === 'booked'`. Booking itself is Phase 2. */
     bookedBy: z.string().min(1).nullable().default(null),
     bookedAt: z.string().nullable().default(null),
@@ -175,7 +212,7 @@ export const createScheduleSlotSchema = z.object({
   startsAt: isoDateTimeSchema,
   endsAt: isoDateTimeSchema,
   timeZone: timeZoneSchema,
-  note: z.string().max(500).optional(),
+  note: slotNoteSchema.optional(),
   recurrence: slotRecurrenceSchema.optional(),
 });
 export type CreateScheduleSlotInput = z.infer<typeof createScheduleSlotSchema>;

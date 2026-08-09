@@ -145,8 +145,8 @@ describe('ScheduleService create', () => {
   it('carries a note through and omits the key when there is none', async () => {
     const { service, calls } = createService();
 
-    await service.create({ ...singleSlot, note: 'Bring your workbook' }, 'admin-uid');
-    expect(metaOf(onlyCallTo(calls, 'createMany')).note).toBe('Bring your workbook');
+    await service.create({ ...singleSlot, note: { en: 'Bring your workbook' } }, 'admin-uid');
+    expect(metaOf(onlyCallTo(calls, 'createMany')).note).toEqual({ en: 'Bring your workbook' });
 
     const bare = createService();
     await bare.service.create(singleSlot, 'admin-uid');

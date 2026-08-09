@@ -1,5 +1,11 @@
-import type { ScheduleSlot, SlotRecurrence } from '@speakukrainian/shared';
-import { addDaysToWallClock, wallClockIn, wallClockToInstant, weekdayOf } from './schedule.time.js';
+import {
+  addDaysToWallClock,
+  wallClockIn,
+  wallClockToInstant,
+  weekdayOf,
+  type ScheduleSlot,
+  type SlotRecurrence,
+} from '@speakukrainian/shared';
 
 /**
  * The arithmetic behind a slot, kept apart from Firestore so it is reachable

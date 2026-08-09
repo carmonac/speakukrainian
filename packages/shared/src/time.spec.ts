@@ -7,7 +7,7 @@ import {
   weekdayOf,
   zoneOffsetMs,
   type WallClock,
-} from './schedule.time.js';
+} from './time.js';
 
 const wall = (
   year: number,

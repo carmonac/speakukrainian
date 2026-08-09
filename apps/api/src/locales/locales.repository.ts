@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Firestore } from '@google-cloud/firestore';
 import {
   COLLECTIONS,
+  MAX_LOCALES,
   localeSchema,
   type CreateLocaleInput,
   type Locale,
@@ -9,9 +10,6 @@ import {
 } from '@speakukrainian/shared';
 import { BaseRepository, deepConvertTimestamps } from '../infra/firestore/base.repository.js';
 import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
-
-/** A site has a handful of languages; the cap exists so no read is unbounded. */
-export const MAX_LOCALES = 100;
 
 /** gRPC status 6. Firestore's `create()` uses it for "document already exists". */
 const ALREADY_EXISTS = 6;
