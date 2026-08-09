@@ -649,6 +649,63 @@ Accepted: parsing after authentication is not available in this architecture, Cl
 at 32 MiB regardless, and 1 MiB in flight is small next to the 100 MB the H5P upload route already
 accepts.
 
+### ADR-016 — Media uploads are accepted on their bytes, not their declared type
+
+**The content type declared on a multipart part is not evidence of anything.** A browser derives
+`File.type` from the filename extension, so `cp notes.txt notes.mp3` is declared `audio/mpeg` and
+passed every check the media routes had: the object was stored and the editor inserted a silent
+`<audio>` node. The decision is now made by the file's **leading bytes**, and the declared type is
+accepted only if the bytes can be that type.
+
+**The rule lives in `packages/shared` (`media-signatures.ts`), so the admin's pre-check and the API's
+check are literally the same function.** The allow-list was already shared for that reason and the
+byte check has the same failure mode if it drifts. The admin reads the first `MEDIA_SIGNATURE_BYTES`
+of the file and refuses locally; that is a courtesy, and the API's check is the guarantee.
+
+**The table is hand-written rather than a dependency.** Anything in `packages/shared` ships into the
+admin bundle and the SSR site, and the check is a comparison of ≤12 header bytes for nine formats.
+`file-type` is a streaming tokenizer for hundreds of formats we refuse, and its MIME strings do not
+line up with ours anyway — `.m4a` and `.mp4` are one container, a WebM's audio-only-ness is not
+decidable from its header — so the container → allowed-types mapping and the specs pinning it would
+have to be written regardless. Confining the dependency to the API instead would mean the two ends
+checked different things.
+
+**Detection reports a container, and the declared type is what gets stored.** `iso-bmff` and `ebml`
+cannot choose between the audio and the video type, so the bytes prove "this is an ISO-BMFF file" and
+the allow-list supplies the only thing we accept that it could be. Deriving the stored content type
+from the bytes would mean hard-coding that same mapping and calling it a derivation, so
+`buildObjectPath` keeps deriving the extension from the declaration — corroborated, now, rather than
+trusted.
+
+**The check runs in `MediaService.upload`, not in `fileFilter`.** Busboy calls the filter on the
+part's headers, before a byte has been read, so it keeps the declared-type gate and nothing more —
+that gate is still what stops an unsupported type from being buffered at all. Media uses multer's
+memory storage, so by the time the handler runs the file is in `file.buffer` and **nothing has been
+written anywhere**: a rejection has no partly-written object or temp file to unwind, unlike the H5P
+package scan, whose upload is on disk before it can be examined. A future media route wired with disk
+storage would hand the check no buffer and be refused, which is the direction to fail in.
+
+**`image/svg+xml` is dropped.** An SVG is plain text with no signature, so keeping it would mean a
+second, differently-shaped guard — declared type plus an XML parse of attacker-controlled bytes — for
+a format nothing in this product uses. It also closes the standing obligation the old allow-list
+comment carried: an SVG can carry script, which runs with the origin that served it, harmless while
+media is served from the bucket and a session-stealing hole the day it is served from ours. Nothing
+on a read path consults the allow-list — `assetRefSchema.contentType` is an unconstrained string — so
+an already-stored SVG still parses, renders and resolves; only new uploads are refused. Re-adding SVG
+means sanitizing the bytes on upload, which was always the right guard for it, not exempting it from
+this one.
+
+**Two things are deliberately left open.** A corrupt file with a valid header still uploads — a valid
+ID3 tag on garbage is accepted, because deciding playability needs decoding, not header inspection.
+And an MP4 or WebM carrying a video track, declared as `audio/mp4` or `audio/webm`, is
+indistinguishable at the container level and is accepted; it lands in an `<audio>` element and plays
+its audio track. Both are content-quality outcomes rather than security ones.
+
+_Rejected: a custom multer storage engine that inspects the first chunk and aborts at 16 bytes._ It
+would have to reimplement `memoryStorage`'s buffering and error propagation, and the only saving is
+buffering up to `limits.fileSize` of a file that is refused a moment later — a bound every upload
+already has. Worth revisiting if media limits grow to video sizes.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
