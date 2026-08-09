@@ -34,15 +34,23 @@ export interface CivilDate {
 const CIVIL_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * A week nobody can schedule in, at both ends. The upper bound is the one that
- * earns its keep: `9999-12-27`'s week ends in the year 10000, which
- * `toISOString` spells in the expanded-year form (`+010000-01-02T22:00:00.000Z`)
- * and the API refuses with a 422. Refusing the date here sends it to this week
- * like every other unusable `?from=`, instead of drawing an empty grid behind an
- * error toast.
+ * The far end of the calendar, past which a week cannot be asked for.
+ * `9999-12-27`'s week ends in the year 10000, which `toISOString` spells in the
+ * expanded-year form (`+010000-01-02T22:00:00.000Z`) and the API refuses with a
+ * 422. Refusing the date here sends it to this week like every other unusable
+ * `?from=`, instead of drawing an empty grid behind an error toast. The bound
+ * sits well short of the year that actually breaks, because a slot a thousand
+ * years out is not a week anyone is looking at.
+ *
+ * There is deliberately **no lower bound to match**. `parseCivilDate` runs
+ * before `startOfWeek`, so a date this refuses on the far side of a Monday
+ * becomes a redirect target the next pass refuses again — and when today's own
+ * week is the one below the bound, the resolver's redirect never settles.
+ * Nothing is needed at that end anyway: years 0000-0099 are already refused by
+ * the round trip below, since `Date.UTC` maps a two-digit year into the 1900s,
+ * and every year above spells as a plain four-digit ISO string.
  */
-const MIN_YEAR = 1970;
-const MAX_YEAR = 2999;
+const LAST_SCHEDULABLE_YEAR = 2999;
 
 function atMidnight(date: CivilDate): WallClock {
   return { ...date, hour: 0, minute: 0, second: 0 };
@@ -53,13 +61,18 @@ function pad(value: number, width = 2): string {
 }
 
 /**
- * `null` for anything that is not a real calendar date, or is one outside
- * {@link MIN_YEAR}…{@link MAX_YEAR}, which the caller turns into a redirect to
- * this week.
+ * `null` for anything that is not a real calendar date, or is one past
+ * {@link LAST_SCHEDULABLE_YEAR}, which the caller turns into a redirect to this
+ * week.
  *
  * The shape test is not enough on its own: `Date.UTC` happily normalises
  * `2026-02-31` into 3 March, so a typed URL would silently open a week the
  * admin never asked for. Reading the fields back is what refuses it.
+ *
+ * Whatever this refuses, it must still accept the Monday of today's week on any
+ * clock a browser can report. That Monday is where the resolver's redirect falls
+ * back to, so refusing it is an unterminating redirect rather than a wrong week;
+ * the spec pins the round trip.
  */
 export function parseCivilDate(value: string | null | undefined): CivilDate | null {
   if (typeof value !== 'string' || !CIVIL_DATE.test(value)) {
@@ -69,7 +82,7 @@ export function parseCivilDate(value: string | null | undefined): CivilDate | nu
   const year = Number(value.slice(0, 4));
   const month = Number(value.slice(5, 7));
   const day = Number(value.slice(8, 10));
-  if (year < MIN_YEAR || year > MAX_YEAR) {
+  if (year > LAST_SCHEDULABLE_YEAR) {
     return null;
   }
   const utc = new Date(Date.UTC(year, month - 1, day));

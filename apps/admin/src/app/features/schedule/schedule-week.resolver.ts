@@ -34,10 +34,20 @@ export interface ScheduleWeekData {
  * week is on screen and the corrected address is the only feedback needed — no
  * toast for a value only a hand-typed URL can produce.
  *
- * **The redirect cannot loop**: its target is always a Monday and always
- * parses, so the second pass falls through to the fetch. The obvious edit that
- * breaks that invariant is redirecting on anything else unexpected, which is
- * why the fetch failure below resolves data instead.
+ * **The redirect cannot loop.** Its target is always a Monday, and a target
+ * `parseCivilDate` still refuses only sends the pass after it to the fallback,
+ * `startOfWeek(todayIn(...))` — so the invariant that has to hold is that the
+ * fallback parses.
+ *
+ * Two edits break it. Redirecting on anything else unexpected is one, which is
+ * why the fetch failure below resolves data instead. The other is bounding
+ * `parseCivilDate` more tightly than `startOfWeek` reaches: the canonicalisation
+ * runs *after* the parse, so a lower bound of 1970 refuses `1969-12-29`, and a
+ * clock reading the first days of January 1970 then makes the fallback itself
+ * unparseable — the resolver redirects to the same URL for ever and the
+ * navigation never completes. That is a hang rather than a wrong week, which is
+ * why `schedule.model.spec.ts` pins the round trip as a unit assertion: a
+ * routing test for it hangs instead of failing.
  *
  * `RedirectCommand` and not `createUrlTree`, for the reason
  * `sectionFormResolver` gives: a resolver cannot bounce a navigation with a

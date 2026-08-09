@@ -85,12 +85,24 @@ describe('parseCivilDate', () => {
     // other one.
     expect(parseCivilDate('9999-12-27')).toBeNull();
     expect(parseCivilDate('3000-01-01')).toBeNull();
-    expect(parseCivilDate('1969-12-29')).toBeNull();
+    // Not a bound of its own: `Date.UTC` reads a two-digit year as 1900-something,
+    // so the round trip refuses it.
     expect(parseCivilDate('0000-01-03')).toBeNull();
 
-    // The bounds themselves are dates, not the first refusal.
-    expect(parseCivilDate('1970-01-01')).toEqual({ year: 1970, month: 1, day: 1 });
+    // The bound itself is a date, not the first refusal.
     expect(parseCivilDate('2999-12-31')).toEqual({ year: 2999, month: 12, day: 31 });
+  });
+
+  it('accepts every Monday startOfWeek can hand it, so the redirect settles', () => {
+    // The resolver redirects to `startOfWeek` of what it was given and
+    // redirects again when the target does not parse, so a Monday refused here
+    // is an infinite loop rather than a wrong week — and when the refused week
+    // is today's, the navigation never completes at all. `1970-01-01`'s Monday
+    // is `1969-12-29`, which is what a lower bound on the year refuses.
+    for (const value of ['1970-01-01', '1970-01-05', '2999-12-31', '2026-03-04']) {
+      const monday = startOfWeek(date(value));
+      expect(parseCivilDate(formatCivilDate(monday))).not.toBeNull();
+    }
   });
 });
 
