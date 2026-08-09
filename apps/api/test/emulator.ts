@@ -14,8 +14,9 @@ import { useJsonBodyParser } from '../src/common/body-parser.js';
  * prefixes it and parsing bodies the way `main.ts` parses them — the routes
  * under test are the ones the front ends call, and a suite running at a
  * different body limit tests a server that does not exist. The two bootstraps
- * can drift, so anything `main.ts` installs that a request can observe belongs
- * here too.
+ * can drift, so what decides whether a request is answered at all belongs here.
+ * Helmet and CORS are deliberately not mirrored: supertest is not a browser, so
+ * neither changes any response these tests can observe.
  *
  * It listens on an ephemeral port rather than stopping at `init()`: supertest
  * binds and closes a fresh port per request against a non-listening server, and

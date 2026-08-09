@@ -17,11 +17,15 @@ export interface BodyParserHost {
  * Installs the body parsers at `MAX_JSON_BODY_BYTES` instead of Express's 100 KB
  * default, which clips a typical three-locale rich text page.
  *
- * The caller must create the application with `bodyParser: false`. Nest's
- * `ExpressAdapter.registerParserMiddleware` installs its own 100 KB parsers
- * during `init()` and `useBodyParser` only *appends* — so without it the default
- * parser rejects the request first and this call is dead code that no unit test
- * would notice.
+ * The caller creates the application with `bodyParser: false`. Nest's
+ * `ExpressAdapter.registerParserMiddleware` installs its own 100 KB pair during
+ * `init()` and `useBodyParser` only *appends*, so a default already in the stack
+ * would reject the request first. It is not what makes this call take effect
+ * today: Nest skips its defaults when a parser of the same function name is
+ * already installed (`layer.handle.name === 'jsonParser'`), and both bootstraps
+ * call this before `init()`. The flag is kept so the raised limit depends on
+ * neither that name comparison in a third-party file nor on a call order this
+ * helper cannot enforce.
  *
  * Both bootstraps call this — `main.ts` and `test/emulator.ts` — because an e2e
  * suite running at a different limit tests a server that does not exist.

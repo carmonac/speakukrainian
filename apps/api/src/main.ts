@@ -10,8 +10,8 @@ import { loadConfig } from './config/configuration.js';
 
 async function bootstrap(): Promise<void> {
   const env = loadConfig();
-  // `bodyParser: false` is what makes `useJsonBodyParser` below take effect at
-  // all; see the helper for why.
+  // `bodyParser: false` so the limit raised below does not depend on Nest
+  // skipping its own 100 KB defaults; see the helper for why.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
     bodyParser: false,

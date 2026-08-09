@@ -590,9 +590,9 @@ at the cost of the house `formatMax…Size` convention; and an env var, since a 
 user-facing message cannot vary per deployment without the message going stale.
 
 The residual band — a body just under 1 MiB that parses and then produces a document marginally over
-Firestore's ceiling — is left as it is: a 500 from the write. Closing it needs per-field bounds, not
-a body limit, because the body cannot see the `id`, `path`, `publishedAt` and `audit` fields the
-server adds.
+Firestore's ceiling — is left as it is: a 500 from the write. Closing it needs per-field bounds —
+**#40** — not a body limit, because the body cannot see the `id`, `path`, `publishedAt` and `audit`
+fields the server adds.
 
 **One limit, and a route that needs more gets its own parser.** Not a raise of this one: the body is
 buffered in middleware, ahead of `FirebaseAuthGuard`, so every byte of it is reachable by an
@@ -609,10 +609,12 @@ not a write-side one.
 **The limit is installed by one helper that both bootstraps call** — `main.ts` and
 `test/emulator.ts` — because an e2e suite running at a different limit tests a server that does not
 exist. Both create the application with `bodyParser: false`: `useBodyParser` only _appends_ a parser,
-so if Nest's own defaults are already in the middleware stack the raised limit is dead code. (Nest
+so if Nest's own defaults are already in the middleware stack the raised limit is dead code. Nest
 happens to skip its defaults when a parser of the same function name is already installed, so the
-current call order survives without the flag; that is a name comparison in a third-party file, not a
-contract.) The helper runs **after** `enableCors`, so the 413 carries `Access-Control-Allow-Origin`
+current call order survives without the flag — and that is exactly why the flag is there: the skip is
+a name comparison in a third-party file, conditional on a call order neither bootstrap is obliged to
+keep, so we kept the belt because the braces are not ours. The helper runs **after** `enableCors`, so
+the 413 carries `Access-Control-Allow-Origin`
 and the admin's `fetch` reports a status rather than an opaque network failure.
 
 **`HttpExceptionFilter` maps a non-`HttpException` to a 4xx only when `expose === true`.** Errors
@@ -622,8 +624,19 @@ narrower than "carries a 4xx status", because a status alone over-matches: `Gaxi
 `@google-cloud/storage` throws, copies the upstream response's status onto itself, so a bucket 403
 for a lost IAM role would be reported to the caller as their mistake. `expose` is `http-errors`' own
 "safe to show a client" flag and nothing else in this tree sets it, so **a storage outage is still a
-500**. The message never comes from the exception — body-parser attaches a fragment of the request
-body to its parse failures — and the 4xx branch logs one `warn` line with no stack.
+500**. The message answered from that branch never comes from the exception — body-parser attaches a
+fragment of the request body to its parse failures — and it logs one `warn` line with no stack.
+
+**Malformed JSON is answered with Nest's parse message, which reflects a fragment of the caller's own
+body.** It does not reach the branch above: `mapExternalException` converts the `SyntaxError` into a
+`BadRequestException` before the filter is entered, so `{"password":"hunter2","x":}` is answered
+`Unexpected token '}', ..."ter2","x":}" is not valid JSON`. Accepted rather than fixed. Suppressing it
+would mean overriding `mapExternalException`, because at the filter that exception is
+indistinguishable from a `BadRequestException` a controller threw; what is reflected is the caller's
+own input returned to the caller, on an `application/json` response; and no error path in either
+front end has an HTML sink — the only `[innerHTML]` in the admin is the sanitised rich text preview.
+Written down because the alternative is someone rediscovering it as a leak, and because the filter's
+own 4xx branch makes the opposite promise for the errors it does map.
 
 **#40 and this limit are different layers, and both are load-bearing.** The body limit runs in
 middleware, before Zod; #40's per-entry bounds run in the pipe, after. Once #40 lands an over-long

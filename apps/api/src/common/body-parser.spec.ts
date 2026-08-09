@@ -13,8 +13,8 @@ describe('useJsonBodyParser', () => {
 
     // `urlencoded` is here because leaving it at the 100 KB default would make
     // the 413's "Request bodies must be under 1 MB" false for form-encoded
-    // bodies. That the limit is actually in force is proved by the e2e suite —
-    // this helper is a no-op unless the app was created with `bodyParser: false`.
+    // bodies. This pins what the helper asks for; that the limit is actually in
+    // force against a booted application is proved by the e2e suite.
     expect(calls).toEqual([
       ['json', { limit: MAX_JSON_BODY_BYTES }],
       ['urlencoded', { extended: true, limit: MAX_JSON_BODY_BYTES }],
