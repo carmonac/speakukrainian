@@ -106,7 +106,7 @@ export function detectMediaContainer(bytes: Uint8Array): MediaContainer | null {
   }
   // MP3 needs two rules: most encoders write an ID3v2 tag ahead of the audio,
   // and a tagless file starts directly at a frame sync.
-  if (matchesAscii(bytes, 0, 'ID3')) {
+  if (isId3v2Header(bytes)) {
     return 'mp3';
   }
   // Deliberately last. It is the only rule without a literal magic, so ahead of
@@ -117,6 +117,42 @@ export function detectMediaContainer(bytes: Uint8Array): MediaContainer | null {
   }
 
   return null;
+}
+
+/** Identifier, version, revision, flags and a four-byte size. */
+const ID3V2_HEADER_BYTES = 10;
+
+/**
+ * Whether the file opens on an ID3v2 tag, which is how most encoders start an
+ * MP3.
+ *
+ * The three-letter identifier alone is as weak as the bare frame sync was: any
+ * text file beginning "ID3" would satisfy it, which is the same renamed-`.txt`
+ * hole in a different rule. So the whole header is required to be well formed.
+ * The fields with an encoding a tag cannot hold are:
+ *
+ * - version and revision, where `FF` is reserved by the spec;
+ * - the size, stored synchsafe so that it can never contain a frame sync, which
+ *   means all four bytes have their high bit clear.
+ *
+ * The flags byte is left alone: v2.2, v2.3 and v2.4 each define a different set
+ * of bits, and refusing an unknown one would refuse a future revision rather
+ * than a text file. Nothing here reads the tag itself — the size can be 2 MB of
+ * cover art, and the frames behind the header are not the question.
+ */
+function isId3v2Header(bytes: Uint8Array): boolean {
+  if (!matchesAscii(bytes, 0, 'ID3') || !hasBytesAt(bytes, 0, ID3V2_HEADER_BYTES)) {
+    return false;
+  }
+  if (bytes[3] === 0xff || bytes[4] === 0xff) {
+    return false;
+  }
+  for (let offset = 6; offset < ID3V2_HEADER_BYTES; offset += 1) {
+    if (((bytes[offset] ?? 0) & 0x80) !== 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -144,6 +180,10 @@ export function detectMediaContainer(bytes: Uint8Array): MediaContainer | null {
  * there is nothing there to check.
  */
 function isMpegAudioFrameHeader(bytes: Uint8Array): boolean {
+  // The bound this function reads within, stated rather than inferred. No test
+  // can fail if it goes: two bytes leaves `bytes[2] ?? 0` reading as bitrate
+  // index `0000`, which the free-bitrate rule refuses by coincidence. Deleting
+  // it would leave the coincidence as the only thing keeping the reads in range.
   if (!hasBytesAt(bytes, 0, 3)) {
     return false;
   }
