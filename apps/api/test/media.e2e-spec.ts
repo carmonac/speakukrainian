@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   MAX_IMAGE_UPLOAD_BYTES,
   assetRefSchema,
+  contentDoesNotMatchMessage,
   uploadTooLargeMessage,
   type AssetRef,
 } from '@speakukrainian/shared';
@@ -15,10 +16,19 @@ import { CLOUD_STORAGE } from '../src/infra/storage/storage.tokens.js';
 import { StorageService } from '../src/infra/storage/storage.service.js';
 import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
 
-// A real PNG signature followed by a few bytes: nothing sniffs the contents,
-// but a fixture that is not a PNG would mislead whoever reads this next.
+// Real signatures: the API decides what a file is from these, so a fixture
+// that is not the format it claims is refused rather than stored.
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
 const MP3 = Buffer.from('494433030000000000004142434445', 'hex');
+// Same ID3v2 header, different payload — a second valid MP3 that is not the
+// first one's bytes.
+const OTHER_MP3 = Buffer.from('4944330300000000000046474849', 'hex');
+const TEXT = Buffer.from('this is a text file that was renamed');
+// The same text saved as "Unicode", so it opens on the UTF-16LE BOM `FF FE`.
+const UTF16_TEXT = Buffer.concat([
+  Buffer.from([0xff, 0xfe]),
+  Buffer.from('this is a text file that was renamed', 'utf16le'),
+]);
 
 interface ErrorBody {
   statusCode: number;
@@ -120,12 +130,7 @@ describe('media (e2e)', () => {
 
   it('keeps both objects when the same filename is uploaded twice', async () => {
     const first = await upload('audio', MP3, 'intro.mp3', 'audio/mpeg');
-    const second = await upload(
-      'audio',
-      Buffer.from('a different clip'),
-      'intro.mp3',
-      'audio/mpeg',
-    );
+    const second = await upload('audio', OTHER_MP3, 'intro.mp3', 'audio/mpeg');
 
     expect(first.path).not.toBe(second.path);
     await expect(storage.exists(first.path)).resolves.toBe(true);
@@ -156,6 +161,72 @@ describe('media (e2e)', () => {
     await expect(countObjects(prefix)).resolves.toBe(before);
   });
 
+  it('rejects a text file renamed to .mp3 with 415 and writes nothing', async () => {
+    // The issue's own reproduction, minus the browser: a renamed file is
+    // declared `audio/mpeg` and only its bytes say otherwise.
+    const prefix = currentMonthPrefix('audio');
+    const before = await countObjects(prefix);
+
+    const response = await request(server())
+      .post('/api/media/audio')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', TEXT, { filename: 'notes.mp3', contentType: 'audio/mpeg' })
+      .expect(415);
+
+    const body = response.body as ErrorBody;
+    expect(body.statusCode).toBe(415);
+    // The admin renders this message verbatim, so it has to tell an author
+    // what to do about it.
+    expect(body.message).toBe(contentDoesNotMatchMessage('audio', 'audio/mpeg'));
+    await expect(countObjects(prefix)).resolves.toBe(before);
+  });
+
+  it('rejects a UTF-16 text file renamed to .mp3 with 415 and writes nothing', async () => {
+    // A `.txt` saved with the encoding Notepad calls "Unicode" opens on `FF FE`,
+    // which satisfies an MP3 frame sync on its own — this file was stored until
+    // the rest of the frame header was decoded.
+    const prefix = currentMonthPrefix('audio');
+    const before = await countObjects(prefix);
+
+    const response = await request(server())
+      .post('/api/media/audio')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', UTF16_TEXT, { filename: 'notes.mp3', contentType: 'audio/mpeg' })
+      .expect(415);
+
+    const body = response.body as ErrorBody;
+    expect(body.message).toBe(contentDoesNotMatchMessage('audio', 'audio/mpeg'));
+    await expect(countObjects(prefix)).resolves.toBe(before);
+  });
+
+  it('rejects PNG bytes declared as audio with 415 and writes nothing', async () => {
+    // Proves the check reads the bytes rather than the filename: this one is
+    // named `.mp3`, declared `audio/mpeg`, and is a valid image.
+    const prefix = currentMonthPrefix('audio');
+    const before = await countObjects(prefix);
+
+    await request(server())
+      .post('/api/media/audio')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', PNG, { filename: 'clip.mp3', contentType: 'audio/mpeg' })
+      .expect(415);
+
+    await expect(countObjects(prefix)).resolves.toBe(before);
+  });
+
+  it('rejects MP3 bytes declared as an image with 415 and writes nothing', async () => {
+    const prefix = currentMonthPrefix('images');
+    const before = await countObjects(prefix);
+
+    await request(server())
+      .post('/api/media/image')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', MP3, { filename: 'diagram.png', contentType: 'image/png' })
+      .expect(415);
+
+    await expect(countObjects(prefix)).resolves.toBe(before);
+  });
+
   it('rejects an oversize upload with 413 naming the limit and writes nothing', async () => {
     const prefix = currentMonthPrefix('images');
     const before = await countObjects(prefix);
@@ -163,6 +234,9 @@ describe('media (e2e)', () => {
     const response = await request(server())
       .post('/api/media/image')
       .set('Authorization', `Bearer ${editor.idToken}`)
+      // All zeros, which no byte check would accept — but `limits.fileSize`
+      // aborts the part mid-stream and the handler never runs, so this stays a
+      // 413 rather than becoming a 415.
       .attach('file', Buffer.alloc(MAX_IMAGE_UPLOAD_BYTES + 1), {
         filename: 'huge.png',
         contentType: 'image/png',

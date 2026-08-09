@@ -2,10 +2,29 @@ import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { MAX_AUDIO_UPLOAD_BYTES, type AssetRef } from '@speakukrainian/shared';
+import {
+  MAX_AUDIO_UPLOAD_BYTES,
+  contentDoesNotMatchMessage,
+  type AssetRef,
+} from '@speakukrainian/shared';
 import { MediaPickerService } from './media-picker.service';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { environment } from '../../../environments/environment';
+
+/**
+ * Real leading bytes, because the picker now decides from them: an `'abc'`
+ * fixture is refused before a request is opened, whatever it is named.
+ */
+const MP3_HEADER = new Uint8Array([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+const audioFile = (name = 'clip.mp3'): File => new File([MP3_HEADER], name, { type: 'audio/mpeg' });
+
+/**
+ * The picker reads the file's header before it opens the request, so nothing
+ * reaches the HTTP mock until that read has settled.
+ */
+const untilRequestOpened = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(() => resolve(), 0));
 
 const clip: AssetRef = {
   path: 'audio/2026/03/2f7d1f1c-0b3a-4b2e-9d31-8b5f0a1c2d3e.mp3',
@@ -54,8 +73,9 @@ describe('MediaPickerService', () => {
   afterEach(() => httpMock.verify());
 
   it('uploads an allowed file and resolves with the stored asset', async () => {
-    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const file = audioFile();
     const uploaded = picker.uploadFile('audio', file);
+    await untilRequestOpened();
 
     const req = httpMock.expectOne(audioUrl);
     // jsdom re-wraps the blob on `FormData.append`, so identity is not the
@@ -63,7 +83,7 @@ describe('MediaPickerService', () => {
     const sent = (req.request.body as FormData).get('file') as File;
     expect(sent.name).toBe('clip.mp3');
     expect(sent.type).toBe('audio/mpeg');
-    expect(await sent.text()).toBe('abc');
+    expect(new Uint8Array(await sent.arrayBuffer())).toEqual(MP3_HEADER);
     req.flush(clip);
 
     await expect(uploaded).resolves.toEqual(clip);
@@ -80,7 +100,7 @@ describe('MediaPickerService', () => {
   });
 
   it('refuses an oversize file without opening a request, naming the limit', async () => {
-    const file = new File(['abc'], 'lecture.mp3', { type: 'audio/mpeg' });
+    const file = audioFile('lecture.mp3');
     // Faked rather than allocated: the point is the size check, not 50 MB of
     // heap in a unit test.
     Object.defineProperty(file, 'size', { value: MAX_AUDIO_UPLOAD_BYTES + 1 });
@@ -91,9 +111,41 @@ describe('MediaPickerService', () => {
     expect(notifications.errors.join()).toContain('50 MB');
   });
 
+  it('refuses a file whose bytes are not the type it declares, without opening a request', async () => {
+    // `cp notes.txt notes.mp3`: the browser reads the type off the extension,
+    // so only the header can tell the author what they actually picked.
+    const file = new File(['this is text'], 'notes.mp3', { type: 'audio/mpeg' });
+
+    await expect(picker.uploadFile('audio', file)).resolves.toBeNull();
+
+    httpMock.expectNone(audioUrl);
+    expect(notifications.errors).toEqual([contentDoesNotMatchMessage('audio', 'audio/mpeg')]);
+  });
+
+  it('refuses an image whose bytes are audio', async () => {
+    const file = new File([MP3_HEADER], 'diagram.png', { type: 'image/png' });
+
+    await expect(picker.uploadFile('image', file)).resolves.toBeNull();
+
+    httpMock.expectNone(`${environment.apiBaseUrl}/media/image`);
+    expect(notifications.errors.join()).toContain('image/png');
+  });
+
+  it('reports the format before the size when a file is both wrong and too big', async () => {
+    const file = new File(['this is text'], 'lecture.mp3', { type: 'audio/mpeg' });
+    Object.defineProperty(file, 'size', { value: MAX_AUDIO_UPLOAD_BYTES + 1 });
+
+    await expect(picker.uploadFile('audio', file)).resolves.toBeNull();
+
+    httpMock.expectNone(audioUrl);
+    expect(notifications.errors).toEqual([contentDoesNotMatchMessage('audio', 'audio/mpeg')]);
+    expect(notifications.errors.join()).not.toContain('50 MB');
+  });
+
   it('stays quiet when the API already explained the rejection', async () => {
-    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const file = audioFile();
     const uploaded = picker.uploadFile('audio', file);
+    await untilRequestOpened();
 
     httpMock
       .expectOne(audioUrl)
@@ -109,8 +161,9 @@ describe('MediaPickerService', () => {
   it('stays quiet for a 400 the interceptor already toasted', async () => {
     // The interceptor toasts the API's message for every status that is not
     // 401/403/5xx, not just 413 and 415, so a 400 must not double-toast either.
-    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const file = audioFile();
     const uploaded = picker.uploadFile('audio', file);
+    await untilRequestOpened();
 
     httpMock
       .expectOne(audioUrl)
@@ -124,8 +177,9 @@ describe('MediaPickerService', () => {
   });
 
   it('reports a generic failure when the API gives no usable reason', async () => {
-    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const file = audioFile();
     const uploaded = picker.uploadFile('audio', file);
+    await untilRequestOpened();
 
     httpMock
       .expectOne(audioUrl)
@@ -135,12 +189,30 @@ describe('MediaPickerService', () => {
     expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);
   });
 
+  it('names the file when its header cannot be read at all', async () => {
+    // The file moved, was deleted or lives on a volume that went away between
+    // the picker and the read. The author must be told, and the caller — a
+    // click handler that only tests for null — must not see a rejection.
+    const file = audioFile();
+    Object.defineProperty(file, 'slice', {
+      value: () => ({
+        arrayBuffer: () => Promise.reject(new DOMException('file not found', 'NotFoundError')),
+      }),
+    });
+
+    await expect(picker.uploadFile('audio', file)).resolves.toBeNull();
+
+    httpMock.expectNone(audioUrl);
+    expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);
+  });
+
   it('names the file when the connection drops, where no API message exists', async () => {
     // The interceptor can only show the transport error ("Failed to fetch"),
     // which says nothing about which of several uploads died — so the picker
     // must not treat a status 0 as already explained.
-    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const file = audioFile();
     const uploaded = picker.uploadFile('audio', file);
+    await untilRequestOpened();
 
     httpMock
       .expectOne(audioUrl)
@@ -151,8 +223,9 @@ describe('MediaPickerService', () => {
   });
 
   it('names the file on a 403, where the interceptor only says "no permission"', async () => {
-    const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
+    const file = audioFile();
     const uploaded = picker.uploadFile('audio', file);
+    await untilRequestOpened();
 
     httpMock
       .expectOne(audioUrl)

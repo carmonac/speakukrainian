@@ -6,6 +6,7 @@ import {
   MAX_AUDIO_UPLOAD_BYTES,
   MAX_IMAGE_UPLOAD_BYTES,
   MEDIA_UPLOAD_RULES,
+  contentDoesNotMatchMessage,
   formatMaxUploadSize,
   isAllowedContentType,
   mediaAcceptAttribute,
@@ -68,6 +69,11 @@ describe('isAllowedContentType', () => {
   it('matches case-sensitively', () => {
     expect(isAllowedContentType('audio', 'AUDIO/MPEG')).toBe(false);
   });
+
+  it('does not accept SVG, which has no header signature to check', () => {
+    expect(isAllowedContentType('image', 'image/svg+xml')).toBe(false);
+    expect(mediaAcceptAttribute('image')).not.toContain('svg');
+  });
 });
 
 describe('media messages', () => {
@@ -86,6 +92,13 @@ describe('media messages', () => {
       expect(message).toContain(contentType);
     }
     expect(message).not.toContain('image/png');
+  });
+
+  it('names the declared type in the byte-mismatch message', () => {
+    const message = contentDoesNotMatchMessage('audio', 'audio/mpeg');
+
+    expect(message).toContain('audio/mpeg');
+    expect(message).toContain('audio');
   });
 });
 

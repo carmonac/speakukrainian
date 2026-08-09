@@ -649,6 +649,105 @@ Accepted: parsing after authentication is not available in this architecture, Cl
 at 32 MiB regardless, and 1 MiB in flight is small next to the 100 MB the H5P upload route already
 accepts.
 
+### ADR-016 — Media uploads are accepted on their bytes, not their declared type
+
+**The content type declared on a multipart part is not evidence of anything.** A browser derives
+`File.type` from the filename extension, so `cp notes.txt notes.mp3` is declared `audio/mpeg` and
+passed every check the media routes had: the object was stored and the editor inserted a silent
+`<audio>` node. The decision is now made by the file's **leading bytes**, and the declared type is
+accepted only if the bytes can be that type.
+
+**The rule lives in `packages/shared` (`media-signatures.ts`), so the admin's pre-check and the API's
+check are literally the same function.** The allow-list was already shared for that reason and the
+byte check has the same failure mode if it drifts. The admin reads the first `MEDIA_SIGNATURE_BYTES`
+of the file and refuses locally; that is a courtesy, and the API's check is the guarantee. They share
+the precedence as well as the rule — type, then bytes, then size at both ends — but that is
+housekeeping rather than a user-visible fix: `limits.fileSize` aborts an oversize part before the
+handler runs, so a file that is both oversize and the wrong format comes back 413 from the API
+whichever way the service's own checks are ordered. Matching them keeps the defence-in-depth branch
+reading the same way as the admin's, so neither end carries a divergence to re-justify.
+
+**The table is hand-written rather than a dependency.** Anything in `packages/shared` ships into the
+admin bundle and the SSR site, and the check is a comparison of ≤12 header bytes for nine formats.
+`file-type` is a streaming tokenizer for hundreds of formats we refuse, and its MIME strings do not
+line up with ours anyway — `.m4a` and `.mp4` are one container, a WebM's audio-only-ness is not
+decidable from its header — so the container → allowed-types mapping and the specs pinning it would
+have to be written regardless. Confining the dependency to the API instead would mean the two ends
+checked different things.
+
+**A tagless MP3 is decided by decoding its frame header, not by its sync word.** Every other entry in
+the table is a literal magic; MP3 without an ID3 tag has only the 11-bit frame sync, and that is not
+enough to decide anything — `FF FE` is the UTF-16LE byte-order mark, so a text file saved as
+"Unicode" and renamed `.mp3` passed. The version, layer, bitrate and sample-rate fields are read as
+well, and every one of them has to be a value an MPEG audio frame can hold; Layer III is required,
+since a file offered as an MP3 is never Layer I or II and admitting them would readmit the BOM. That
+is the tightest rule in the table and therefore the one most likely to refuse a real file, so it is
+pinned both by fixtures written from the spec and by the leading bytes lame and ffmpeg actually
+write, across all three MPEG versions.
+
+**The ID3 rule reads the whole 10-byte header for the same reason.** Three ASCII letters were the
+loosest claim left in the table once the frame sync had been tightened, so the version and revision
+bytes — where `FF` is reserved — and the four size bytes — stored synchsafe, so their high bits are
+always clear — have to hold values a tag can, and all ten have to be there. That costs nothing
+against real files, because every tag carries the full header whatever revision it is. The flags byte
+is deliberately not checked: v2.2, v2.3 and v2.4 each define a different set of bits, so refusing an
+unknown one would refuse a future revision rather than a renamed text file.
+
+**Detection reports a container, and the declared type is what gets stored.** `iso-bmff` and `ebml`
+cannot choose between the audio and the video type, so the bytes prove "this is an ISO-BMFF file" and
+the allow-list supplies the only thing we accept that it could be. Deriving the stored content type
+from the bytes would mean hard-coding that same mapping and calling it a derivation, so
+`buildObjectPath` keeps deriving the extension from the declaration — corroborated, now, rather than
+trusted.
+
+**The check runs in `MediaService.upload`, not in `fileFilter`.** Busboy calls the filter on the
+part's headers, before a byte has been read, so it keeps the declared-type gate and nothing more —
+that gate is still what stops an unsupported type from being buffered at all. Media uses multer's
+memory storage, so by the time the handler runs the file is in `file.buffer` and **nothing has been
+written anywhere**: a rejection has no partly-written object or temp file to unwind, unlike the H5P
+package scan, whose upload is on disk before it can be examined. A future media route wired with disk
+storage would hand the check no buffer and be refused, which is the direction to fail in.
+
+**`image/svg+xml` is dropped.** An SVG is plain text with no signature, so keeping it would mean a
+second, differently-shaped guard — declared type plus an XML parse of attacker-controlled bytes — for
+a format nothing in this product uses. It also closes the standing obligation the old allow-list
+comment carried: an SVG can carry script, which runs with the origin that served it, harmless while
+media is served from the bucket and a session-stealing hole the day it is served from ours. Nothing
+on a read path consults the allow-list — `assetRefSchema.contentType` is an unconstrained string — so
+an already-stored SVG still parses, renders and resolves; only new uploads are refused. Re-adding SVG
+means sanitizing the bytes on upload, which was always the right guard for it, not exempting it from
+this one.
+
+**Two things are deliberately left open.** The first is that a header is all that is read, and for
+MP3 that leaves the reported case narrowed rather than closed. The ID3 rule wants ten bytes whose
+version and revision are not `FF` and whose four size bytes have their high bits clear — and every
+ASCII byte satisfies all of those, so plain text beginning `ID3` and at least ten bytes long is a
+structurally valid tag header. `printf 'ID3 is a metadata container used by MP3 files.' > notes.mp3`
+declared `audio/mpeg` gets a 201, a stored object and a silent `<audio>` node, exactly as
+`cp notes.txt notes.mp3` did before this change. What the rule does refuse is text that does not
+begin with those three letters, and binary junk, since arbitrary bytes readily land on a reserved
+`FF` or a set high bit in the size. Garbage _behind_ a well-formed header is open in the same way and
+for the same reason: the frames after an ID3 header are never read, and deciding playability needs
+decoding rather than header inspection.
+
+The second is that a container header proves the **box structure, not the payload**. `iso-bmff` is
+the sharp case: the check is `ftyp` at offset 4 and nothing more, so `ftypheic`, `ftypqt  `,
+`ftypjp2 ` and `ftyp3gp4` all satisfy `audio/mp4`, and a `photo.heic` renamed to `.m4a` gets a 201
+and a silent `<audio>` node — the same product harm the issue reported, reached by a deliberate
+rename rather than an accidental one. An MP4 or WebM carrying a video track is the same residual in
+its milder form: it is accepted, lands in an `<audio>` element and plays its audio track. Both are
+content-quality outcomes rather than security ones.
+
+_Rejected: an allow-list of ISO-BMFF major brands._ The set that is legitimately audio or MP4 is long
+and open-ended — `M4A `, `M4B `, `mp41`, `mp42`, `isom`, `iso2`, `iso4`, `mmp4`, `dash`, `f4a `, and
+`qt  ` from some muxers — so an allow-list closes a narrow, deliberate misuse while adding the one
+risk this whole change carries: refusing a real file from a muxer nobody tested against.
+
+_Rejected: a custom multer storage engine that inspects the first chunk and aborts at 16 bytes._ It
+would have to reimplement `memoryStorage`'s buffering and error propagation, and the only saving is
+buffering up to `limits.fileSize` of a file that is refused a moment later — a bound every upload
+already has. Worth revisiting if media limits grow to video sizes.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
