@@ -58,6 +58,11 @@ const HEADERS: Record<MediaContentType, Buffer> = {
 };
 
 const TEXT = Buffer.from('this is a text file, not a clip');
+/** The same text saved as "Unicode": the BOM makes it open on `FF FE`. */
+const UTF16_TEXT = Buffer.concat([
+  Buffer.from([0xff, 0xfe]),
+  Buffer.from('this is a text file, not a clip', 'utf16le'),
+]);
 
 function fakeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
   const mimetype = overrides.mimetype ?? 'image/png';
@@ -133,6 +138,21 @@ describe('MediaService', () => {
       new MediaService(storage).upload(
         'audio',
         fakeFile({ mimetype: 'audio/mpeg', originalname: 'notes.mp3', buffer: TEXT }),
+      ),
+    ).rejects.toThrow(UnsupportedMediaTypeException);
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses a UTF-16 text file, whose byte-order mark reads as a frame sync', async () => {
+    // The same renamed `.txt`, saved with the encoding Notepad calls "Unicode".
+    // Its first two bytes are `FF FE`, which satisfies an MP3 frame sync on its
+    // own; only decoding the rest of the frame header rejects it.
+    const { storage, calls } = createStorageDouble();
+
+    await expect(
+      new MediaService(storage).upload(
+        'audio',
+        fakeFile({ mimetype: 'audio/mpeg', originalname: 'notes.mp3', buffer: UTF16_TEXT }),
       ),
     ).rejects.toThrow(UnsupportedMediaTypeException);
     expect(calls).toEqual([]);

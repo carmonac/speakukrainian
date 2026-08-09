@@ -24,6 +24,11 @@ const MP3 = Buffer.from('494433030000000000004142434445', 'hex');
 // first one's bytes.
 const OTHER_MP3 = Buffer.from('4944330300000000000046474849', 'hex');
 const TEXT = Buffer.from('this is a text file that was renamed');
+// The same text saved as "Unicode", so it opens on the UTF-16LE BOM `FF FE`.
+const UTF16_TEXT = Buffer.concat([
+  Buffer.from([0xff, 0xfe]),
+  Buffer.from('this is a text file that was renamed', 'utf16le'),
+]);
 
 interface ErrorBody {
   statusCode: number;
@@ -172,6 +177,24 @@ describe('media (e2e)', () => {
     expect(body.statusCode).toBe(415);
     // The admin renders this message verbatim, so it has to tell an author
     // what to do about it.
+    expect(body.message).toBe(contentDoesNotMatchMessage('audio', 'audio/mpeg'));
+    await expect(countObjects(prefix)).resolves.toBe(before);
+  });
+
+  it('rejects a UTF-16 text file renamed to .mp3 with 415 and writes nothing', async () => {
+    // A `.txt` saved with the encoding Notepad calls "Unicode" opens on `FF FE`,
+    // which satisfies an MP3 frame sync on its own — this file was stored until
+    // the rest of the frame header was decoded.
+    const prefix = currentMonthPrefix('audio');
+    const before = await countObjects(prefix);
+
+    const response = await request(server())
+      .post('/api/media/audio')
+      .set('Authorization', `Bearer ${editor.idToken}`)
+      .attach('file', UTF16_TEXT, { filename: 'notes.mp3', contentType: 'audio/mpeg' })
+      .expect(415);
+
+    const body = response.body as ErrorBody;
     expect(body.message).toBe(contentDoesNotMatchMessage('audio', 'audio/mpeg'));
     await expect(countObjects(prefix)).resolves.toBe(before);
   });
