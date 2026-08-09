@@ -2,7 +2,10 @@ import { Injectable, inject } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import {
+  MEDIA_SIGNATURE_BYTES,
   MEDIA_UPLOAD_RULES,
+  contentDoesNotMatchMessage,
+  contentMatchesBytes,
   isAllowedContentType,
   mediaAcceptAttribute,
   unsupportedContentTypeMessage,
@@ -40,19 +43,30 @@ export class MediaPickerService {
   }
 
   /**
-   * Uploads a file the caller already has. The type and size are checked
-   * against the shared rules first, so an author who drags in a 200 MB
-   * recording is told why without waiting for the upload the API would refuse
-   * anyway.
+   * Uploads a file the caller already has. The type, the leading bytes and the
+   * size are checked against the shared rules first, so an author who drags in
+   * a 200 MB recording is told why without waiting for the upload the API would
+   * refuse anyway.
    *
    * `file.type` is what the browser declares, and it derives that from the
-   * extension: a text file renamed to `.mp3` reads as `audio/mpeg` here and
-   * passes both this check and the API's. Known and deferred, see
-   * https://github.com/carmonac/speakukrainian/issues/21.
+   * extension: a text file renamed to `.mp3` reads as `audio/mpeg` here. Only
+   * the header says what it really is, which is why the same
+   * `contentMatchesBytes` the API applies runs here too — this one is the
+   * courtesy, the API's is the guarantee.
+   *
+   * Bytes before size: reading 16 bytes of a 200 MB file costs nothing, and
+   * "this is not an MP3" is more useful than "this is too big" when both are
+   * true.
    */
   async uploadFile(kind: MediaKind, file: File): Promise<AssetRef | null> {
     if (!isAllowedContentType(kind, file.type)) {
       this.notifications.error(unsupportedContentTypeMessage(kind, file.type || 'unknown'));
+      return null;
+    }
+    const declared = file.type;
+    const header = new Uint8Array(await file.slice(0, MEDIA_SIGNATURE_BYTES).arrayBuffer());
+    if (!contentMatchesBytes(declared, header)) {
+      this.notifications.error(contentDoesNotMatchMessage(kind, declared));
       return null;
     }
     if (file.size > MEDIA_UPLOAD_RULES[kind].maxBytes) {
