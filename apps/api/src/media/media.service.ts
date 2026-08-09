@@ -40,16 +40,21 @@ export class MediaService {
    * The declared type is what gets stored, and `buildObjectPath` keeps deriving
    * the extension from it — corroborated by the bytes, to within what a
    * container header can prove.
+   *
+   * Type, then bytes, then size, which is the order the admin's pre-check runs
+   * in: a file that is both the wrong format and too big has to be given the
+   * same reason at both ends, or an author who is told "this is not an MP3"
+   * locally gets "too big" back from the API for the same file.
    */
   async upload(kind: MediaKind, file: Express.Multer.File): Promise<AssetRef> {
     if (!isAllowedContentType(kind, file.mimetype)) {
       throw new UnsupportedMediaTypeException(unsupportedContentTypeMessage(kind, file.mimetype));
     }
-    if (file.size > MEDIA_UPLOAD_RULES[kind].maxBytes) {
-      throw new PayloadTooLargeException(uploadTooLargeMessage(kind));
-    }
     if (!contentMatchesBytes(file.mimetype, file.buffer)) {
       throw new UnsupportedMediaTypeException(contentDoesNotMatchMessage(kind, file.mimetype));
+    }
+    if (file.size > MEDIA_UPLOAD_RULES[kind].maxBytes) {
+      throw new PayloadTooLargeException(uploadTooLargeMessage(kind));
     }
 
     const path = buildObjectPath(kind, file.mimetype);

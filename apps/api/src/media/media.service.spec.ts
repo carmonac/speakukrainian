@@ -240,6 +240,21 @@ describe('MediaService', () => {
     expect(calls).toEqual([]);
   });
 
+  it('reports the format before the size when a file is both wrong and too big', async () => {
+    // The admin's pre-check reports the format for this file, so the API has to
+    // as well — otherwise the same upload gets two different reasons depending
+    // on which end refuses it.
+    const { storage, calls } = createStorageDouble();
+
+    await expect(
+      new MediaService(storage).upload(
+        'audio',
+        fakeFile({ mimetype: 'audio/mpeg', buffer: TEXT, size: MAX_AUDIO_UPLOAD_BYTES + 1 }),
+      ),
+    ).rejects.toThrow(UnsupportedMediaTypeException);
+    expect(calls).toEqual([]);
+  });
+
   it('accepts a file exactly at the limit', async () => {
     const { storage, calls } = createStorageDouble();
 
