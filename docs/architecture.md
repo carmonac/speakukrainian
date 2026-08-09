@@ -564,6 +564,91 @@ _Cost:_ a slot straddling a transition ends at a different local time than the a
 document hand-written with a duration over 24 h is invisible to the overlap check; and overlap
 rejection is best-effort under concurrency, repairable by cancelling one of the two slots.
 
+### ADR-015 — One JSON body limit, sized by what one document can hold
+
+`MAX_JSON_BODY_BYTES` is **1 MiB**, and it is derived rather than picked. Two independent anchors
+agree on it. Media is uploaded separately and referenced by absolute Cloud Storage URL, so no body
+carries base64, which is what keeps a page body in the hundreds of KB:
+
+| body                                                       | bytes       |
+| ---------------------------------------------------------- | ----------- |
+| typical rich text page, 3 locales                          | 48 KB       |
+| typical rich text page, 10 locales                         | 152 KB      |
+| heavy page (40 paragraphs, 30 audio, 12 images), 3 locales | 169 KB      |
+| heavy page, 10 locales                                     | **539 KB**  |
+| `subsection_list` page with a rich intro, 3 / 100 locales  | 9 / 152 KB  |
+| section with a rich text description, 3 / 100 locales      | 12 / 201 KB |
+
+1 MiB is ~2× the heaviest body worth calling realistic. And every JSON route here writes at most one
+Firestore document per request, which may not exceed **1,048,576 bytes**; measured against the same
+objects, the JSON body is consistently 1–2% _larger_ than the document it becomes, because JSON pays
+two quotes and escapes per string where Firestore pays one byte. So a body over this limit
+essentially cannot produce a storable document. Express's 100 KB default clipped the _typical_
+three-locale page, which is how this surfaced. _Rejected:_ 512 KiB, which clips the heavy ten-locale
+page; 1,000,000 decimal bytes, which buys a strict "accepted ⇒ storable" guarantee for 1% of headroom
+at the cost of the house `formatMax…Size` convention; and an env var, since a limit quoted in a
+user-facing message cannot vary per deployment without the message going stale.
+
+The residual band — a body just under 1 MiB that parses and then produces a document marginally over
+Firestore's ceiling — is left as it is: a 500 from the write. Closing it needs per-field bounds —
+**#40** — not a body limit, because the body cannot see the `id`, `path`, `publishedAt` and `audit`
+fields the server adds.
+
+**One limit, and a route that needs more gets its own parser.** Not a raise of this one: the body is
+buffered in middleware, ahead of `FirebaseAuthGuard`, so every byte of it is reachable by an
+unauthenticated caller. A second value would also be a second place for the number and its wording to
+drift.
+
+**Multipart is bounded separately, and the two 413s deliberately say different things.**
+`express.json()` claims only `application/json`, so the media and H5P routes still go through multer
+at `MEDIA_UPLOAD_RULES` and `MAX_H5P_UPLOAD_BYTES`. Telling someone whose 60 MB mp3 was refused that
+"request bodies must be under 1 MB" would be actively misleading. They cannot collide — different
+content types, different middleware. `MAX_LIST_SLOTS` is a different axis again: a read-side ceiling,
+not a write-side one.
+
+**The limit is installed by one helper that both bootstraps call** — `main.ts` and
+`test/emulator.ts` — because an e2e suite running at a different limit tests a server that does not
+exist. Both create the application with `bodyParser: false`: `useBodyParser` only _appends_ a parser,
+so if Nest's own defaults are already in the middleware stack the raised limit is dead code. Nest
+happens to skip its defaults when a parser of the same function name is already installed, so the
+current call order survives without the flag — and that is exactly why the flag is there: the skip is
+a name comparison in a third-party file, conditional on a call order neither bootstrap is obliged to
+keep, so we kept the belt because the braces are not ours. The helper runs **after** `enableCors`, so
+the 413 carries `Access-Control-Allow-Origin`
+and the admin's `fetch` reports a status rather than an opaque network failure.
+
+**`HttpExceptionFilter` maps a non-`HttpException` to a 4xx only when `expose === true`.** Errors
+raised in middleware never reach a controller, so an oversized body arrived at the filter as an
+unrecognised throw and was reported — and logged with a stack — as a server fault. The fix is
+narrower than "carries a 4xx status", because a status alone over-matches: `GaxiosError`, what
+`@google-cloud/storage` throws, copies the upstream response's status onto itself, so a bucket 403
+for a lost IAM role would be reported to the caller as their mistake. `expose` is `http-errors`' own
+"safe to show a client" flag and nothing else in this tree sets it, so **a storage outage is still a
+500**. The message answered from that branch never comes from the exception — body-parser attaches a
+fragment of the request body to its parse failures — and it logs one `warn` line with no stack.
+
+**Malformed JSON is answered with Nest's parse message, which reflects a fragment of the caller's own
+body.** It does not reach the branch above: `mapExternalException` converts the `SyntaxError` into a
+`BadRequestException` before the filter is entered, so `{"password":"hunter2","x":}` is answered
+`Unexpected token '}', ..."ter2","x":}" is not valid JSON`. Accepted rather than fixed. Suppressing it
+would mean overriding `mapExternalException`, because at the filter that exception is
+indistinguishable from a `BadRequestException` a controller threw; what is reflected is the caller's
+own input returned to the caller, on an `application/json` response; and no error path in either
+front end has an HTML sink — the only `[innerHTML]` in the admin is the sanitised rich text preview.
+Written down because the alternative is someone rediscovering it as a leak, and because the filter's
+own 4xx branch makes the opposite promise for the errors it does map.
+
+**#40 and this limit are different layers, and both are load-bearing.** The body limit runs in
+middleware, before Zod; #40's per-entry bounds run in the pipe, after. Once #40 lands an over-long
+single field gets a 400 naming the locale, which is a better error — but only for bodies that fit.
+`MAX_LOCALES` × any plausible per-entry bound is several MB, so #40 must not treat the body limit as
+its bound.
+
+_Cost:_ an unauthenticated caller can make the API buffer 1 MiB per connection instead of 100 KB.
+Accepted: parsing after authentication is not available in this architecture, Cloud Run caps requests
+at 32 MiB regardless, and 1 MiB in flight is small next to the 100 MB the H5P upload route already
+accepts.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |

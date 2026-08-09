@@ -1,15 +1,22 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import type { Auth } from 'firebase-admin/auth';
 import type { AuthClaims, UserRole } from '@speakukrainian/shared';
 import { AppModule } from '../src/app.module.js';
 import { FIREBASE_AUTH } from '../src/auth/auth.tokens.js';
+import { useJsonBodyParser } from '../src/common/body-parser.js';
 
 /**
  * Boots the real application against the emulators, prefixed the way `main.ts`
- * prefixes it — the routes under test are the ones the front ends call.
+ * prefixes it and parsing bodies the way `main.ts` parses them — the routes
+ * under test are the ones the front ends call, and a suite running at a
+ * different body limit tests a server that does not exist. The two bootstraps
+ * can drift, so what decides whether a request is answered at all belongs here.
+ * Helmet and CORS are deliberately not mirrored: supertest is not a browser, so
+ * neither changes any response these tests can observe.
  *
  * It listens on an ephemeral port rather than stopping at `init()`: supertest
  * binds and closes a fresh port per request against a non-listening server, and
@@ -29,8 +36,9 @@ import { FIREBASE_AUTH } from '../src/auth/auth.tokens.js';
  */
 export async function createTestApp(): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-  const app = moduleRef.createNestApplication();
+  const app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
   app.setGlobalPrefix('api', { exclude: ['healthz', 'readyz'] });
+  useJsonBodyParser(app);
   await app.listen(0, '127.0.0.1');
   return app;
 }

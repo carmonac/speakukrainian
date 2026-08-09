@@ -1,5 +1,6 @@
 export * from './common.js';
 export * from './collections.js';
+export * from './http.js';
 export * from './media.js';
 export * from './locale.js';
 export * from './menu.js';

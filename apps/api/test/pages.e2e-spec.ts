@@ -5,7 +5,9 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   COLLECTIONS,
+  MAX_JSON_BODY_BYTES,
   contentPageSchema,
+  jsonBodyTooLargeMessage,
   sectionSchema,
   type ContentPage,
   type Page,
@@ -43,6 +45,29 @@ interface IssueBody {
 
 const AUDIO =
   '<audio controls preload="metadata" src="https://cdn.test/a.mp3" data-asset-path="audio/2026/01/a.mp3"></audio>';
+
+/** The sanitizer re-serializes the boolean `controls` attribute with a value. */
+const STORED_AUDIO = AUDIO.replace('controls ', 'controls="" ');
+
+/** Express's default body limit, which this API deliberately no longer runs at. */
+const EXPRESS_DEFAULT_BODY_BYTES = 100 * 1024;
+
+/**
+ * ~45 KB of a lesson this product could really publish: prose, headings and a
+ * clip in the exact form `audio.extension.ts` emits. Sized per locale so three
+ * of them clear the old 100 KB default while staying well inside any per-entry
+ * bound #40 might choose.
+ */
+const richLesson = (locale: string): string => {
+  const parts = [`<h2>${locale} — verbs of motion</h2>`];
+  for (let index = 0; index < 450; index += 1) {
+    parts.push(
+      `<p>${locale} ${index}: a prefix on a verb of motion carries the direction and the aspect.</p>`,
+    );
+  }
+  parts.push(AUDIO);
+  return parts.join('');
+};
 
 describe('pages (e2e)', () => {
   let app: INestApplication;
@@ -494,6 +519,81 @@ describe('pages (e2e)', () => {
 
     // `title` is plain localized text; sanitizing it would store the escape.
     expect(stored.title).toEqual({ en: 'Tom & Jerry' });
+  });
+
+  it('saves a realistic three-locale page that the old 100 KB default would have refused', async () => {
+    const section = await createSection({ slug: 'e2e-big-section', title: { en: 'Big' } });
+    const content = { en: richLesson('en'), es: richLesson('es'), uk: richLesson('uk') };
+    const body = {
+      sectionId: section.id,
+      slug: 'e2e-big-page',
+      title: { en: 'Verbs of motion', es: 'Verbos de movimiento', uk: 'Дієслова руху' },
+      body: { type: 'rich_text', content },
+    };
+
+    // The assertion the rest of this test rests on: without the raised limit
+    // this body never reaches a controller at all.
+    const wireBytes = Buffer.byteLength(JSON.stringify(body));
+    expect(wireBytes).toBeGreaterThan(EXPRESS_DEFAULT_BODY_BYTES);
+    expect(wireBytes).toBeLessThan(MAX_JSON_BODY_BYTES);
+
+    const page = await create(body);
+
+    // Read it back: the criterion is that every locale survived the write, not
+    // that the controller echoed what it was handed.
+    const stored = await read(page.id);
+    expect(stored.body.type).toBe('rich_text');
+    const storedContent = stored.body.type === 'rich_text' ? stored.body.content : {};
+    for (const locale of ['en', 'es', 'uk'] as const) {
+      expect(storedContent[locale]).toBe(content[locale].replace(AUDIO, STORED_AUDIO));
+      expect(storedContent[locale]).toContain('data-asset-path="audio/2026/01/a.mp3"');
+    }
+  });
+
+  it('answers a body over the limit 413 with a message naming it, and leaks nothing', async () => {
+    // Valid JSON, so a 413 can only mean the parser refused it on size — a
+    // parsed body would have failed the schema with a 400 instead.
+    const oversized = JSON.stringify({ pad: 'x'.repeat(MAX_JSON_BODY_BYTES + 1024) });
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(MAX_JSON_BODY_BYTES);
+
+    const response = await request(server())
+      .post('/api/pages')
+      .set('Authorization', bearer(editor))
+      .set('Content-Type', 'application/json')
+      .send(oversized)
+      .expect(413);
+
+    const error = response.body as ErrorBody & { path?: string; timestamp?: string };
+    expect(error.statusCode).toBe(413);
+    expect(error.message).toBe(jsonBodyTooLargeMessage());
+    expect(error.path).toBe('/api/pages');
+    expect(Number.isNaN(Date.parse(String(error.timestamp)))).toBe(false);
+
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain('PayloadTooLargeError');
+    expect(serialized).not.toContain(' at ');
+    expect(serialized).not.toContain('node_modules');
+  });
+
+  it('answers malformed JSON 400 in the usual envelope', async () => {
+    const response = await request(server())
+      .post('/api/pages')
+      .set('Authorization', bearer(editor))
+      .set('Content-Type', 'application/json')
+      .send('{"sectionId":')
+      .expect(400);
+
+    // The wording belongs to body-parser and Nest, so only the envelope is
+    // pinned here.
+    const error = response.body as ErrorBody & { path?: string; timestamp?: string };
+    expect(error.statusCode).toBe(400);
+    expect(error.message.length).toBeGreaterThan(0);
+    expect(error.path).toBe('/api/pages');
+    expect(Number.isNaN(Date.parse(String(error.timestamp)))).toBe(false);
+
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain(' at ');
+    expect(serialized).not.toContain('node_modules');
   });
 
   it('rewrites the path on a slug change and refuses a slug the section already uses', async () => {
