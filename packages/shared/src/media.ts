@@ -8,22 +8,15 @@ import { STORAGE_PREFIXES } from './collections.js';
  * message and the server's 415/413 cannot describe different rules. The
  * user-facing wording lives here for the same reason.
  *
- * `image/svg+xml` is on the list on one condition: media is served from the
- * storage origin, never from the admin's or the site's. An SVG can carry
- * script, and script in a stored file runs with the origin that served it —
- * harmless on the bucket's own origin, a session-stealing hole on ours. So a
- * route that streams media through the API (`StorageService.createReadStream`
- * already exists) or a same-origin CDN path in front of the bucket invalidates
- * this entry: drop `image/svg+xml` and its extension, or sanitize on upload,
- * before adding one.
+ * A declared type is only accepted if the file's leading bytes agree with it
+ * (`media-signatures.ts`), so every type on these lists needs a header
+ * signature. `image/svg+xml` is therefore off them: an SVG is plain text with
+ * no signature, and it can also carry script, which runs with the origin that
+ * served it — harmless while media is served from the bucket, a hole the day it
+ * is served from ours. Re-adding it means sanitizing the SVG on upload, not
+ * exempting it from the byte check. See ADR-016.
  */
-export const IMAGE_CONTENT_TYPES = [
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif',
-  'image/svg+xml',
-] as const;
+export const IMAGE_CONTENT_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
 
 export const AUDIO_CONTENT_TYPES = [
   'audio/mpeg',
@@ -52,7 +45,6 @@ export const FILE_EXTENSION_BY_CONTENT_TYPE: Record<MediaContentType, string> = 
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
   'image/gif': 'gif',
-  'image/svg+xml': 'svg',
   'audio/mpeg': 'mp3',
   'audio/mp4': 'm4a',
   'audio/ogg': 'ogg',
@@ -109,4 +101,13 @@ export function uploadTooLargeMessage(kind: MediaKind): string {
 export function unsupportedContentTypeMessage(kind: MediaKind, received: string): string {
   const allowed = MEDIA_UPLOAD_RULES[kind].contentTypes.join(', ');
   return `${received} is not a supported ${kind} format. Allowed: ${allowed}.`;
+}
+
+/**
+ * One message for both directions of a byte/declaration mismatch. It names the
+ * declared type rather than the detected container: the author can see the
+ * former, and the action — re-export it — is the same either way.
+ */
+export function contentDoesNotMatchMessage(kind: MediaKind, declared: string): string {
+  return `This file is not a valid ${declared}. Renaming a file does not change its contents; re-export it as a supported ${kind} format.`;
 }
