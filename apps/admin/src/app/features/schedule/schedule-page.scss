@@ -1,0 +1,175 @@
+.schedule {
+  display: block;
+  padding: 24px;
+
+  &__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+
+    h1 {
+      margin: 0 0 4px;
+    }
+  }
+
+  &__week {
+    margin: 0;
+    font-weight: 500;
+  }
+
+  &__zone,
+  &__empty,
+  &__failed {
+    margin: 4px 0 0;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__view-zone {
+    font-weight: 500;
+  }
+
+  &__nav {
+    display: flex;
+    flex-shrink: 0;
+    gap: 8px;
+  }
+
+  // Seven equal tracks, sharing whatever width there is and never dropping
+  // below a chip's own: on a narrow viewport the row scrolls sideways rather
+  // than reflowing to one column, so a week always reads as a week.
+  //
+  // Named tracks and not `grid-auto-columns` with `grid-auto-flow: column`:
+  // implicit tracks do not take a share of the free space, so the columns stayed
+  // at their minimum and a week never filled a wide window.
+  &__grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(140px, 1fr));
+    gap: 8px;
+    margin-top: 16px;
+    overflow-x: auto;
+  }
+
+  &__day {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 8px;
+    border: 1px solid var(--mat-sys-outline-variant, #cac4d0);
+    border-radius: 8px;
+    background: var(--mat-sys-surface, #fff);
+
+    &.is-today {
+      border-color: var(--mat-sys-primary, #6750a4);
+      background: var(--mat-sys-surface-container-high, #ece6f0);
+    }
+  }
+
+  &__day-label {
+    margin: 0 0 8px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__slots {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  &__empty,
+  &__failed {
+    margin-top: 16px;
+  }
+}
+
+.slot {
+  padding: 8px;
+  border-radius: 8px;
+  border-inline-start: 3px solid var(--mat-sys-primary, #6750a4);
+  background: var(--mat-sys-surface-container, #f3edf7);
+
+  &__own-time {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px;
+    margin: 0;
+    font-weight: 500;
+  }
+
+  &__view-interval,
+  &__earlier {
+    margin: 0;
+  }
+
+  // A qualifier on the interval beside it, not a heading: in a column this
+  // narrow it wraps onto its own line, and at the primary line's weight it read
+  // as the chip's title.
+  &__own-weekday {
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__own-zone,
+  &__view-interval,
+  &__earlier,
+  &__note {
+    font-size: 0.75rem;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  // The zone is an IANA name, which is what identifies a zone — `GMT+1`
+  // identifies half of Europe. Long ones (`America/Argentina/Buenos_Aires`) are
+  // truncated rather than dropped, with the full name on hover.
+  &__own-zone {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  &__status {
+    margin: 4px 0 0;
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    background: var(--mat-sys-secondary-container, #e8def8);
+  }
+
+  // A note may be 500 characters, which in a 140px column is thirty lines and
+  // pushes every other day's chips off the fold. Clamped to three lines, with
+  // the whole of it on the title attribute.
+  &__note {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  &__earlier {
+    font-style: italic;
+  }
+
+  // A cancelled slot stays on the grid — an admin has to see that the hour is
+  // spoken for — but must not read as bookable time.
+  &--cancelled {
+    border-inline-start-color: var(--mat-sys-outline, #79747e);
+    background: var(--mat-sys-surface-container-low, #f7f2fa);
+    opacity: 0.7;
+
+    .slot__own-interval,
+    .slot__view-interval {
+      text-decoration: line-through;
+    }
+  }
+}

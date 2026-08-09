@@ -10,8 +10,8 @@ export const routes: Routes = [
     loadComponent: () => import('./pages-page').then((m) => m.PagesPage),
     title: 'Pages',
     resolve: { listData: pagesListResolver },
-    // The default, spelled out because the section filter depends on it: without
-    // it a change of `?sectionId=` would not re-run the resolver.
+    // Angular's default is `paramsChange`, which ignores a query-param change:
+    // without this, a change of `?sectionId=` would not re-run the resolver.
     runGuardsAndResolvers: 'paramsOrQueryParamsChange',
   },
   {

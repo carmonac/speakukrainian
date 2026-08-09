@@ -537,6 +537,29 @@ refuses could have been authored. It is the cap and not the live locale count, w
 locales read on every write and would fail a stored note the day a locale is deleted. The same
 reasoning applies to every other localized field, and none of them enforces it yet.
 
+**A calendar drawing those slots keeps geometry on one clock and labels on the slot's clock.** The
+admin's week view places a slot in the day column its `startsAt` falls on **in the view zone** — the
+browser's own zone — because a grid whose columns are drawn on different clocks says two slots clash
+when they do not, and says nothing at all about a free hour. The chip then labels the interval in
+the slot's **own** `timeZone` and names that zone, plus the weekday when the slot's civil day is not
+the column's, so a slot authored 23:30 Friday in Madrid and drawn in Saturday's column from Kyiv
+reads as what it is rather than as a placement bug. Anything rendering a slot — #39's form, Phase
+2's booking flow — inherits both halves: the position is a view-zone question and the label is a
+slot-zone one, and mixing them is the same class of error as adding elapsed milliseconds to a
+recurrence.
+
+The second line, the same interval on the grid's clock, is drawn only when it would **say** something
+the first line does not — decided on the rendered string, not on the two zone names. Comparing names
+(even case-folded) is not enough, and a real browser is where that shows: **Chromium answers
+`Europe/Kiev` for a machine set to `Europe/Kyiv`**, so a Kyiv admin — the product's primary audience
+— stores every slot under one spelling and views it under the other, and every chip on the screen
+then carries the identical interval twice. Two zones that merely share an offset for that slot
+(`Europe/Madrid` viewed from `Europe/Paris`) read the same way, and the decision is per slot at
+render time, so `America/Phoenix` viewed from `America/Denver` correctly draws one line in January
+and two in July. This is not the canonicalisation the paragraph above refuses: no stored value is
+rewritten, no link is resolved, and the case-folded `sameZone` stays as the cheap path in front of
+it.
+
 _Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
 document hand-written with a duration over 24 h is invisible to the overlap check; and overlap
 rejection is best-effort under concurrency, repairable by cancelling one of the two slots.
