@@ -189,6 +189,23 @@ describe('MediaPickerService', () => {
     expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);
   });
 
+  it('names the file when its header cannot be read at all', async () => {
+    // The file moved, was deleted or lives on a volume that went away between
+    // the picker and the read. The author must be told, and the caller — a
+    // click handler that only tests for null — must not see a rejection.
+    const file = audioFile();
+    Object.defineProperty(file, 'slice', {
+      value: () => ({
+        arrayBuffer: () => Promise.reject(new DOMException('file not found', 'NotFoundError')),
+      }),
+    });
+
+    await expect(picker.uploadFile('audio', file)).resolves.toBeNull();
+
+    httpMock.expectNone(audioUrl);
+    expect(notifications.errors).toEqual(['Could not upload clip.mp3.']);
+  });
+
   it('names the file when the connection drops, where no API message exists', async () => {
     // The interceptor can only show the transport error ("Failed to fetch"),
     // which says nothing about which of several uploads died — so the picker
