@@ -1,14 +1,21 @@
 import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module.js';
+import { useJsonBodyParser } from './common/body-parser.js';
 import { loadConfig } from './config/configuration.js';
 
 async function bootstrap(): Promise<void> {
   const env = loadConfig();
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  // `bodyParser: false` is what makes `useJsonBodyParser` below take effect at
+  // all; see the helper for why.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    bodyParser: false,
+  });
 
   app.setGlobalPrefix('api', { exclude: ['healthz', 'readyz'] });
   app.enableShutdownHooks();
@@ -25,6 +32,11 @@ async function bootstrap(): Promise<void> {
     origin: env.CORS_ORIGINS,
     credentials: true,
   });
+
+  // After CORS: a 413 raised ahead of that middleware carries no
+  // `Access-Control-Allow-Origin`, and the admin's `fetch` then reports an
+  // opaque network failure instead of the status it could have shown.
+  useJsonBodyParser(app);
 
   if (env.NODE_ENV !== 'production') {
     const swaggerConfig = new DocumentBuilder()
