@@ -1,0 +1,83 @@
+<section class="schedule">
+  <header class="schedule__header">
+    <div>
+      <h1>Schedule slots</h1>
+      <p class="schedule__week">{{ weekLabel() }}</p>
+      <!-- The grid is drawn on one clock — this one — and each slot says which
+           clock it was authored on. Naming it once here is what makes the
+           columns mean something. -->
+      <p class="schedule__zone">
+        {{ timesShownIn }}<span class="schedule__view-zone">{{ weekData().viewZone }}</span>
+      </p>
+    </div>
+
+    <nav class="schedule__nav" aria-label="Week">
+      <a matButton routerLink="/schedule" [queryParams]="previousWeek()" class="schedule__previous">
+        <mat-icon>chevron_left</mat-icon>
+        Previous
+      </a>
+      <a matButton routerLink="/schedule" [queryParams]="thisWeek" class="schedule__this-week">Today</a>
+      <a matButton routerLink="/schedule" [queryParams]="nextWeek()" class="schedule__next">
+        Next
+        <mat-icon>chevron_right</mat-icon>
+      </a>
+    </nav>
+  </header>
+
+  <div class="schedule__grid">
+    @for (column of columns(); track column.key) {
+      <div class="schedule__day" [class.is-today]="column.isToday" [attr.data-date]="column.key">
+        <h2 class="schedule__day-label">{{ column.label }}</h2>
+
+        <ul class="schedule__slots">
+          @for (view of column.slots; track view.slot.id) {
+            <li
+              class="slot"
+              [class.slot--cancelled]="view.slot.status === 'cancelled'"
+              [attr.data-slot-id]="view.slot.id"
+              [attr.data-status]="view.slot.status"
+            >
+              <p class="slot__own-time">
+                @if (view.ownWeekday !== null) {
+                  <span class="slot__own-weekday">{{ view.ownWeekday }}</span>
+                }
+                <span class="slot__own-interval">{{ view.ownInterval }}</span>
+                <!-- The IANA name, which is what identifies a zone — `GMT+1`
+                     identifies half of Europe. A long one is truncated by the
+                     stylesheet, so the full name is on the title too. -->
+                <span class="slot__own-zone" [title]="view.ownZone">{{ view.ownZone }}</span>
+              </p>
+
+              @if (view.viewInterval !== null) {
+                <!-- The same interval on the grid's own clock, which the header
+                     names — so it carries no zone of its own. Drawn only when
+                     the slot was authored somewhere else. -->
+                <p class="slot__view-interval">{{ view.viewInterval }}</p>
+              }
+
+              <p class="slot__status">{{ statusLabel(view.slot.status) }}</p>
+
+              @if (view.startsBeforeWeek) {
+                <p class="slot__earlier">{{ startedEarlier }}</p>
+              }
+
+              @if (view.note !== '') {
+                <!-- Interpolated, never `[innerHTML]`: a note is plain text and
+                     this route runs no sanitizer on the way in, so every place
+                     it renders has to be an escaped context. The stylesheet
+                     clamps it, so the whole of it goes on the title. -->
+                <p class="slot__note" [title]="view.note">{{ view.note }}</p>
+              }
+            </li>
+          }
+        </ul>
+      </div>
+    }
+  </div>
+
+  @if (weekData().failed) {
+    <p class="schedule__failed">{{ loadFailed }}</p>
+  } @else if (slotCount() === 0) {
+    <p class="schedule__empty">{{ noSlots }}</p>
+  }
+</section>
