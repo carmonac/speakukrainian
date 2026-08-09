@@ -47,9 +47,13 @@ function numericStatus(value: unknown): number | null {
  * rather than as the outage it is. The same trap in its other costume is a
  * predicate keyed on a string `code`, which matches every Node built-in error.
  *
- * The message never comes from the exception: body-parser attaches a fragment of
- * the request body to its parse failures, and the wording of middleware we might
- * add later is not ours to vouch for.
+ * The wording answered from here never comes from the exception: body-parser
+ * attaches a fragment of the request body to its parse failures, and the wording
+ * of middleware we might add later is not ours to vouch for. That holds for this
+ * branch only — a malformed body is converted to a `BadRequestException` by
+ * Nest's `mapExternalException` before the filter is entered, and the
+ * `HttpException` branch forwards that message (V8's parse error, which quotes a
+ * fragment of the caller's body) verbatim. ADR-015 records why that is accepted.
  */
 function exposedClientError(exception: unknown): { status: number; message: string } | null {
   if (!(exception instanceof Error)) {
@@ -62,7 +66,11 @@ function exposedClientError(exception: unknown): { status: number; message: stri
   }
 
   const status = numericStatus(candidate.status) ?? numericStatus(candidate.statusCode);
-  if (status === null || status < HttpStatus.BAD_REQUEST || status >= 500) {
+  if (
+    status === null ||
+    status < HttpStatus.BAD_REQUEST ||
+    status >= HttpStatus.INTERNAL_SERVER_ERROR
+  ) {
     return null;
   }
 
