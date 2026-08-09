@@ -45,7 +45,10 @@ export interface ScheduleWeekData {
  * same URL for ever. A lower bound of 1970 did it at the epoch and the surviving
  * upper bound does it in the year 3000 — a hang rather than a wrong week, which
  * is why `schedule.model.spec.ts` pins the clamp as a unit assertion: a routing
- * test for it hangs instead of failing.
+ * test for it hangs instead of failing. Calling this resolver directly does
+ * not — one pass, handing back its redirect without navigating — so the same
+ * defect is an ordinary assertion failure there, which is what
+ * `schedule-week.resolver.spec.ts` pins on the fallback branch.
  *
  * One other edit breaks it: redirecting on anything else unexpected, which is
  * why the fetch failure below resolves data instead.
