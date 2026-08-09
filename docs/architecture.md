@@ -661,9 +661,11 @@ accepted only if the bytes can be that type.
 check are literally the same function.** The allow-list was already shared for that reason and the
 byte check has the same failure mode if it drifts. The admin reads the first `MEDIA_SIGNATURE_BYTES`
 of the file and refuses locally; that is a courtesy, and the API's check is the guarantee. They share
-the precedence as well as the rule — type, then bytes, then size at both ends — because a file that
-is both the wrong format and oversize would otherwise be refused for one reason locally and a
-different one by the API.
+the precedence as well as the rule — type, then bytes, then size at both ends — but that is
+housekeeping rather than a user-visible fix: `limits.fileSize` aborts an oversize part before the
+handler runs, so a file that is both oversize and the wrong format comes back 413 from the API
+whichever way the service's own checks are ordered. Matching them keeps the defence-in-depth branch
+reading the same way as the admin's, so neither end carries a divergence to re-justify.
 
 **The table is hand-written rather than a dependency.** Anything in `packages/shared` ships into the
 admin bundle and the SSR site, and the check is a comparison of ≤12 header bytes for nine formats.
@@ -716,10 +718,17 @@ an already-stored SVG still parses, renders and resolves; only new uploads are r
 means sanitizing the bytes on upload, which was always the right guard for it, not exempting it from
 this one.
 
-**Two things are deliberately left open.** The first is that a header is all that is read, so garbage
-behind a well-formed one is stored: an ID3v2 header whose version, revision and synchsafe size are
-sane says nothing about the frames after it, and deciding playability needs decoding rather than
-header inspection.
+**Two things are deliberately left open.** The first is that a header is all that is read, and for
+MP3 that leaves the reported case narrowed rather than closed. The ID3 rule wants ten bytes whose
+version and revision are not `FF` and whose four size bytes have their high bits clear — and every
+ASCII byte satisfies all of those, so plain text beginning `ID3` and at least ten bytes long is a
+structurally valid tag header. `printf 'ID3 is a metadata container used by MP3 files.' > notes.mp3`
+declared `audio/mpeg` gets a 201, a stored object and a silent `<audio>` node, exactly as
+`cp notes.txt notes.mp3` did before this change. What the rule does refuse is text that does not
+begin with those three letters, and binary junk, since arbitrary bytes readily land on a reserved
+`FF` or a set high bit in the size. Garbage _behind_ a well-formed header is open in the same way and
+for the same reason: the frames after an ID3 header are never read, and deciding playability needs
+decoding rather than header inspection.
 
 The second is that a container header proves the **box structure, not the payload**. `iso-bmff` is
 the sharp case: the check is `ftyp` at offset 4 and nothing more, so `ftypheic`, `ftypqt  `,

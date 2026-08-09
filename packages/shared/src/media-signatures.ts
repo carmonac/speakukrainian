@@ -126,14 +126,22 @@ const ID3V2_HEADER_BYTES = 10;
  * Whether the file opens on an ID3v2 tag, which is how most encoders start an
  * MP3.
  *
- * The three-letter identifier alone is as weak as the bare frame sync was: any
- * text file beginning "ID3" would satisfy it, which is the same renamed-`.txt`
- * hole in a different rule. So the whole header is required to be well formed.
- * The fields with an encoding a tag cannot hold are:
+ * The three-letter identifier alone lets any file through on three bytes of
+ * coincidence, so the whole 10-byte header has to hold values a tag can. The
+ * fields with an encoding a tag cannot hold are:
  *
  * - version and revision, where `FF` is reserved by the spec;
  * - the size, stored synchsafe so that it can never contain a frame sync, which
  *   means all four bytes have their high bit clear.
+ *
+ * What that buys is worth stating exactly, because it is less than it looks.
+ * Those two rules refuse `FF` version bytes and set high bits in the size,
+ * which is what arbitrary *binary* data renamed to `.mp3` tends to carry. They
+ * do not refuse text: every ASCII byte is a legal version, revision and
+ * synchsafe size byte, so against the renamed-`.txt` case this adds the length
+ * requirement and nothing else, and ASCII prose beginning "ID3" is still a
+ * structurally valid header and is still accepted. ADR-016 records that
+ * residual.
  *
  * The flags byte is left alone: v2.2, v2.3 and v2.4 each define a different set
  * of bits, and refusing an unknown one would refuse a future revision rather

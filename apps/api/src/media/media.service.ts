@@ -42,9 +42,12 @@ export class MediaService {
    * container header can prove.
    *
    * Type, then bytes, then size, which is the order the admin's pre-check runs
-   * in: a file that is both the wrong format and too big has to be given the
-   * same reason at both ends, or an author who is told "this is not an MP3"
-   * locally gets "too big" back from the API for the same file.
+   * in. That ordering changes no answer on the wire: `limits.fileSize` aborts
+   * an oversize part mid-stream, so a file that is both too big and the wrong
+   * format comes back 413 either way and the size check here is only reached
+   * for a body multer already let through. Matching is housekeeping — the same
+   * rule read in two places, with no precedence difference to re-justify every
+   * time either end is edited.
    */
   async upload(kind: MediaKind, file: Express.Multer.File): Promise<AssetRef> {
     if (!isAllowedContentType(kind, file.mimetype)) {
