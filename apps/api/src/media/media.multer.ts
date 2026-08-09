@@ -26,13 +26,11 @@ type FileFilterCallback = (error: Error | null, acceptFile: boolean) => void;
  * reaches Cloud Storage. Checking `file.size` in the controller would mean the
  * whole body had already been buffered.
  *
- * `fileFilter` checks the content type *declared* on the multipart part, not
- * the bytes. A browser derives that value from the file extension, so a text
- * file renamed to `.mp3` is declared `audio/mpeg` and gets through — known and
- * deferred, see https://github.com/carmonac/speakukrainian/issues/21. It is
- * contained rather than harmless: the stored object's extension comes from the
- * content type and never from the uploaded filename, so a disguised file cannot
- * land in the bucket under a name or extension the caller chose.
+ * `fileFilter` checks the content type *declared* on the multipart part, and
+ * only that, because busboy calls it on the part's headers before a byte of the
+ * body has been read. It is the cheap half: an unsupported type is refused
+ * without ever being buffered. What the file actually is gets decided from its
+ * leading bytes in `MediaService.upload`, before anything is stored.
  *
  * This is a plain factory called from a decorator, not a Nest provider.
  */
