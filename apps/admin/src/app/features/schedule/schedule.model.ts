@@ -42,15 +42,28 @@ const CIVIL_DATE = /^\d{4}-\d{2}-\d{2}$/;
  * sits well short of the year that actually breaks, because a slot a thousand
  * years out is not a week anyone is looking at.
  *
- * There is deliberately **no lower bound to match**. `parseCivilDate` runs
- * before `startOfWeek`, so a date this refuses on the far side of a Monday
- * becomes a redirect target the next pass refuses again — and when today's own
- * week is the one below the bound, the resolver's redirect never settles.
- * Nothing is needed at that end anyway: years 0000-0099 are already refused by
- * the round trip below, since `Date.UTC` maps a two-digit year into the 1900s,
- * and every year above spells as a plain four-digit ISO string.
+ * The bound is one-sided, and nothing is needed at the other end: `Date.UTC`
+ * maps a two-digit year into the 1900s, so `0000-01-03` is already refused by
+ * the round trip below, and every year from 0100 up spells as a plain
+ * four-digit ISO string.
+ *
+ * What a bound at *either* end needs behind it is {@link fallbackMonday}.
+ * `parseCivilDate` runs before `startOfWeek`, so a date refused here still comes
+ * back as the resolver's redirect target; when the refused week is today's own,
+ * the target is a date the next pass refuses again and the navigation never
+ * completes. A lower bound of 1970 shipped that hang once, under a clock reading
+ * the first days of January 1970, and this bound has the same shape at the year
+ * 3000. Moving either end means moving the clamp below with it.
  */
 const LAST_SCHEDULABLE_YEAR = 2999;
+
+/**
+ * The first year `Date.UTC` does not fold into the 1900s, and so the first one
+ * `parseCivilDate`'s round trip accepts. Not a bound of its own — it is the
+ * existing behaviour named, so the clamp below can be derived from it rather
+ * than written down.
+ */
+const FIRST_SCHEDULABLE_YEAR = 100;
 
 function atMidnight(date: CivilDate): WallClock {
   return { ...date, hour: 0, minute: 0, second: 0 };
@@ -69,10 +82,11 @@ function pad(value: number, width = 2): string {
  * `2026-02-31` into 3 March, so a typed URL would silently open a week the
  * admin never asked for. Reading the fields back is what refuses it.
  *
- * Whatever this refuses, it must still accept the Monday of today's week on any
- * clock a browser can report. That Monday is where the resolver's redirect falls
- * back to, so refusing it is an unterminating redirect rather than a wrong week;
- * the spec pins the round trip.
+ * This refuses the Monday of today's own week on a clock past
+ * {@link LAST_SCHEDULABLE_YEAR}, which is exactly why the resolver's fallback
+ * goes through {@link fallbackMonday} and not through `startOfWeek` alone: a
+ * week refused here is a wrong week, but a *redirect target* refused here with
+ * nothing clamping it is a navigation that never completes.
  */
 export function parseCivilDate(value: string | null | undefined): CivilDate | null {
   if (typeof value !== 'string' || !CIVIL_DATE.test(value)) {
@@ -122,6 +136,50 @@ export function addCivilDays(date: CivilDate, days: number): CivilDate {
  */
 export function startOfWeek(date: CivilDate): CivilDate {
   return addCivilDays(date, -((weekdayOf(atMidnight(date)) + 6) % 7));
+}
+
+/**
+ * The two ends of the range, derived rather than written down so they cannot
+ * drift from the bounds they stand for. `startOfWeek` moves a date at most six
+ * days back, so the Monday of 31 December is still inside
+ * {@link LAST_SCHEDULABLE_YEAR} and the Monday of 7 January is still inside
+ * {@link FIRST_SCHEDULABLE_YEAR}. Both are therefore Mondays `parseCivilDate`
+ * accepts, by construction and not by inspection.
+ */
+const LATEST_SCHEDULABLE_MONDAY = startOfWeek({ year: LAST_SCHEDULABLE_YEAR, month: 12, day: 31 });
+const EARLIEST_SCHEDULABLE_MONDAY = startOfWeek({ year: FIRST_SCHEDULABLE_YEAR, month: 1, day: 7 });
+
+/**
+ * The Monday the resolver falls back to when `?from=` says nothing usable:
+ * today's, clamped into the range {@link parseCivilDate} accepts.
+ *
+ * The clamp is what makes the redirect terminate, and it is not defensive
+ * decoration. The resolver's target is always a Monday and a target that does
+ * not parse only sends the pass after it here, so this value is the fixed point
+ * the whole navigation lands on: it has to be a Monday, and it has to parse. On
+ * a clock reading 15 January 3000 the unclamped answer is `3000-01-13`, which
+ * `parseCivilDate` refuses — the resolver redirects to it, refuses it, and
+ * redirects again for ever. (`3000-01-05` settles unclamped, because its Monday
+ * is `2999-12-30`, which is how the shape hides from a careless probe.)
+ *
+ * Total for any `CivilDate`, not only for the ones a browser is known to report,
+ * because "the fallback always parses" is the whole guarantee — a version that
+ * held for the clocks someone thought to enumerate is what shipped the hang at
+ * the epoch. The near end is reachable: a clock in the first days of January 100
+ * has a Monday in the year 99, which `Date.UTC`'s two-digit fold makes
+ * unreadable. A clock anywhere else in years 0000-0099 does not reach it at all
+ * — the fold turns those into a 19xx week, which parses.
+ */
+export function fallbackMonday(today: CivilDate): CivilDate {
+  const monday = startOfWeek(today);
+  // Asked of the parse itself rather than of the year, so a bound this does not
+  // know about still sends the answer to a clamped end instead of out of range.
+  if (parseCivilDate(formatCivilDate(monday)) !== null) {
+    return monday;
+  }
+  return monday.year > LAST_SCHEDULABLE_YEAR
+    ? LATEST_SCHEDULABLE_MONDAY
+    : EARLIEST_SCHEDULABLE_MONDAY;
 }
 
 /** The calendar date an instant falls on in `timeZone`. */

@@ -5,6 +5,7 @@ import type { ScheduleSlot } from '@speakukrainian/shared';
 import { BROWSER_TIME_ZONE } from '../../core/time/browser-time-zone';
 import { ScheduleApi } from './schedule.api';
 import {
+  fallbackMonday,
   formatCivilDate,
   parseCivilDate,
   sameCivilDate,
@@ -35,19 +36,19 @@ export interface ScheduleWeekData {
  * toast for a value only a hand-typed URL can produce.
  *
  * **The redirect cannot loop.** Its target is always a Monday, and a target
- * `parseCivilDate` still refuses only sends the pass after it to the fallback,
- * `startOfWeek(todayIn(...))` — so the invariant that has to hold is that the
- * fallback parses.
+ * `parseCivilDate` still refuses only sends the pass after it to the fallback —
+ * so the invariant that has to hold is that the fallback is a Monday that
+ * parses, on any clock at all. That is what `fallbackMonday` guarantees and why
+ * the fallback is not the plain `startOfWeek(todayIn(...))` it reads like: the
+ * canonicalisation runs *after* the parse, so a bound `startOfWeek` can reach
+ * past leaves the fallback itself unparseable and the resolver redirects to the
+ * same URL for ever. A lower bound of 1970 did it at the epoch and the surviving
+ * upper bound does it in the year 3000 — a hang rather than a wrong week, which
+ * is why `schedule.model.spec.ts` pins the clamp as a unit assertion: a routing
+ * test for it hangs instead of failing.
  *
- * Two edits break it. Redirecting on anything else unexpected is one, which is
- * why the fetch failure below resolves data instead. The other is bounding
- * `parseCivilDate` more tightly than `startOfWeek` reaches: the canonicalisation
- * runs *after* the parse, so a lower bound of 1970 refuses `1969-12-29`, and a
- * clock reading the first days of January 1970 then makes the fallback itself
- * unparseable — the resolver redirects to the same URL for ever and the
- * navigation never completes. That is a hang rather than a wrong week, which is
- * why `schedule.model.spec.ts` pins the round trip as a unit assertion: a
- * routing test for it hangs instead of failing.
+ * One other edit breaks it: redirecting on anything else unexpected, which is
+ * why the fetch failure below resolves data instead.
  *
  * `RedirectCommand` and not `createUrlTree`, for the reason
  * `sectionFormResolver` gives: a resolver cannot bounce a navigation with a
@@ -65,7 +66,8 @@ export const scheduleWeekResolver: ResolveFn<ScheduleWeekData> = async (route) =
   const viewZone = inject(BROWSER_TIME_ZONE);
 
   const requested = parseCivilDate(route.queryParamMap.get('from'));
-  const monday = startOfWeek(requested ?? todayIn(viewZone, new Date()));
+  const monday =
+    requested === null ? fallbackMonday(todayIn(viewZone, new Date())) : startOfWeek(requested);
 
   if (requested === null || !sameCivilDate(requested, monday)) {
     return new RedirectCommand(

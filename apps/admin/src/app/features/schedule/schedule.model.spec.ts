@@ -4,10 +4,12 @@ import {
   addCivilDays,
   buildWeek,
   civilDateIn,
+  fallbackMonday,
   formatCivilDate,
   fullDateLabel,
   intervalLabel,
   parseCivilDate,
+  sameCivilDate,
   sameZone,
   slotNote,
   startOfWeek,
@@ -93,15 +95,71 @@ describe('parseCivilDate', () => {
     expect(parseCivilDate('2999-12-31')).toEqual({ year: 2999, month: 12, day: 31 });
   });
 
-  it('accepts every Monday startOfWeek can hand it, so the redirect settles', () => {
-    // The resolver redirects to `startOfWeek` of what it was given and
-    // redirects again when the target does not parse, so a Monday refused here
-    // is an infinite loop rather than a wrong week — and when the refused week
-    // is today's, the navigation never completes at all. `1970-01-01`'s Monday
-    // is `1969-12-29`, which is what a lower bound on the year refuses.
+  it('accepts the Mondays a bound at the near end would refuse', () => {
+    // A lower bound is the edit that shipped a hang: the resolver redirects to
+    // `startOfWeek` of what it was given, so `1970-01-01`'s Monday
+    // (`1969-12-29`) being refused is an infinite loop rather than a wrong week.
+    // Only the near end can be written here, because `date()` is
+    // `parseCivilDate` and the far end is the years it refuses; the invariant
+    // itself is pinned on `fallbackMonday` below.
     for (const value of ['1970-01-01', '1970-01-05', '2999-12-31', '2026-03-04']) {
       const monday = startOfWeek(date(value));
       expect(parseCivilDate(formatCivilDate(monday))).not.toBeNull();
+    }
+  });
+});
+
+describe('fallbackMonday', () => {
+  /**
+   * Every `today` here is a literal rather than `date(...)`, because that helper
+   * is `parseCivilDate` and the clocks this function exists for are exactly the
+   * ones it refuses — a test built on it cannot express them.
+   */
+
+  it("answers today's own Monday whenever that is a week the resolver can ask for", () => {
+    expect(formatCivilDate(fallbackMonday({ year: 2026, month: 3, day: 4 }))).toBe('2026-03-02');
+    expect(formatCivilDate(fallbackMonday({ year: 2026, month: 3, day: 2 }))).toBe('2026-03-02');
+    // The epoch week: in range, and clamping it would be the bug at the other end.
+    expect(formatCivilDate(fallbackMonday({ year: 1970, month: 1, day: 1 }))).toBe('1969-12-29');
+  });
+
+  it('sends a clock past the last schedulable year to the last Monday inside it', () => {
+    // `3000-01-15`'s own Monday is `3000-01-13`, which `parseCivilDate` refuses:
+    // unclamped, the resolver redirects to it, refuses it and redirects again,
+    // for ever. `3000-01-05` settles either way, because its Monday is
+    // `2999-12-30` — which is how this hides from a probe that only tries the
+    // first days of the year.
+    expect(formatCivilDate(fallbackMonday({ year: 3000, month: 1, day: 15 }))).toBe('2999-12-30');
+    expect(formatCivilDate(fallbackMonday({ year: 3000, month: 1, day: 5 }))).toBe('2999-12-30');
+    expect(formatCivilDate(fallbackMonday({ year: 9999, month: 12, day: 31 }))).toBe('2999-12-30');
+  });
+
+  it('sends a clock before the first readable year to the first Monday inside it', () => {
+    // 1 January 100 is a Friday, so its Monday falls in the year 99, which
+    // `Date.UTC` reads back as 1999 and the round trip therefore refuses.
+    expect(formatCivilDate(fallbackMonday({ year: 100, month: 1, day: 1 }))).toBe('0100-01-04');
+  });
+
+  it('answers a Monday parseCivilDate accepts on every clock, which is what terminates the redirect', () => {
+    const clocks: CivilDate[] = [
+      { year: 2026, month: 8, day: 9 },
+      { year: 1970, month: 1, day: 1 },
+      { year: 100, month: 1, day: 1 },
+      // Folded into 1999 by `Date.UTC`, so this one never reaches the clamp.
+      { year: 99, month: 12, day: 31 },
+      { year: 2999, month: 12, day: 31 },
+      { year: 3000, month: 1, day: 13 },
+      // The last instant a `Date` can hold, and a year no `Date` can hold.
+      { year: 275760, month: 9, day: 13 },
+      { year: -5, month: 3, day: 4 },
+    ];
+
+    for (const today of clocks) {
+      const monday = fallbackMonday(today);
+      // Both halves of the invariant: the resolver redirects to this value, so
+      // the pass that follows must neither refuse it nor snap it somewhere else.
+      expect(parseCivilDate(formatCivilDate(monday))).not.toBeNull();
+      expect(sameCivilDate(startOfWeek(monday), monday)).toBe(true);
     }
   });
 });
