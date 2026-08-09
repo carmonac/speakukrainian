@@ -236,9 +236,14 @@ describe('SchedulePage', () => {
 
     expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
     // Replaced, not pushed. An uncanonical `?from=` is only reachable by hand,
-    // so the entry the redirect replaces is the address the admin typed; pushed
-    // instead, it would sit behind the corrected week and Back would land on it
-    // and be redirected forward again, with no way off the screen.
+    // so in a browser the entry the redirect replaces is the address the admin
+    // typed; pushed instead, it would sit behind the corrected week and Back
+    // would land on it and be redirected forward again, with no way off the
+    // screen. What is asserted is the entry *count*, because that is the part
+    // that holds in both worlds: the harness defers the URL update, so it never
+    // pushes the uncanonical URL at all and the entry replaced is the previous
+    // screen's. Either way the canonicalising navigation must contribute no
+    // extra entry.
     expect(nav.entries()).toHaveLength(before);
     expect(nav.currentEntry?.url).toContain('/schedule?from=2026-03-02');
   });
