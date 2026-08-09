@@ -47,14 +47,74 @@ describe('detectMediaContainer', () => {
 
   it('reads both MP3 shapes: an ID3v2 tag and a bare frame sync', () => {
     expect(detectMediaContainer(bytes(...ascii('ID3'), 0x04, 0x00))).toBe('mp3');
-    expect(detectMediaContainer(bytes(0xff, 0xfb, 0x90, 0x00))).toBe('mp3');
-    expect(detectMediaContainer(bytes(0xff, 0xf3, 0x48, 0xc4))).toBe('mp3');
+    // The four leading bytes lame and ffmpeg actually wrote for a tagless file,
+    // across all three MPEG versions: 1, 2 and 2.5, Layer III throughout.
+    expect(detectMediaContainer(bytes(0xff, 0xfb, 0x90, 0xc4))).toBe('mp3');
+    expect(detectMediaContainer(bytes(0xff, 0xf3, 0x80, 0xc4))).toBe('mp3');
+    expect(detectMediaContainer(bytes(0xff, 0xe3, 0x40, 0xc4))).toBe('mp3');
+    expect(detectMediaContainer(bytes(0xff, 0xfb, 0xe0, 0xc4))).toBe('mp3');
   });
 
-  it('reads FF D8 FF as JPEG, not as an MP3 frame sync', () => {
-    // Pins the rule ordering: the frame-sync rule is the loosest in the table
-    // and must never be tried before a container with a real magic.
-    expect(detectMediaContainer(HEADERS['image/jpeg'])).toBe('jpeg');
+  it('refuses a text file whose byte-order mark passes for a frame sync', () => {
+    // The reported hole: `FF FE` is the UTF-16LE BOM and satisfies the 11-bit
+    // sync on its own, so a `.txt` saved as "Unicode" and renamed `.mp3` was
+    // stored. Decoding the rest of the header is what closes it — `FE` reads as
+    // MPEG-1 Layer I, which no encoder writes into a file offered as an MP3.
+    const utf16le = bytes(0xff, 0xfe, 0x74, 0x00, 0x68, 0x00, 0x65, 0x00);
+    const utf32le = bytes(0xff, 0xfe, 0x00, 0x00, 0x74, 0x00, 0x00, 0x00);
+
+    expect(detectMediaContainer(utf16le)).toBeNull();
+    expect(detectMediaContainer(utf32le)).toBeNull();
+    expect(contentMatchesBytes('audio/mpeg', utf16le)).toBe(false);
+    expect(contentMatchesBytes('audio/mpeg', utf32le)).toBe(false);
+  });
+
+  it('refuses a frame header whose fields are reserved or meaningless', () => {
+    // Each of these carries a valid sync and one field an MPEG audio frame
+    // cannot hold, so anything that accepts them is reading the sync alone.
+    const invalid: Record<string, Uint8Array> = {
+      'reserved version': bytes(0xff, 0xeb, 0x90, 0x00),
+      'layer I': bytes(0xff, 0xfe, 0x90, 0x00),
+      'layer II': bytes(0xff, 0xfc, 0x90, 0x00),
+      'reserved layer': bytes(0xff, 0xf8, 0x90, 0x00),
+      'free bitrate': bytes(0xff, 0xfb, 0x04, 0x00),
+      'invalid bitrate': bytes(0xff, 0xfb, 0xf4, 0x00),
+      'reserved sample rate': bytes(0xff, 0xfb, 0x9c, 0x00),
+      'header cut short': bytes(0xff, 0xfb),
+    };
+
+    for (const [reason, header] of Object.entries(invalid)) {
+      expect(detectMediaContainer(header), reason).toBeNull();
+    }
+  });
+
+  it('lets a literal magic win over the frame-sync rule that also claims it', () => {
+    // Pins the rule ordering, which is otherwise invisible: an ISO-BMFF box
+    // size is four arbitrary bytes and may well read as a valid frame header,
+    // so this header satisfies both rules. The one with a real magic must win,
+    // which it does only because the frame-sync rule is tried last.
+    const ambiguous = bytes(0xff, 0xfb, 0x90, 0x00, ...ascii('ftypM4A '));
+
+    expect(detectMediaContainer(ambiguous)).toBe('iso-bmff');
+    expect(contentMatchesBytes('audio/mp4', ambiguous)).toBe(true);
+    expect(contentMatchesBytes('audio/mpeg', ambiguous)).toBe(false);
+  });
+
+  it('refuses a near miss of each literal magic', () => {
+    const nearMisses: Record<string, Uint8Array> = {
+      'PNG without its line-ending trap': bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0b),
+      'JPEG SOI not followed by a marker': bytes(0xff, 0xd8, 0xfe, 0x00),
+      'a GIF revision that does not exist': bytes(...ascii('GIF88a'), 0x10, 0x00),
+      'RIFX, the big-endian RIFF': bytes(...ascii('RIFX'), 0, 0, 0, 0, ...ascii('WAVE')),
+      'Ogg with the wrong fourth byte': bytes(...ascii('OggT'), 0x00, 0x02, 0x00, 0x00),
+      'ftyp at offset 0 instead of 4': bytes(...ascii('ftypM4A '), 0x00, 0x00, 0x00, 0x00),
+      'EBML with the last byte off': bytes(0x1a, 0x45, 0xdf, 0xa2, 0x01, 0x00),
+      'a lower-case ID3 tag': bytes(...ascii('id3'), 0x03, 0x00, 0x00),
+    };
+
+    for (const [reason, header] of Object.entries(nearMisses)) {
+      expect(detectMediaContainer(header), reason).toBeNull();
+    }
   });
 
   it('separates the two RIFF forms by the type at offset 8', () => {

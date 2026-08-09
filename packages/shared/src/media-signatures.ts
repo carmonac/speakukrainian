@@ -109,14 +109,62 @@ export function detectMediaContainer(bytes: Uint8Array): MediaContainer | null {
   if (matchesAscii(bytes, 0, 'ID3')) {
     return 'mp3';
   }
-  // Deliberately last. Eleven set bits is the loosest rule in the table, and
-  // ahead of the others it would claim headers that have a real magic — a JPEG
-  // opens `FF D8`, and only `(0xd8 & 0xe0) === 0xc0` keeps it out of here.
-  if (hasBytesAt(bytes, 0, 2) && bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe0) === 0xe0) {
+  // Deliberately last. It is the only rule without a literal magic, so ahead of
+  // the others it could claim a header that one of them owns — an ISO-BMFF box
+  // size is four arbitrary bytes and may well begin `FF FB`.
+  if (isMpegAudioFrameHeader(bytes)) {
     return 'mp3';
   }
 
   return null;
+}
+
+/**
+ * Whether the file opens on an MPEG audio frame header, which is how a tagless
+ * MP3 begins.
+ *
+ * The 11-bit frame sync alone is far too weak to decide anything: `FF FE` is
+ * the UTF-16LE byte-order mark, so an ordinary text file saved as "Unicode" and
+ * renamed to `.mp3` would pass — the exact case this check exists to refuse. So
+ * the rest of the header is decoded and every field that has a reserved or
+ * meaningless encoding has to be sane:
+ *
+ * ```
+ * byte 1: 1 1 1 V V L L C     byte 2: B B B B S S P R
+ * ```
+ *
+ * - `V` version: `01` is reserved.
+ * - `L` layer: `01` is Layer III, which is what `audio/mpeg` in a `.mp3` is.
+ *   Layer I and II are refused; no encoder writes them into a file offered as
+ *   an MP3, and admitting them would readmit the `FF FE` BOM (Layer I).
+ * - `B` bitrate index: `0000` is "free" and `1111` is invalid.
+ * - `S` sample rate index: `11` is reserved.
+ *
+ * The rest — CRC protection, padding, private — carries no invalid value, so
+ * there is nothing there to check.
+ */
+function isMpegAudioFrameHeader(bytes: Uint8Array): boolean {
+  if (!hasBytesAt(bytes, 0, 3)) {
+    return false;
+  }
+  const sync = bytes[0] ?? 0;
+  const flags = bytes[1] ?? 0;
+  const rates = bytes[2] ?? 0;
+  if (sync !== 0xff || (flags & 0xe0) !== 0xe0) {
+    return false;
+  }
+  const version = (flags >> 3) & 0b11;
+  const layer = (flags >> 1) & 0b11;
+  const bitrateIndex = (rates >> 4) & 0b1111;
+  const sampleRateIndex = (rates >> 2) & 0b11;
+
+  return (
+    version !== 0b01 &&
+    layer === 0b01 &&
+    bitrateIndex !== 0b0000 &&
+    bitrateIndex !== 0b1111 &&
+    sampleRateIndex !== 0b11
+  );
 }
 
 /**

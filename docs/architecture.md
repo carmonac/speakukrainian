@@ -670,6 +670,16 @@ decidable from its header — so the container → allowed-types mapping and the
 have to be written regardless. Confining the dependency to the API instead would mean the two ends
 checked different things.
 
+**A tagless MP3 is decided by decoding its frame header, not by its sync word.** Every other entry in
+the table is a literal magic; MP3 without an ID3 tag has only the 11-bit frame sync, and that is not
+enough to decide anything — `FF FE` is the UTF-16LE byte-order mark, so a text file saved as
+"Unicode" and renamed `.mp3` passed. The version, layer, bitrate and sample-rate fields are read as
+well, and every one of them has to be a value an MPEG audio frame can hold; Layer III is required,
+since a file offered as an MP3 is never Layer I or II and admitting them would readmit the BOM. That
+is the tightest rule in the table and therefore the one most likely to refuse a real file, so it is
+pinned both by fixtures written from the spec and by the leading bytes lame and ffmpeg actually
+write, across all three MPEG versions.
+
 **Detection reports a container, and the declared type is what gets stored.** `iso-bmff` and `ebml`
 cannot choose between the audio and the video type, so the bytes prove "this is an ISO-BMFF file" and
 the allow-list supplies the only thing we accept that it could be. Deriving the stored content type
