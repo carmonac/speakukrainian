@@ -9,12 +9,15 @@ import { MAX_TREE_SECTIONS } from '../src/sections/sections.repository.js';
 import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
 
 /**
- * Same purge strategy as the sections suite: every slug this one creates starts
- * with `e2e-menu-`, so every path it creates starts with `/e2e-menu-` and the
- * purge deletes exactly those. The menu is a global read, so an assertion here
- * has to select this suite's own entries out of whatever else is stored.
+ * The same prefix the sections and pages suites purge, deliberately wider than
+ * the `e2e-menu-` this suite's own slugs carry: `GET /api/menu` reads the whole
+ * sections collection and parses every document, so one section another suite
+ * hand-wrote and was killed before deleting takes this suite's every read to
+ * 500 — and a `/e2e-menu-` purge could not clear it. The menu is a global read,
+ * so an assertion here has to select this suite's own entries out of whatever
+ * else is stored.
  */
-const PREFIX = '/e2e-menu-';
+const PREFIX = '/e2e-';
 
 describe('menu (e2e)', () => {
   let app: INestApplication;
