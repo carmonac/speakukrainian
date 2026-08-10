@@ -30,3 +30,28 @@ export function wildcardPath(req: Request): string {
     throw new BadRequestException('The requested file path is not valid.');
   }
 }
+
+/**
+ * The library's own tolerance for a language code, restated because the route
+ * has to apply it *first*.
+ *
+ * `H5PEditor.validateLanguageCode` refuses anything else with a plain `Error`,
+ * which `toHttpException` correctly declines to map — so `?language=not a code`
+ * would answer 500 for a query parameter the caller typed. Prevention beats
+ * matching on that message, because the route owns the parameter and the
+ * library's wording is not ours to depend on. Deliberately more tolerant than
+ * ISO in the same way the library is: three-letter codes and country subtags
+ * like `zh-hans` both have to pass.
+ */
+const LANGUAGE_CODE = /^[a-z]{2,3}(-[A-Z]{2,6})?$/i;
+
+/** The `?language` a caller asked for, or `undefined` when they asked for none. */
+export function editorLanguage(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string' || !LANGUAGE_CODE.test(value)) {
+    throw new BadRequestException('That is not a valid language code.');
+  }
+  return value;
+}

@@ -5,6 +5,7 @@ import {
   createH5pContentSchema,
   formatMaxH5pUploadSize,
   h5pContentSchema,
+  h5pEditorUploadTooLargeMessage,
   h5pUploadTooLargeMessage,
   isH5pPackageFilename,
   listH5pContentQuerySchema,
@@ -67,6 +68,15 @@ describe('H5P upload messages', () => {
     expect(MAX_H5P_UPLOAD_BYTES).toBe(100 * 1024 * 1024);
     expect(formatMaxH5pUploadSize()).toBe('100 MB');
     expect(h5pUploadTooLargeMessage()).toBe('H5P packages must be under 100 MB.');
+  });
+
+  it('does not call an editor upload a package, while quoting the same limit', () => {
+    // The two routes share `MAX_H5P_UPLOAD_BYTES`, so the number may not be
+    // restated; the sentence must differ, because the file an author uploads
+    // from inside the editor is a clip or an image and not a package.
+    expect(h5pEditorUploadTooLargeMessage()).toBe('Uploads must be under 100 MB.');
+    expect(h5pEditorUploadTooLargeMessage()).toContain(formatMaxH5pUploadSize());
+    expect(h5pEditorUploadTooLargeMessage()).not.toContain('H5P packages');
   });
 
   it('names the offending file and the extension the API wants', () => {

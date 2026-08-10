@@ -57,6 +57,17 @@ export function h5pUploadTooLargeMessage(): string {
   return `H5P packages must be under ${formatMaxH5pUploadSize()}.`;
 }
 
+/**
+ * The same byte limit, said to someone who did not upload a package.
+ *
+ * `POST /api/h5p/ajax` shares `MAX_H5P_UPLOAD_BYTES` with the package route,
+ * but the field an author fills there is usually a pronunciation clip or an
+ * image, and a 413 that says "H5P packages" describes a file they never sent.
+ */
+export function h5pEditorUploadTooLargeMessage(): string {
+  return `Uploads must be under ${formatMaxH5pUploadSize()}.`;
+}
+
 export function notAnH5pPackageMessage(filename: string): string {
   return `${filename} is not an H5P package. Upload a file with the ${H5P_PACKAGE_EXTENSION} extension.`;
 }

@@ -12,9 +12,12 @@ import type { IPlayerModel, ITemporaryFileStorage } from '@lumieducation/h5p-ser
 import type { Env } from '../config/configuration.js';
 import { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
+import { H5pEditorController } from './h5p-editor.controller.js';
+import { H5pEditorService } from './h5p-editor.service.js';
 import { H5pLibraryStorage } from './h5p-library.storage.js';
 import { H5pPublicController } from './h5p-public.controller.js';
 import { H5pServeService } from './h5p-serve.service.js';
+import { H5pTemporaryStorage } from './h5p-temporary.storage.js';
 import { H5pClientAssets } from './h5p.client-assets.js';
 import { createH5pConfig } from './h5p.config.js';
 import { H5pController } from './h5p.controller.js';
@@ -52,7 +55,7 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
       useFactory: (dirs: H5pWorkingDirs) => ({ dest: dirs.uploads }),
     }),
   ],
-  controllers: [H5pController, H5pPublicController],
+  controllers: [H5pController, H5pEditorController, H5pPublicController],
   providers: [
     {
       provide: H5P_CONFIG,
@@ -63,46 +66,62 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
     H5pClientAssets,
     H5pContentStorage,
     H5pLibraryStorage,
+    H5pTemporaryStorage,
     {
       /**
-       * A placeholder, and the authoring half has to replace it. `H5PEditor`'s
-       * constructor requires a temporary file storage, but nothing on the
-       * import path or on any route in this issue touches one — the package
-       * importer writes straight to permanent storage. The editor's save flow
-       * does use it, and a temp file written by one Cloud Run instance is
-       * invisible to the next, so that flow needs a Cloud Storage
-       * implementation under `h5p/temp/` before it can work.
+       * The editor's scratch storage, in the bucket rather than on disk: a temp
+       * file written by one Cloud Run instance is invisible to the next, and
+       * the container filesystem is discarded anyway. The token stays so that
+       * `H5PEditor`'s constructor argument is named by what it is rather than
+       * by which class currently implements it.
        */
       provide: H5P_TEMPORARY_STORAGE,
-      inject: [H5P_WORKING_DIRS],
-      useFactory: (dirs: H5pWorkingDirs): ITemporaryFileStorage =>
-        new fsImplementations.DirectoryTemporaryFileStorage(dirs.editorTemp),
+      useExisting: H5pTemporaryStorage,
     },
     {
       provide: H5P_EDITOR,
       inject: [H5P_CONFIG, H5pLibraryStorage, H5pContentStorage, H5P_TEMPORARY_STORAGE],
-      useFactory: (
+      useFactory: async (
         config: H5PConfig,
         libraryStorage: H5pLibraryStorage,
         contentStorage: H5pContentStorage,
         temporaryStorage: ITemporaryFileStorage,
-      ): H5PEditor =>
+      ): Promise<H5PEditor> => {
         // `InMemoryStorage` is only reachable through `fsImplementations`; it is
         // not a named export of the package root.
+        const keyValueStorage = new fsImplementations.InMemoryStorage();
+
+        // **Seeded, and this is what keeps the server off `api.h5p.org`.**
+        // `ContentTypeCache.get()` short-circuits on a truthy stored value, and
+        // an empty array is truthy; left unseeded it falls through to
+        // `forceUpdate()` → `registerOrGetUuid()`, which POSTs to
+        // `config.hubRegistrationEndpoint` on **every** `GET /ajax?action=content-type-cache`.
+        // `fetchingDisabled: 1` does not prevent that — it is only a field in
+        // the registration payload — and the failure is caught, so nothing is
+        // cached and the request is retried forever.
         //
+        // The empty cache is not a placeholder: with `contentHubEnabled: false`
+        // there are no hub content types, so `[]` is the truth. The timestamp
+        // makes `isOutdated()` false, so the `outdated` flag in the response is
+        // honest too. `addLocalLibraries` still lists every installed library,
+        // which is what the editor's content-type selector actually needs.
+        await keyValueStorage.save('contentTypeCache', []);
+        await keyValueStorage.save('contentTypeCacheUpdate', Date.now());
+
         // No `IPermissionSystem` is passed, so the default
         // `LaissezFairePermissionSystem` allows everything. That is correct
         // here rather than an oversight: authorization is `@Roles('editor')` at
         // the route, per CLAUDE.md rule 8, and the library never sees a request
         // that has not already passed it. No `contentUserDataStorage` either —
         // `trackResults` is off.
-        new H5PEditor(
-          new fsImplementations.InMemoryStorage(),
+        return new H5PEditor(
+          keyValueStorage,
           config,
           libraryStorage,
           contentStorage,
           temporaryStorage,
-        ),
+        );
+      },
     },
     {
       provide: H5P_PLAYER,
@@ -129,6 +148,7 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
     H5pContentRepository,
     H5pService,
     H5pServeService,
+    H5pEditorService,
   ],
   exports: [H5P_EDITOR, H5P_PLAYER, H5P_CONFIG, H5pContentStorage, H5pLibraryStorage],
 })
