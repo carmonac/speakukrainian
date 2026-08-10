@@ -90,6 +90,21 @@ export type RichTextPageBody = z.infer<typeof richTextPageBodySchema>;
 export type SubsectionListPageBody = z.infer<typeof subsectionListPageBodySchema>;
 export type H5pExercisePageBody = z.infer<typeof h5pExercisePageBodySchema>;
 
+/**
+ * What a caller hands to `pageBodySchema.parse`, as against {@link PageBody},
+ * which is what comes back. Every `.default()` is optional here and present
+ * there, so a value of this type is exactly "the fields the schema cannot
+ * supply on my behalf" — which is what seeds a new body. A caller building a
+ * body to send or to store wants `PageBody`; a caller writing the literal that
+ * `parse` fills in wants this.
+ *
+ * Named for `parse` rather than `PageBodyInput`, because every other `*Input`
+ * in this package — `CreateContentPageInput` below, `CreateSectionInput`,
+ * `UpdateLocaleInput` — is a request schema's *parsed* shape, the opposite side
+ * of the same schema.
+ */
+export type PageBodyParseInput = z.input<typeof pageBodySchema>;
+
 /** A page's own id: `documentIdSchema` under the name the routes use. */
 export const pageIdSchema = documentIdSchema;
 
