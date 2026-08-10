@@ -1,12 +1,18 @@
 import { rm } from 'node:fs/promises';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { H5PEditor, LibraryName } from '@lumieducation/h5p-server';
 import type { IContentMetadata, IUser } from '@lumieducation/h5p-server';
-import { h5pSaveResultSchema, type H5pSaveResult } from '@speakukrainian/shared';
+import {
+  h5pSaveResultSchema,
+  type H5pContent,
+  type H5pSaveResult,
+  type ListH5pContentQuery,
+  type Page,
+} from '@speakukrainian/shared';
 import { StorageService } from '../infra/storage/storage.service.js';
 import { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
-import { toHttpException } from './h5p.errors.js';
+import { CONTENT_MISSING_MESSAGE, toHttpException } from './h5p.errors.js';
 import { assertSafePackageEntries } from './h5p.package-scan.js';
 import { contentPrefix, contentStoragePath } from './h5p.paths.js';
 import { H5P_EDITOR } from './h5p.tokens.js';
@@ -93,6 +99,73 @@ export class H5pService {
           `Could not remove the uploaded package at ${file.path}: ${messageOf(error)}`,
         ),
       );
+    }
+  }
+
+  list(query: ListH5pContentQuery): Promise<Page<H5pContent>> {
+    return this.repository.list(query);
+  }
+
+  /**
+   * `findByIdOrFail` is not used: its `h5pContent/<id> not found` names an
+   * internal collection to an admin, and says something different from what the
+   * player says about the same missing exercise.
+   */
+  async findById(contentId: string): Promise<H5pContent> {
+    const found = await this.repository.findById(contentId);
+    if (!found) {
+      throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+    }
+    return found;
+  }
+
+  /**
+   * Removes an exercise's objects and then its index document.
+   *
+   * The two halves cannot be one transaction — one is Cloud Storage, the other
+   * Firestore — so one of them survives a crash between them, and the objects
+   * go first so that **an object never outlives its index row**. The row is
+   * what names the objects; delete it first and a crash leaves files under a
+   * `randomUUID()` prefix nothing can ever name again, and, because
+   * `GET /api/h5p/play/:contentId` is `@Public()`, leaves "deleted" content
+   * playable by anyone holding an old link. The surviving-row case is instead
+   * visible in the index and repaired by re-issuing this delete.
+   *
+   * That recovery is why the sweep is `deleteByPrefix` and not
+   * `H5pContentStorage.deleteContent`: `deleteContent` throws a 404 when
+   * `h5p.json` is absent, and `deleteByPrefix` removes a prefix's objects
+   * concurrently and in no defined order, so a half-completed earlier sweep can
+   * have lost `h5p.json` while other files survive — exactly the state
+   * `deleteContent` refuses to act on. It would answer 404 and strand both the
+   * leftovers and the row. `deleteByPrefix` is a no-op on an empty prefix and
+   * sweeps whatever is left.
+   *
+   * So the Firestore document is the sole authority for the 404; storage state
+   * never decides a status code. That authority is `exists`, not a read: a row
+   * whose stored shape no longer satisfies the schema still has to be removable
+   * through this route, which is the repair path the surviving-row case above
+   * relies on.
+   *
+   * Installed libraries under `h5p/libraries/` are deliberately untouched:
+   * other content may use them, and a library with no dependents left is disk,
+   * not a dangling reference.
+   */
+  async remove(contentId: string): Promise<void> {
+    if (!(await this.repository.exists(contentId))) {
+      throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+    }
+
+    await this.storage.deleteByPrefix(contentPrefix(contentId));
+
+    try {
+      await this.repository.delete(contentId);
+    } catch (error) {
+      // This line is the only thing that tells an operator which row is left
+      // pointing at objects that are already gone.
+      this.logger.error(
+        `H5P content ${contentId} had its files removed but its index document remains: ${messageOf(error)}`,
+      );
+      throw error;
     }
   }
 }

@@ -5,6 +5,8 @@ import {
   h5pContentSchema,
   type CreateH5pContentInput,
   type H5pContent,
+  type ListH5pContentQuery,
+  type Page,
 } from '@speakukrainian/shared';
 import { BaseRepository, deepConvertTimestamps } from '../infra/firestore/base.repository.js';
 import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
@@ -43,5 +45,34 @@ export class H5pContentRepository extends BaseRepository<H5pContent> {
 
     await this.collection.doc(content.id).create(toDocumentData(content));
     return content;
+  }
+
+  /**
+   * Existence without a parse, the way `PagesRepository.remove` reads the
+   * document it is about to delete: one corrupt row would otherwise turn the
+   * only route that can remove it into a 500, and nothing on the delete path
+   * needs the rest of the document. `findById` keeps its parse, because a read
+   * that answers with a document does have to trust its shape.
+   */
+  async exists(id: string): Promise<boolean> {
+    return (await this.collection.doc(id).get()).exists;
+  }
+
+  /**
+   * Newest first, which is the order an admin who has just uploaded something
+   * reads this index in.
+   *
+   * `audit.createdAt` is `newAudit`'s `toISOString()`, always the millisecond
+   * `…Z` form, so lexicographic order is chronological order. Firestore appends
+   * `__name__` to the ordering implicitly, so two uploads in the same
+   * millisecond still order deterministically and the cursor is stable. One
+   * `orderBy` and no `where`, so no composite index is needed.
+   */
+  async list(query: ListH5pContentQuery): Promise<Page<H5pContent>> {
+    return this.paginate(
+      this.collection.orderBy('audit.createdAt', 'desc'),
+      query.limit,
+      query.cursor,
+    );
   }
 }

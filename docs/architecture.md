@@ -206,6 +206,21 @@ guarantee than that would need `h5pContent.pageId` to be populated plus the page
 would cost a Firestore read per _content file_ request — per image and per audio clip — so it
 needs a cache and is not something to add casually.
 
+`GET /api/h5p/content` is that enumeration, and it satisfies the invariant by being role-guarded:
+it lives on `H5pController`, where every route is `@Roles('editor')`, and the guard is pinned per
+route by the metadata block in `h5p.controller.spec.ts`, so relaxing it to `@Public()` fails a unit
+test rather than quietly widening the public surface.
+
+_Deleting content._ `DELETE /api/h5p/content/:id` removes the objects under `h5p/content/<id>/`
+first and the index document second, because an object must never outlive the row that names it: a
+crash the other way round would leave files under a `randomUUID()` prefix nothing can name again,
+and would leave "deleted" content still playable through the public play route. The sweep is
+`StorageService.deleteByPrefix`, not `H5pContentStorage.deleteContent`, so that a retry after a
+half-completed sweep still succeeds — `deleteContent` throws 404 when `h5p.json` is missing, which
+is a state that half-completed sweep can produce. Installed libraries are deliberately left behind;
+other content may use them, and collecting them is `LibraryAdministration`'s job on a screen of its
+own.
+
 ### ADR-008 — The API is ESM
 
 _Why:_ `packages/shared` is ESM, and CommonJS consuming it would need a dual build. TypeScript
