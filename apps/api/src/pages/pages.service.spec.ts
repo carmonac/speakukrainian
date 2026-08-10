@@ -260,14 +260,29 @@ describe('PagesService publishing', () => {
 describe('PagesService failure mapping', () => {
   const cases: [PageWriteFailure, new (...args: never[]) => Error, number][] = [
     [{ reason: 'not-found' }, NotFoundException, 404],
-    [{ reason: 'section-not-found', sectionId: 'gone' }, NotFoundException, 404],
-    [{ reason: 'section-is-link' }, UnprocessableEntityException, 422],
+    [
+      { reason: 'section-not-found', field: 'sectionId', sectionId: 'gone' },
+      NotFoundException,
+      404,
+    ],
+    [{ reason: 'section-is-link', field: 'sectionId' }, UnprocessableEntityException, 422],
+    [
+      { reason: 'section-not-found', field: 'body.sourceSectionId', sectionId: 'gone' },
+      NotFoundException,
+      404,
+    ],
+    [
+      { reason: 'section-is-link', field: 'body.sourceSectionId' },
+      UnprocessableEntityException,
+      422,
+    ],
     [{ reason: 'slug-taken', slug: 'duplicate' }, ConflictException, 409],
     [{ reason: 'invalid', issues: [] }, UnprocessableEntityException, 422],
   ];
 
   for (const [failure, exception, status] of cases) {
-    it(`answers ${status} for ${failure.reason}`, async () => {
+    const field = 'field' in failure ? ` on ${failure.field}` : '';
+    it(`answers ${status} for ${failure.reason}${field}`, async () => {
       const { service } = createService({ write: { ok: false, ...failure } });
 
       const thrown = await service.create(newPage, 'uid').catch((error: unknown) => error);
@@ -277,12 +292,83 @@ describe('PagesService failure mapping', () => {
     });
   }
 
+  const pathedCases: [string, PageWriteFailure, string][] = [
+    [
+      'a missing owning section',
+      { reason: 'section-not-found', field: 'sectionId', sectionId: 'gone-id' },
+      'sectionId',
+    ],
+    ['a link owning section', { reason: 'section-is-link', field: 'sectionId' }, 'sectionId'],
+    [
+      'a missing source section',
+      { reason: 'section-not-found', field: 'body.sourceSectionId', sectionId: 'gone-id' },
+      'body.sourceSectionId',
+    ],
+    [
+      'a link source section',
+      { reason: 'section-is-link', field: 'body.sourceSectionId' },
+      'body.sourceSectionId',
+    ],
+  ];
+
+  for (const [name, failure, path] of pathedCases) {
+    it(`paths the refusal for ${name} at ${path}`, async () => {
+      const { service } = createService({ write: { ok: false, ...failure } });
+
+      const thrown = (await service
+        .create(newPage, 'uid')
+        .catch((error: unknown) => error)) as NotFoundException;
+
+      const response = thrown.getResponse() as {
+        message: string;
+        errors: { path: string; message: string }[];
+      };
+      expect(response.errors[0]?.path).toBe(path);
+      // The admin's toast joins `errors[]`, so a top-level message that says
+      // something else would change what an author reads.
+      expect(response.errors[0]?.message).toBe(response.message);
+    });
+  }
+
   it('names the missing section in the 404', async () => {
     const { service } = createService({
-      write: { ok: false, reason: 'section-not-found', sectionId: 'gone-id' },
+      write: { ok: false, reason: 'section-not-found', field: 'sectionId', sectionId: 'gone-id' },
     });
 
     await expect(service.create(newPage, 'uid')).rejects.toThrow(/gone-id/);
+  });
+
+  it('names the missing source section, and says it is the source, in the 404', async () => {
+    const { service } = createService({
+      write: {
+        ok: false,
+        reason: 'section-not-found',
+        field: 'body.sourceSectionId',
+        sectionId: 'gone-id',
+      },
+    });
+
+    const thrown = (await service
+      .create(newPage, 'uid')
+      .catch((error: unknown) => error)) as NotFoundException;
+
+    const { message } = thrown.getResponse() as { message: string };
+    expect(message).toContain('gone-id');
+    expect(message).toContain('lists subsections from');
+  });
+
+  it('says a link source has no subsections rather than that it cannot hold pages', async () => {
+    const { service } = createService({
+      write: { ok: false, reason: 'section-is-link', field: 'body.sourceSectionId' },
+    });
+
+    const thrown = (await service
+      .create(newPage, 'uid')
+      .catch((error: unknown) => error)) as UnprocessableEntityException;
+
+    const { message } = thrown.getResponse() as { message: string };
+    expect(message).toContain('subsection list');
+    expect(message).not.toContain('hold pages');
   });
 
   it('names the conflicting slug in the 409', async () => {

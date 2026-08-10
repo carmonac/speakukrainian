@@ -17,7 +17,27 @@ import {
   PagesRepository,
   type PageWriteFailure,
   type PageWriteResult,
+  type SectionField,
 } from './pages.repository.js';
+
+/**
+ * Both halves of a section refusal come from one lookup keyed on the field that
+ * named the section, so the wording and the error path cannot describe different
+ * controls. The `sectionId` strings are the ones this API has always answered.
+ */
+const SECTION_FIELD_WORDING: Record<
+  SectionField,
+  { missing: (id: string) => string; link: string }
+> = {
+  sectionId: {
+    missing: (id) => `Section "${id}" not found`,
+    link: 'A link section has no body of its own, so it cannot hold pages.',
+  },
+  'body.sourceSectionId': {
+    missing: (id) => `The section this page lists subsections from ("${id}") no longer exists`,
+    link: 'A link section has no subsections, so it cannot be the source of a subsection list.',
+  },
+};
 
 @Injectable()
 export class PagesService {
@@ -100,16 +120,36 @@ export class PagesService {
     return result.page;
   }
 
+  /**
+   * A refusal named at the field that caused it. The `{ path, message, code }`
+   * entry is the shape `ZodValidationPipe` and the `invalid` branch already emit,
+   * so a client renders all three kinds of failure the same way.
+   *
+   * `errors[0].message` repeats the top-level `message` on purpose:
+   * `errorInterceptor.extractMessage` prefers the joined `errors[]` messages, so
+   * a generic top-level string would silently change the toast the admin already
+   * shows for the owning-section refusals.
+   */
+  private pathed(field: SectionField, message: string, code: string): Record<string, unknown> {
+    return { message, errors: [{ path: field, message, code }] };
+  }
+
   /** The whole error table in one place, so two routes cannot disagree. */
   private fail(failure: PageWriteFailure): never {
     switch (failure.reason) {
       case 'not-found':
         throw new NotFoundException('Page not found');
       case 'section-not-found':
-        throw new NotFoundException(`Section "${failure.sectionId}" not found`);
+        throw new NotFoundException(
+          this.pathed(
+            failure.field,
+            SECTION_FIELD_WORDING[failure.field].missing(failure.sectionId),
+            'section-not-found',
+          ),
+        );
       case 'section-is-link':
         throw new UnprocessableEntityException(
-          'A link section has no body of its own, so it cannot hold pages.',
+          this.pathed(failure.field, SECTION_FIELD_WORDING[failure.field].link, 'section-is-link'),
         );
       case 'slug-taken':
         throw new ConflictException(
