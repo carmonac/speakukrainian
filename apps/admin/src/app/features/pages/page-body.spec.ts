@@ -9,9 +9,9 @@ import { emptyBodyFor, type PageBodySeed } from './page-body';
  *
  * Each directive *is* its assertion: an `@ts-expect-error` on a line that
  * compiles is itself an error ("unused '@ts-expect-error' directive"), so the
- * day `PageBodySeed` stops rejecting one of these, the build says so. What
- * would remove a directive is the seed type ceasing to be derived from the
- * schema's input, at which point the runtime guard below is all that is left.
+ * day the first two stop being rejected, the build says so. What would remove
+ * either is `PageBodySeed` ceasing to be derived from the schema's input, at
+ * which point the runtime guard below is all that is left.
  */
 
 // @ts-expect-error - `content` is not defaulted, so a `rich_text` seed must carry it
@@ -20,7 +20,14 @@ const _missingRequiredField: PageBodySeed<'rich_text'> = { type: 'rich_text' };
 // @ts-expect-error - a `subsection_list` seed cannot carry another type's discriminant
 const _misfiledSeed: PageBodySeed<'subsection_list'> = { type: 'h5p_exercise' };
 
-// @ts-expect-error - a fourth `PageType` must not compile until it has a seed
+// Unlike the two above, this one pins TypeScript rather than `page-body.ts`:
+// `{ [T in PageType]: … }` demands a key per type whatever the element type is,
+// so it can only go unused by `PageType` losing a member. What guards "a fourth
+// page type does not compile until it has a seed" is `SEEDS`' own mapped type,
+// plus `PARSERS[type](SEEDS[type])` — make `SEEDS` partial and drop a seed and
+// that call reports `undefined` is not a `PageBodySeed<T>`. At run time the loop
+// over `pageTypeSchema.options` below catches the same omission.
+// @ts-expect-error - a map over `PageType` is incomplete until every type has a seed
 const _incompleteSeedMap: { [T in PageType]: PageBodySeed<T> } = {
   rich_text: { type: 'rich_text', content: {} },
   subsection_list: { type: 'subsection_list' },
@@ -28,9 +35,12 @@ const _incompleteSeedMap: { [T in PageType]: PageBodySeed<T> } = {
 
 /**
  * A minimal seed per type, written here rather than imported from the module
- * under test, so a default that creeps into its seeds shows up as a difference.
+ * under test: what has to stay independent of `SEEDS` is these *values*, so a
+ * default that creeps into a seed shows up as a difference. The type is shared
+ * with the module, which costs that independence nothing and makes a typo in
+ * this fixture a compile error rather than a puzzling failed comparison.
  */
-const MINIMAL: { [T in PageType]: unknown } = {
+const MINIMAL: { [T in PageType]: PageBodySeed<T> } = {
   rich_text: { type: 'rich_text', content: {} },
   subsection_list: { type: 'subsection_list' },
   h5p_exercise: { type: 'h5p_exercise' },
