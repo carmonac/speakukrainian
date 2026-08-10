@@ -12,6 +12,8 @@ const logger = new Logger('H5pErrors');
  */
 const UNUSABLE_PATH = 'The package contains a file with an unusable path.';
 const UNREADABLE_ARCHIVE = 'The file is not a readable ZIP archive, so it is not an H5P package.';
+const INVALID_LIBRARY_NAME = 'That is not a valid H5P library name.';
+const LIBRARY_NOT_INSTALLED = 'That library is not installed on this server.';
 
 /**
  * One sentence for one fact, said by both halves of the API: the player raises
@@ -54,7 +56,25 @@ const MESSAGES: Record<string, string> = {
   'h5p-request:unusable-path': 'That path is not valid.',
   'content-file-missing': 'That file is not part of this exercise.',
   'library-file-missing': 'That file is not part of this library.',
-  'invalid-ubername-pattern': 'That is not a valid H5P library name.',
+  'invalid-ubername-pattern': INVALID_LIBRARY_NAME,
+  // The editor's ajax surface. `malformed-request` is the library's own refusal
+  // of a body or a query it cannot use, and every branch of `postAjax` that
+  // raises it names the missing property in `replacements` — which is debugging
+  // detail about the H5P client, not something an author can act on, so the
+  // sentence stays about the request as a whole.
+  'malformed-request': 'The editor sent a request this server could not understand.',
+  'h5p-request:unsupported-ajax-action': 'That editor action is not available on this server.',
+  // Reachable only if a future auth provider issues subjects that are not
+  // path-safe atoms; the uid becomes a path segment under `h5p/temp/`.
+  'h5p-request:unusable-owner': 'This account cannot store uploaded files on this server.',
+  'storage-file-implementations:temporary-file-not-found':
+    'That file is not in temporary storage. It may have expired.',
+  'invalid-main-library-name': INVALID_LIBRARY_NAME,
+  'not-in-whitelist': 'That kind of file cannot be uploaded into an exercise.',
+  'upload-validation-error': 'That file could not be read as the kind of media the field expects.',
+  'missing-h5p-extension': 'Upload a file with the .h5p extension.',
+  'library-not-found': LIBRARY_NOT_INSTALLED,
+  'library-missing': LIBRARY_NOT_INSTALLED,
   // Raised by `rangeCallbackFor`, from inside the endpoint's own call stack.
   'h5p-range:unsatisfiable': 'The requested byte range is outside this file.',
   'h5p-range:malformed': 'The Range header could not be understood.',
@@ -112,6 +132,19 @@ const YAUZL_DATA_ERRORS = [
 ];
 
 /**
+ * Ids the library raises with its own default status of 500 although they say
+ * nothing about this server.
+ *
+ * `H5PEditor.saveContentFile` writes `new H5pError('not-in-whitelist', {…})`
+ * with no status argument, and `H5pError`'s constructor defaults to 500 — so an
+ * author dropping a `.exe` into an exercise field is told the server broke,
+ * which hides both the rule and the fix. A list of exactly one id rather than a
+ * heuristic: every other 500 the library raises stays a 500, because the
+ * judgement about who is at fault is per id and not per shape.
+ */
+const CLIENT_FAULT_IDS = new Set(['not-in-whitelist']);
+
+/**
  * Maps an error from the H5P library onto an HTTP response, or returns `null`
  * when it is not one this API can attribute to the request.
  *
@@ -130,7 +163,9 @@ export function toHttpException(error: unknown): HttpException | null {
     return unreadableArchiveException(error);
   }
 
-  const status = error.httpStatusCode;
+  const status = CLIENT_FAULT_IDS.has(error.errorId)
+    ? HttpStatus.BAD_REQUEST
+    : error.httpStatusCode;
   if (status < HttpStatus.BAD_REQUEST || status >= HttpStatus.INTERNAL_SERVER_ERROR) {
     // `error.message` carries `debugMessage` and can name a server path, so it
     // is logged and never returned.
