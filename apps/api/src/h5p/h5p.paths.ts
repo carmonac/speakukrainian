@@ -101,6 +101,22 @@ export function assertSafeContentId(contentId: string): void {
   }
 }
 
+/**
+ * A temporary file's owner is a path segment, so it obeys the same rule a
+ * content id does — under an id of its own, because "that path is not valid"
+ * said about a Firebase uid names the wrong thing to whoever reads it.
+ *
+ * A Firebase uid satisfies this today: 28 alphanumeric characters. An auth
+ * provider whose subject carried a `:` or a `|` would turn every editor upload
+ * into a 400, which is loud rather than silent, so it is named here rather
+ * than worked around with an encoding nothing else in this module uses.
+ */
+export function assertSafeOwnerId(ownerId: string): void {
+  if (!SAFE_CONTENT_ID.test(ownerId)) {
+    throw new H5pError('h5p-request:unusable-owner', { ownerId }, 400);
+  }
+}
+
 /** `h5p/content/<id>/` — with the trailing slash, as prefix operations need. */
 export function contentPrefix(contentId: ContentId): string {
   const id = String(contentId);
@@ -161,3 +177,50 @@ export function libraryObjectPath(library: ILibraryName, filename: string): stri
 /** Root prefixes, with the trailing slash a delimited listing needs. */
 export const CONTENT_ROOT_PREFIX = `${STORAGE_PREFIXES.h5pContent}/`;
 export const LIBRARY_ROOT_PREFIX = `${STORAGE_PREFIXES.h5pLibraries}/`;
+export const TEMP_ROOT_PREFIX = `${STORAGE_PREFIXES.h5pTemp}/`;
+
+/** `h5p/temp/<ownerId>/` — every temporary file one editor owns. */
+export function tempPrefix(ownerId: string): string {
+  assertSafeOwnerId(ownerId);
+  return `${TEMP_ROOT_PREFIX}${ownerId}/`;
+}
+
+/**
+ * `h5p/temp/<ownerId>/<filename>`.
+ *
+ * The filename legitimately contains a `/`: `H5PEditor.saveContentFile` files
+ * an upload under its mimetype (`images/`, `audios/`, `videos/`), which
+ * `assertSafeRelativePath` already permits.
+ */
+export function tempObjectPath(ownerId: string, filename: string): string {
+  const prefix = tempPrefix(ownerId);
+  assertSafeRelativePath(filename);
+  return `${prefix}${filename}`;
+}
+
+/**
+ * The inverse of `tempObjectPath`.
+ *
+ * `listFiles()` over the whole `h5p/temp/` prefix has to turn every object name
+ * back into an owner and a filename, and doing that inline in the adapter would
+ * put the layout in two places. `null` for anything without at least one owner
+ * segment and a non-empty filename, so that a stray object directly under
+ * `h5p/temp/` is skipped rather than making the expiry sweep throw — the
+ * difference between a sweep that runs and a sweep that fails forever.
+ */
+export function parseTempObjectPath(
+  objectPath: string,
+): { ownerId: string; filename: string } | null {
+  if (!objectPath.startsWith(TEMP_ROOT_PREFIX)) {
+    return null;
+  }
+
+  const rest = objectPath.slice(TEMP_ROOT_PREFIX.length);
+  const separator = rest.indexOf('/');
+  if (separator <= 0) {
+    return null;
+  }
+
+  const filename = rest.slice(separator + 1);
+  return filename === '' ? null : { ownerId: rest.slice(0, separator), filename };
+}
