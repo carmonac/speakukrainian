@@ -3,13 +3,19 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { HttpException, HttpStatus } from '@nestjs/common';
+import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { H5pError } from '@lumieducation/h5p-server';
 import type { H5PEditor, IContentMetadata, IUser } from '@lumieducation/h5p-server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { CreateH5pContentInput, H5pContent } from '@speakukrainian/shared';
+import type {
+  CreateH5pContentInput,
+  H5pContent,
+  ListH5pContentQuery,
+  Page,
+} from '@speakukrainian/shared';
 import type { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
+import { CONTENT_MISSING_MESSAGE } from './h5p.errors.js';
 import { buildRawZip, type RawZipEntry } from './h5p.raw-zip.js';
 import { H5pService } from './h5p.service.js';
 import { InMemoryStorage } from './h5p.storage-fake.js';
@@ -35,21 +41,43 @@ function metadata(overrides: Partial<IContentMetadata> = {}): IContentMetadata {
 interface RepositorySpy {
   repository: H5pContentRepository;
   created: { input: CreateH5pContentInput; actorId: string }[];
+  /** The index, keyed by content id — what `findById`, `list` and `delete` see. */
+  stored: Map<string, H5pContent>;
 }
 
-function createRepositorySpy(failWith?: Error): RepositorySpy {
+interface RepositoryFailures {
+  /** Rejects `create`, which is how the import rollback is provoked. */
+  onCreate?: Error;
+  onDelete?: Error;
+}
+
+function createRepositorySpy(failures: RepositoryFailures = {}): RepositorySpy {
   const created: { input: CreateH5pContentInput; actorId: string }[] = [];
+  const stored = new Map<string, H5pContent>();
+
   const repository = {
     create: (input: CreateH5pContentInput, actorId: string): Promise<H5pContent> => {
-      if (failWith) {
-        return Promise.reject(failWith);
+      if (failures.onCreate) {
+        return Promise.reject(failures.onCreate);
       }
       created.push({ input, actorId });
-      return Promise.resolve({ ...input, audit: {} } as unknown as H5pContent);
+      const content = { ...input, audit: {} } as unknown as H5pContent;
+      stored.set(input.id, content);
+      return Promise.resolve(content);
     },
+    findById: (id: string): Promise<H5pContent | null> => Promise.resolve(stored.get(id) ?? null),
+    delete: (id: string): Promise<void> => {
+      if (failures.onDelete) {
+        return Promise.reject(failures.onDelete);
+      }
+      stored.delete(id);
+      return Promise.resolve();
+    },
+    list: (query: ListH5pContentQuery): Promise<Page<H5pContent>> =>
+      Promise.resolve({ items: [...stored.values()].slice(0, query.limit), nextCursor: null }),
   } as unknown as H5pContentRepository;
 
-  return { repository, created };
+  return { repository, created, stored };
 }
 
 /**
@@ -292,7 +320,7 @@ describe('H5pService.importPackage', () => {
     // Without the rollback the bucket keeps files nothing references and no
     // route can ever delete.
     const failure = new Error('firestore unavailable');
-    const { repository } = createRepositorySpy(failure);
+    const { repository } = createRepositorySpy({ onCreate: failure });
     const service = new H5pService(
       createEditor(contentStorage),
       contentStorage,
@@ -302,5 +330,170 @@ describe('H5pService.importPackage', () => {
 
     await expect(service.importPackage(uploaded, 'editor-1')).rejects.toBe(failure);
     expect(storage.paths()).toEqual([]);
+  });
+});
+
+const INDEXED = 'e2f0b0b6-1f6c-4a3a-9a4b-9d3b2f5a1c77';
+const SIBLING = 'a1b2c3d4-1f6c-4a3a-9a4b-9d3b2f5a1c77';
+const LIBRARY_FILE = 'h5p/libraries/SpeakTest.Main-1.0/library.json';
+
+function indexed(id: string): H5pContent {
+  return {
+    id,
+    title: 'Present perfect drill',
+    mainLibrary: 'SpeakTest.Main 1.0',
+    storagePath: `h5p/content/${id}`,
+    sizeBytes: 10,
+    pageId: null,
+    audit: {
+      createdAt: '2026-05-01T00:00:00.000Z',
+      createdBy: 'editor-1',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+      updatedBy: 'editor-1',
+    },
+  };
+}
+
+/** An `InMemoryStorage` whose sweep always fails, standing in for an outage. */
+class SweepFailingStorage extends InMemoryStorage {
+  constructor(private readonly failure: Error) {
+    super();
+  }
+
+  override deleteByPrefix(): Promise<void> {
+    return Promise.reject(this.failure);
+  }
+}
+
+describe('H5pService index routes', () => {
+  let storage: InMemoryStorage;
+
+  const serviceOver = (
+    repository: H5pContentRepository,
+    over: InMemoryStorage = storage,
+  ): H5pService =>
+    new H5pService(
+      {} as unknown as H5PEditor,
+      new H5pContentStorage(over.asStorageService()),
+      repository,
+      over.asStorageService(),
+    );
+
+  /** What an installed content and its neighbours look like in the bucket. */
+  const seedObjects = async (over: InMemoryStorage = storage): Promise<void> => {
+    await over.put(`h5p/content/${INDEXED}/h5p.json`, Buffer.from('{}'));
+    await over.put(`h5p/content/${INDEXED}/content/content.json`, Buffer.from('{}'));
+    await over.put(`h5p/content/${SIBLING}/h5p.json`, Buffer.from('{}'));
+    await over.put(LIBRARY_FILE, Buffer.from('{}'));
+  };
+
+  beforeEach(() => {
+    storage = new InMemoryStorage();
+  });
+
+  it('lists through the repository with the query it was given', async () => {
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+    stored.set(SIBLING, indexed(SIBLING));
+
+    await expect(serviceOver(repository).list({ limit: 1 })).resolves.toEqual({
+      items: [indexed(INDEXED)],
+      nextCursor: null,
+    });
+  });
+
+  it('reads one indexed content', async () => {
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+
+    await expect(serviceOver(repository).findById(INDEXED)).resolves.toEqual(indexed(INDEXED));
+  });
+
+  it('answers an unknown id with the same sentence the player uses', async () => {
+    // `findByIdOrFail` would say `h5pContent/<id> not found`, which names an
+    // internal collection and disagrees with the player about one fact.
+    const { repository } = createRepositorySpy();
+
+    const error = await serviceOver(repository)
+      .findById(INDEXED)
+      .catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(NotFoundException);
+    expect((error as NotFoundException).message).toBe(CONTENT_MISSING_MESSAGE);
+  });
+
+  it('removes every object under the content prefix and the index document', async () => {
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+    await seedObjects();
+
+    await serviceOver(repository).remove(INDEXED);
+
+    expect(storage.paths().filter((path) => path.includes(INDEXED))).toEqual([]);
+    expect(stored.has(INDEXED)).toBe(false);
+  });
+
+  it('leaves a sibling content and the installed libraries alone', async () => {
+    // The trailing slash on the prefix is what makes this true; without it the
+    // sweep would also take `h5p/content/<id>xyz/…`.
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+    stored.set(SIBLING, indexed(SIBLING));
+    await seedObjects();
+
+    await serviceOver(repository).remove(INDEXED);
+
+    expect(storage.paths()).toEqual([LIBRARY_FILE, `h5p/content/${SIBLING}/h5p.json`].sort());
+    expect(stored.has(SIBLING)).toBe(true);
+  });
+
+  it('refuses an unknown id before it touches a single object', async () => {
+    const { repository } = createRepositorySpy();
+    await seedObjects();
+    const before = storage.paths();
+
+    await expect(serviceOver(repository).remove(INDEXED)).rejects.toThrow(NotFoundException);
+    expect(storage.paths()).toEqual(before);
+  });
+
+  it('still finishes a delete whose objects an earlier attempt already swept', async () => {
+    // The half-completed-delete case, and the whole reason the sweep is
+    // `deleteByPrefix` rather than `H5pContentStorage.deleteContent`: that one
+    // throws a 404 when `h5p.json` is gone, so a retry would strand the row for
+    // good — and, because the sweep deletes concurrently, "h5p.json gone, other
+    // files left" is a state a crash really can produce.
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+    await storage.put(`h5p/content/${INDEXED}/content/content.json`, Buffer.from('{}'));
+
+    await serviceOver(repository).remove(INDEXED);
+
+    expect(storage.paths()).toEqual([]);
+    expect(stored.has(INDEXED)).toBe(false);
+  });
+
+  it('leaves the index document behind when the document delete fails, never an object', async () => {
+    const failure = new Error('firestore unavailable');
+    const { repository, stored } = createRepositorySpy({ onDelete: failure });
+    stored.set(INDEXED, indexed(INDEXED));
+    await seedObjects();
+
+    await expect(serviceOver(repository).remove(INDEXED)).rejects.toBe(failure);
+
+    // The survivor is a row, which the index shows and a retry finishes off.
+    expect(storage.paths().filter((path) => path.includes(INDEXED))).toEqual([]);
+    expect(stored.has(INDEXED)).toBe(true);
+  });
+
+  it('keeps the index document when the sweep fails, so a retry can still find it', async () => {
+    const failure = new Error('storage unavailable');
+    const failing = new SweepFailingStorage(failure);
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+    await seedObjects(failing);
+
+    await expect(serviceOver(repository, failing).remove(INDEXED)).rejects.toBe(failure);
+
+    expect(stored.has(INDEXED)).toBe(true);
   });
 });

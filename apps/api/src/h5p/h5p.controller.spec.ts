@@ -1,9 +1,15 @@
 import 'reflect-metadata';
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
-import { INTERCEPTORS_METADATA } from '@nestjs/common/constants.js';
+import { HTTP_CODE_METADATA, INTERCEPTORS_METADATA } from '@nestjs/common/constants.js';
 import { describe, expect, it } from 'vitest';
 import { MAX_H5P_UPLOAD_BYTES, h5pUploadTooLargeMessage } from '@speakukrainian/shared';
-import type { H5pSaveResult, UserRole } from '@speakukrainian/shared';
+import type {
+  H5pContent,
+  H5pSaveResult,
+  ListH5pContentQuery,
+  Page,
+  UserRole,
+} from '@speakukrainian/shared';
 import { IS_PUBLIC_KEY } from '../auth/public.decorator.js';
 import type { AuthenticatedUser } from '../auth/firebase-auth.guard.js';
 import { ROLES_KEY } from '../auth/roles.decorator.js';
@@ -22,21 +28,56 @@ const CALLER: AuthenticatedUser = { uid: 'editor-1', email: 'e@x.local', role: '
 const packageFile = (): Express.Multer.File =>
   ({ originalname: 'drill.h5p', path: '/tmp/uploads/abc' }) as Express.Multer.File;
 
+const CONTENT: H5pContent = {
+  id: SAVED.contentId,
+  title: SAVED.title,
+  mainLibrary: SAVED.mainLibrary,
+  storagePath: `h5p/content/${SAVED.contentId}`,
+  sizeBytes: 4096,
+  pageId: null,
+  audit: {
+    createdAt: '2026-05-01T00:00:00.000Z',
+    createdBy: 'editor-1',
+    updatedAt: '2026-05-01T00:00:00.000Z',
+    updatedBy: 'editor-1',
+  },
+};
+
+const PAGE: Page<H5pContent> = { items: [CONTENT], nextCursor: 'next-id' };
+
 interface ServiceSpy {
   service: H5pService;
   calls: { file: Express.Multer.File; actorId: string }[];
+  listed: ListH5pContentQuery[];
+  read: string[];
+  removed: string[];
 }
 
 function createServiceSpy(result: H5pSaveResult = SAVED): ServiceSpy {
   const calls: { file: Express.Multer.File; actorId: string }[] = [];
+  const listed: ListH5pContentQuery[] = [];
+  const read: string[] = [];
+  const removed: string[] = [];
   const service = {
     importPackage: (file: Express.Multer.File, actorId: string): Promise<H5pSaveResult> => {
       calls.push({ file, actorId });
       return Promise.resolve(result);
     },
+    list: (query: ListH5pContentQuery): Promise<Page<H5pContent>> => {
+      listed.push(query);
+      return Promise.resolve(PAGE);
+    },
+    findById: (id: string): Promise<H5pContent> => {
+      read.push(id);
+      return Promise.resolve(CONTENT);
+    },
+    remove: (id: string): Promise<void> => {
+      removed.push(id);
+      return Promise.resolve();
+    },
   } as unknown as H5pService;
 
-  return { service, calls };
+  return { service, calls, listed, read, removed };
 }
 
 describe('H5pController', () => {
@@ -72,6 +113,32 @@ describe('H5pController', () => {
     const { service } = createServiceSpy({ ...SAVED, contentId: '' });
 
     await expect(new H5pController(service).upload(packageFile(), CALLER)).rejects.toThrow();
+  });
+
+  it('lists with the parsed query and answers with the page the service built', async () => {
+    const { service, listed } = createServiceSpy();
+
+    const page = await new H5pController(service).list({ limit: 10, cursor: 'abc' });
+
+    expect(listed).toEqual([{ limit: 10, cursor: 'abc' }]);
+    expect(page).toEqual(PAGE);
+  });
+
+  it('reads one content by id', async () => {
+    const { service, read } = createServiceSpy();
+
+    const content = await new H5pController(service).findOne(CONTENT.id);
+
+    expect(read).toEqual([CONTENT.id]);
+    expect(content).toEqual(CONTENT);
+  });
+
+  it('removes one content by id', async () => {
+    const { service, removed } = createServiceSpy();
+
+    await new H5pController(service).remove(CONTENT.id);
+
+    expect(removed).toEqual([CONTENT.id]);
   });
 });
 
@@ -124,14 +191,31 @@ describe('H5pController route metadata', () => {
   const interceptors = (): unknown[] =>
     (Reflect.getMetadata(INTERCEPTORS_METADATA, handler) as unknown[] | undefined) ?? [];
 
-  // Rule 8: the route mutates storage, so it carries a role guard and is not
-  // public. A dropped decorator compiles either way.
-  it('restricts the upload to editors and above', () => {
-    expect(Reflect.getMetadata(ROLES_KEY, handler) as UserRole[] | undefined).toEqual(['editor']);
+  // Rule 8 for the upload, and ADR-007 for the other three: what protects H5P
+  // content is the unguessable id *plus the absence of any public enumeration*,
+  // which is what lets the play and content-file routes be `@Public()`. Moving
+  // `list` to the public controller, or dropping a decorator, compiles — this
+  // is what refuses it.
+  it.each([
+    ['upload', H5pController.prototype.upload],
+    ['list', H5pController.prototype.list],
+    ['findOne', H5pController.prototype.findOne],
+    ['remove', H5pController.prototype.remove],
+  ])('restricts %s to editors and above', (_name, route) => {
+    expect(Reflect.getMetadata(ROLES_KEY, route) as UserRole[] | undefined).toEqual(['editor']);
   });
 
-  it('does not mark the upload public', () => {
-    expect(Reflect.getMetadata(IS_PUBLIC_KEY, handler)).toBeUndefined();
+  it.each([
+    ['upload', H5pController.prototype.upload],
+    ['list', H5pController.prototype.list],
+    ['findOne', H5pController.prototype.findOne],
+    ['remove', H5pController.prototype.remove],
+  ])('does not mark %s public', (_name, route) => {
+    expect(Reflect.getMetadata(IS_PUBLIC_KEY, route)).toBeUndefined();
+  });
+
+  it('answers a delete with 204 rather than an empty 200', () => {
+    expect(Reflect.getMetadata(HTTP_CODE_METADATA, H5pController.prototype.remove)).toBe(204);
   });
 
   it('puts the limit interceptor ahead of multer with the H5P wording', () => {
