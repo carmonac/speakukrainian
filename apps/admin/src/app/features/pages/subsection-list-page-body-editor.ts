@@ -36,6 +36,7 @@ import {
 import { LocalesStore } from '../../core/locales/locales.store';
 import { LocalizedRichTextEditor } from '../../shared/rich-text/localized-rich-text-editor';
 import { SectionsApi } from '../sections/sections.api';
+import { emptyBodyFor } from './page-body';
 import {
   OWN_SECTION_HINT,
   PREVIEW_LOCALE_LABEL,
@@ -52,10 +53,11 @@ import { sourceOptions, sourceProblem, subsectionPreviewRows } from './subsectio
 /** `paginationQuerySchema`'s ceiling. Paging the preview is out of scope. */
 const PREVIEW_LIMIT = 100;
 
-/** The schema's own defaults, so no default is restated in this file (rule 1). */
-const EMPTY_BODY: SubsectionListPageBody = subsectionListPageBodySchema.parse({
-  type: 'subsection_list',
-});
+/**
+ * The schema's own defaults, so no default is restated in this file (rule 1),
+ * and through the one seed the admin has rather than a second parse of its own.
+ */
+const EMPTY_BODY: SubsectionListPageBody = emptyBodyFor('subsection_list');
 
 /**
  * What the preview panel is showing. `idle` and `failed` are distinct from an
