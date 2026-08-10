@@ -144,11 +144,39 @@ _Object layout._ The adapters mirror the library's own `FileContentStorage` and
 `h5p/content/<contentId>` without a trailing slash. Everything is under `h5p/`, which the media
 orphan sweep does not look at.
 
-_Temporary files._ `h5p/temp/` is reserved for the Cloud Storage `ITemporaryFileStorage` the
-authoring widget needs — a temp file written by one Cloud Run instance is invisible to the
-next. Phase 1 uses a local directory under `H5P_TEMP_DIR` for it, which is safe only because
-nothing on the import path touches temporary storage: the package importer writes straight to
-permanent storage. The editor's save flow must not ship before that placeholder is replaced.
+_Temporary files._ The editor's scratch storage is `h5p/temp/<ownerId>/<filename>` in the bucket,
+not a directory on the container — a temp file written by one Cloud Run instance is invisible to the
+next, and the filesystem is discarded anyway. **The owner is a path prefix rather than an
+attribute**, because `ITemporaryFileStorage` forces it: every access names its owner
+(`fileExists(filename, user)`, `getFileStats`, `getFileStream`, `deleteFile(filename, ownerId)`) and
+a filename is unique only _within_ an owner — `FilenameGenerator` produces
+`images/image-aB34xQz9.png` and checks uniqueness through `fileExists(f, user)`. Being part of the
+key is what makes one editor unable to read another's upload.
+
+**Expiry is derived, not stored:** `expiresAt = createdAt + temporaryFileLifetime`.
+`TemporaryFileManager.addFile` is the only caller of `saveFile` in the library and always passes
+exactly `now + temporaryFileLifetime`, so the expiry is a pure function of the write time and one
+constant; storing it too would put a derived value in a second place that can disagree with the
+first. `StorageService.list` already returns `createdAt`, so `listFiles()` costs one listing and no
+extra round trips. The named cost is that changing `temporaryFileLifetime` re-dates every temp object
+already in the bucket, which for objects whose whole life is two hours is not a defect. The rejected
+alternatives were a Firestore row (a second store that can disagree, with nothing to order the two
+writes against, because the row _is_ the only record of expiry), a companion `.metadata` object
+(N round trips where the derivation costs zero) and custom object metadata (needs two additions to
+`StorageService` for one caller, and leans on fake-gcs-server round-tripping custom metadata through
+a listing, which nothing here exercises).
+
+_Sweeping expired temporary files._ `ContentStorer.addOrUpdateContent` passes
+`deleteTemporaryFiles = isUpdate`, so on **create** — every first save of a new exercise — the temp
+copies of every uploaded file are deliberately left for "the regular expiration mechanism". With
+none, the rate is one permanently orphaned object per media file per newly created exercise, under a
+prefix no route can enumerate or delete. The sweep is therefore **opportunistic and throttled, not
+scheduled**: Cloud Run scales to zero, so an interval only runs while an instance happens to be
+alive, which is precisely what nothing guarantees. `H5pEditorService.maybeSweep` runs
+`TemporaryFileManager.cleanUp()` at most once per instance per 15 minutes, fire-and-forget, from the
+routes that create the garbage — an instance serving an upload is an instance that is alive. It is
+computed after the response and its failure is caught and logged, because an upload that succeeded
+may not answer 500 because a listing failed.
 
 _IAM._ These adapters are the first code in the repo that calls `storage.objects.list` and
 deletes objects in bulk, so the Cloud Run service account needs `roles/storage.objectAdmin`
@@ -171,6 +199,22 @@ H5P. The API image, which does, opts in by copying the script and then re-runnin
 `--require`, so a skip there is still a failed build. Assets that
 are missing at boot are a `WARN` and a 503 from `GET /api/h5p/core/*` and
 `GET /api/h5p/editor-assets/*`, never a crash — the rest of the API has nothing to do with H5P.
+
+_Staying off `api.h5p.org`._ This document previously claimed that `contentHubEnabled: false`,
+`fetchingDisabled: 1` and `sendUsageStatistics: false` kept the server off `api.h5p.org` entirely.
+**That was false**, and `GET /api/h5p/ajax?action=content-type-cache` was the route it was false
+for: `ContentTypeCache.get()` reads `contentTypeCache` out of the `IKeyValueStorage` the editor is
+constructed with, and when that holds nothing it falls through to `forceUpdate()` →
+`registerOrGetUuid()`, which is an HTTPS **POST** to `hubRegistrationEndpoint` on every call.
+`fetchingDisabled` does not prevent it — it is only a field in the registration payload — and the
+failure is caught, so the response is still well formed and nothing is ever cached, which means it
+is retried forever. What actually prevents it is that `h5p.module.ts` seeds that storage with
+`contentTypeCache: []` and `contentTypeCacheUpdate: Date.now()`; `get()` short-circuits on a truthy
+value and `[]` is truthy. The empty cache is not a placeholder: with `contentHubEnabled: false`
+there are no hub content types, so `[]` is the truth, and the fresh timestamp makes the response's
+`outdated` flag honest. `addLocalLibraries` still lists every installed library, which is what the
+editor's content-type selector reads. The e2e asserts `outdated === false`, which is the observable
+consequence of the seeding being read — a status check would pass either way.
 
 _Base URL._ Every asset URL in a player model is generated from `H5P_BASE_URL`. It must be
 **absolute** wherever the page's origin differs from the API's, which is every local development
@@ -205,6 +249,20 @@ role-guarded, or must filter by the publication state of the page that reference
 guarantee than that would need `h5pContent.pageId` to be populated plus the page's `status`, and
 would cost a Firestore read per _content file_ request — per image and per audio clip — so it
 needs a cache and is not something to add casually.
+
+`GET /api/h5p/temp-files/*` is on the other side of that line and is `@Roles('editor')`, along with
+`GET` and `POST /api/h5p/ajax`: `h5p-editor.controller.ts` is a file boundary the way
+`h5p-public.controller.ts` is, and the guards are pinned per route by its metadata block. It
+**cannot** be made public, because the URL carries no owner id and a temporary filename is unique
+only within an owner — an unauthenticated request has no way to say which object it means.
+
+The cost of that is worth stating rather than discovering: after `POST /ajax?action=files`, Joubel's
+editor client renders the preview as `<img src="${integration.editor.filesPath}/<filename>">`, and a
+browser subresource load sends no `Authorization` header — so the just-uploaded image or clip does
+**not** render inside the editor. The realistic fix is a custom `IUrlGenerator` whose
+`temporaryFiles()` emits a short-lived per-user token that the route verifies instead of the bearer
+header; it needs a new secret in configuration and belongs with the admin exercise screen, where
+there is a real widget to point at.
 
 `GET /api/h5p/content` is that enumeration, and it satisfies the invariant by being role-guarded:
 it lives on `H5pController`, where every route is `@Roles('editor')`, and the guard is pinned per
