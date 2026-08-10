@@ -1,21 +1,51 @@
-import { pageBodySchema, type PageBody, type PageType } from '@speakukrainian/shared';
+import {
+  h5pExercisePageBodySchema,
+  richTextPageBodySchema,
+  subsectionListPageBodySchema,
+  type PageBody,
+  type PageBodyInput,
+  type PageType,
+} from '@speakukrainian/shared';
 
 /**
- * What a body of type `T` is seeded from: the discriminant, plus whichever
- * fields the schema does not default. Every defaulted field is left out — no
- * default is restated here, so `packages/shared` stays the only place one lives.
+ * What a body of type `T` is seeded from: the schema's *input*, so every
+ * `.default()` is optional and everything else is required.
+ *
+ * The compiler enforces the discriminant and the presence of every
+ * non-defaulted field — omitting `content` from a `rich_text` seed does not
+ * compile. It does **not** enforce that a default is left out: restating
+ * `layout: 'grid'` still typechecks, because `z.input` makes a defaulted field
+ * optional rather than forbidden. Nor does it check any value rule (`min(1)`,
+ * `z.url()`); those are only checked when the seed is parsed.
  */
-type PageBodySeed<T extends PageType> = { type: T } & Partial<Extract<PageBody, { type: T }>>;
+export type PageBodySeed<T extends PageType> = Extract<PageBodyInput, { type: T }>;
 
 /**
  * Keyed on `PageType` and discriminated per key, so a fourth body type added to
- * `pageTypeSchema` does not compile until it has a seed here, and a seed cannot
- * be filed under the wrong type.
+ * `pageTypeSchema` does not compile until it has a seed here, a seed cannot be
+ * filed under the wrong type, and a seed missing a field the schema requires
+ * does not compile either. No default is restated, so `packages/shared` stays
+ * the only place one lives.
  */
 const SEEDS: { [T in PageType]: PageBodySeed<T> } = {
   rich_text: { type: 'rich_text', content: {} },
   subsection_list: { type: 'subsection_list' },
   h5p_exercise: { type: 'h5p_exercise' },
+};
+
+/**
+ * A map of functions rather than three `parse` calls in a `switch`: taking the
+ * seed as a typed parameter is what makes handing one variant's seed to another
+ * variant's schema inexpressible — `parse` itself takes `unknown` and would
+ * accept it, then throw. Indexing this and `SEEDS` on the same generic key is
+ * also what lets `emptyBodyFor` return a narrowed body without a cast.
+ */
+const PARSERS: {
+  [T in PageType]: (seed: PageBodySeed<T>) => Extract<PageBody, { type: T }>;
+} = {
+  rich_text: (seed) => richTextPageBodySchema.parse(seed),
+  subsection_list: (seed) => subsectionListPageBodySchema.parse(seed),
+  h5p_exercise: (seed) => h5pExercisePageBodySchema.parse(seed),
 };
 
 /**
@@ -26,13 +56,17 @@ const SEEDS: { [T in PageType]: PageBodySeed<T> } = {
  * for a page the author asked to be something else, silently, as soon as the
  * other types get an editor (#10, #13).
  *
- * `pageBodySchema.parse` rather than a literal per type: the defaults come from
- * the schema itself, so an empty body is exactly what the API would store for
- * one, and a seed missing a field the schema requires throws here rather than
- * failing a save later.
+ * Parsed from the schema rather than written as a literal per type: the defaults
+ * come from the schema itself, so an empty body is exactly what the API would
+ * store for one.
+ *
+ * The return narrows with the argument, so a caller that knows its type gets
+ * that variant and not the union — the subsection editor needs a
+ * `SubsectionListPageBody` for its initial value, and #13's H5P editor should
+ * call this rather than parse a third seed of its own.
  */
-export function emptyBodyFor(type: PageType): PageBody {
-  return pageBodySchema.parse(SEEDS[type]);
+export function emptyBodyFor<T extends PageType>(type: T): Extract<PageBody, { type: T }> {
+  return PARSERS[type](SEEDS[type]);
 }
 
 /**
