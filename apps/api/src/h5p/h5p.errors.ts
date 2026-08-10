@@ -13,6 +13,13 @@ const logger = new Logger('H5pErrors');
 const UNUSABLE_PATH = 'The package contains a file with an unusable path.';
 const UNREADABLE_ARCHIVE = 'The file is not a readable ZIP archive, so it is not an H5P package.';
 
+/**
+ * One sentence for one fact, said by both halves of the API: the player raises
+ * it as an `H5pError`, the admin routes as a `NotFoundException`. Exported so
+ * the two cannot drift into two wordings for the same missing exercise.
+ */
+export const CONTENT_MISSING_MESSAGE = 'That exercise does not exist.';
+
 const MESSAGES: Record<string, string> = {
   'unable-to-unzip': UNREADABLE_ARCHIVE,
   'package-validation-failed': 'The package is not a valid H5P package.',
@@ -39,7 +46,7 @@ const MESSAGES: Record<string, string> = {
   // `H5pError`, so what is chosen here is only the wording — and the wording
   // matters, because without it a reader asking for a missing image is told
   // their file could not be imported as an H5P package.
-  'h5p-player:content-missing': 'That exercise does not exist.',
+  'h5p-player:content-missing': CONTENT_MISSING_MESSAGE,
   // The same path rule as the three ids above, raised by
   // `assertSafeRequestPath` for a path that arrived in a URL rather than in a
   // package. One rule, two sentences, because "the package contains…" is a

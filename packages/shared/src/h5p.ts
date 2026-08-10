@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { auditSchema } from './common.js';
+import { auditSchema, paginationQuerySchema } from './common.js';
 
 /**
  * Metadata for one piece of H5P content. The actual content files and libraries
@@ -24,6 +24,14 @@ export type H5pContent = z.infer<typeof h5pContentSchema>;
 /** Input to the H5P content index; `audit` is stamped by the repository. */
 export const createH5pContentSchema = h5pContentSchema.omit({ audit: true });
 export type CreateH5pContentInput = z.infer<typeof createH5pContentSchema>;
+
+/**
+ * Query for `GET /api/h5p/content`. It carries no filters of its own yet; the
+ * first one — `pageId`, or the main library — belongs here rather than as a
+ * second query type on the route, so the route signature never has to change.
+ */
+export const listH5pContentQuerySchema = paginationQuerySchema;
+export type ListH5pContentQuery = z.infer<typeof listH5pContentQuerySchema>;
 
 export const MAX_H5P_UPLOAD_BYTES = 100 * 1024 * 1024;
 

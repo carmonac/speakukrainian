@@ -12,23 +12,45 @@ const INPUT: CreateH5pContentInput = {
   pageId: null,
 };
 
+interface Snapshot {
+  id: string;
+  exists: boolean;
+  data: () => Record<string, unknown> | undefined;
+}
+
 interface Double {
   firestore: Firestore;
   docs: Map<string, Record<string, unknown>>;
+  /** One entry per query that ran, holding what the repository asked for. */
+  queries: { orderBy: [string, string][]; limit: number | null }[];
 }
 
 /**
- * In-memory stand-in for the document reads and writes this repository makes.
- * `create` rejects with gRPC code 6 for an id that is already taken, which is
- * the behaviour that makes an id collision loud instead of destructive.
+ * In-memory stand-in for the document reads, writes and queries this repository
+ * makes. `create` rejects with gRPC code 6 for an id that is already taken,
+ * which is the behaviour that makes an id collision loud instead of
+ * destructive.
+ *
+ * The query half records what it was asked for, so "the list is bounded" and
+ * "the list is ordered newest first" are observations rather than assumptions:
+ * a `limit` the repository never set is `null` here, not a passing test.
  */
 function createFirestoreDouble(): Double {
   const docs = new Map<string, Record<string, unknown>>();
-  const collections = new Map<string, string>();
+  const queries: { orderBy: [string, string][]; limit: number | null }[] = [];
+
+  const snapshotsOf = (collection: string): Snapshot[] =>
+    [...docs.entries()]
+      .filter(([key]) => key.startsWith(`${collection}/`))
+      .map(([key, data]) => ({
+        id: key.slice(collection.length + 1),
+        exists: true,
+        data: () => data,
+      }));
 
   const docRef = (collection: string, id: string) => ({
     id,
-    get: () =>
+    get: (): Promise<Snapshot> =>
       Promise.resolve({
         id,
         exists: docs.has(`${collection}/${id}`),
@@ -43,14 +65,54 @@ function createFirestoreDouble(): Double {
     },
   });
 
-  const firestore = {
-    collection: (name: string) => {
-      collections.set(name, name);
-      return { id: name, doc: (id: string) => docRef(name, id) };
+  const query = (
+    collection: string,
+    state: { orderBy: [string, string][]; limit: number | null; after: string | null },
+  ) => ({
+    orderBy: (field: string, direction = 'asc') =>
+      query(collection, { ...state, orderBy: [...state.orderBy, [field, direction]] }),
+    limit: (count: number) => query(collection, { ...state, limit: count }),
+    startAfter: (snapshot: Snapshot) => query(collection, { ...state, after: snapshot.id }),
+    get: () => {
+      queries.push({ orderBy: state.orderBy, limit: state.limit });
+
+      let rows = snapshotsOf(collection);
+      for (const [field, direction] of [...state.orderBy].reverse()) {
+        rows = [...rows].sort((a, b) => compare(valueAt(a, field), valueAt(b, field)));
+        if (direction === 'desc') {
+          rows.reverse();
+        }
+      }
+      if (state.after) {
+        const index = rows.findIndex((row) => row.id === state.after);
+        rows = index === -1 ? rows : rows.slice(index + 1);
+      }
+      return Promise.resolve({
+        docs: state.limit === null ? rows : rows.slice(0, state.limit),
+      });
     },
+  });
+
+  const firestore = {
+    collection: (name: string) => ({
+      id: name,
+      doc: (id: string) => docRef(name, id),
+      ...query(name, { orderBy: [], limit: null, after: null }),
+    }),
   } as unknown as Firestore;
 
-  return { firestore, docs };
+  return { firestore, docs, queries };
+}
+
+/** `audit.createdAt` is a dotted field path, which Firestore resolves for us. */
+function valueAt(snapshot: Snapshot, field: string): unknown {
+  return field.split('.').reduce<unknown>((value, key) => {
+    return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+  }, snapshot.data());
+}
+
+function compare(a: unknown, b: unknown): number {
+  return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
 }
 
 describe('H5pContentRepository', () => {
@@ -133,5 +195,70 @@ describe('H5pContentRepository', () => {
 
     expect(found?.audit.createdAt).toBe('2026-04-05T06:07:08.000Z');
     expect(found?.title).toBe(INPUT.title);
+  });
+});
+
+describe('H5pContentRepository.list', () => {
+  /** Three contents, uploaded a minute apart, seeded in a shuffled order. */
+  function seedThree(docs: Map<string, Record<string, unknown>>): void {
+    for (const [id, minute] of [
+      ['middle', '01'],
+      ['newest', '02'],
+      ['oldest', '00'],
+    ] as const) {
+      const at = `2026-04-05T06:${minute}:00.000Z`;
+      docs.set(`h5pContent/${id}`, {
+        ...toDocumentData({
+          ...INPUT,
+          id,
+          audit: { createdAt: at, createdBy: 'e', updatedAt: at, updatedBy: 'e' },
+        }),
+      });
+    }
+  }
+
+  it('answers newest first', async () => {
+    const { firestore, docs, queries } = createFirestoreDouble();
+    seedThree(docs);
+
+    const page = await new H5pContentRepository(firestore).list({ limit: 25 });
+
+    expect(page.items.map((content) => content.id)).toEqual(['newest', 'middle', 'oldest']);
+    expect(queries[0]?.orderBy).toEqual([['audit.createdAt', 'desc']]);
+  });
+
+  it('never reads the collection unbounded, and asks for one more than it returns', async () => {
+    const { firestore, docs, queries } = createFirestoreDouble();
+    seedThree(docs);
+
+    const page = await new H5pContentRepository(firestore).list({ limit: 2 });
+
+    // The double records the limit it was handed, so "no limit at all" is
+    // observable rather than assumed.
+    expect(queries[0]?.limit).toBe(3);
+    expect(page.items.map((content) => content.id)).toEqual(['newest', 'middle']);
+    expect(page.nextCursor).toBe('middle');
+  });
+
+  it('reports no cursor once the last page is reached', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seedThree(docs);
+
+    const page = await new H5pContentRepository(firestore).list({ limit: 3 });
+
+    expect(page.items).toHaveLength(3);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('starts the next page after the cursor without repeating it', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seedThree(docs);
+    const repository = new H5pContentRepository(firestore);
+
+    const first = await repository.list({ limit: 2 });
+    const second = await repository.list({ limit: 2, cursor: first.nextCursor ?? undefined });
+
+    expect(second.items.map((content) => content.id)).toEqual(['oldest']);
+    expect(second.nextCursor).toBeNull();
   });
 });

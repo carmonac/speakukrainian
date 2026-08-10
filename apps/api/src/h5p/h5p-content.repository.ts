@@ -5,6 +5,8 @@ import {
   h5pContentSchema,
   type CreateH5pContentInput,
   type H5pContent,
+  type ListH5pContentQuery,
+  type Page,
 } from '@speakukrainian/shared';
 import { BaseRepository, deepConvertTimestamps } from '../infra/firestore/base.repository.js';
 import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
@@ -43,5 +45,23 @@ export class H5pContentRepository extends BaseRepository<H5pContent> {
 
     await this.collection.doc(content.id).create(toDocumentData(content));
     return content;
+  }
+
+  /**
+   * Newest first, which is the order an admin who has just uploaded something
+   * reads this index in.
+   *
+   * `audit.createdAt` is `newAudit`'s `toISOString()`, always the millisecond
+   * `…Z` form, so lexicographic order is chronological order. Firestore appends
+   * `__name__` to the ordering implicitly, so two uploads in the same
+   * millisecond still order deterministically and the cursor is stable. One
+   * `orderBy` and no `where`, so no composite index is needed.
+   */
+  async list(query: ListH5pContentQuery): Promise<Page<H5pContent>> {
+    return this.paginate(
+      this.collection.orderBy('audit.createdAt', 'desc'),
+      query.limit,
+      query.cursor,
+    );
   }
 }

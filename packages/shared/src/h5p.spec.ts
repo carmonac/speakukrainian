@@ -7,6 +7,7 @@ import {
   h5pContentSchema,
   h5pUploadTooLargeMessage,
   isH5pPackageFilename,
+  listH5pContentQuerySchema,
   notAnH5pPackageMessage,
 } from './h5p.js';
 
@@ -40,6 +41,24 @@ describe('createH5pContentSchema', () => {
   it('leaves audit to the repository rather than accepting one from a caller', () => {
     expect(Object.keys(createH5pContentSchema.shape)).not.toContain('audit');
     expect(Object.keys(h5pContentSchema.shape)).toContain('audit');
+  });
+});
+
+describe('listH5pContentQuerySchema', () => {
+  it('pages the way every other list route pages', () => {
+    // Reusing `paginationQuerySchema` rather than restating it is what keeps
+    // this route from drifting into looser bounds than `GET /api/pages`.
+    expect(listH5pContentQuerySchema.parse({})).toEqual({ limit: 25 });
+    expect(listH5pContentQuerySchema.parse({ limit: '10' })).toEqual({ limit: 10 });
+    expect(listH5pContentQuerySchema.parse({ cursor: 'abc' })).toEqual({
+      limit: 25,
+      cursor: 'abc',
+    });
+  });
+
+  it('refuses a limit outside the shared bounds', () => {
+    expect(listH5pContentQuerySchema.safeParse({ limit: 0 }).success).toBe(false);
+    expect(listH5pContentQuerySchema.safeParse({ limit: 101 }).success).toBe(false);
   });
 });
 
