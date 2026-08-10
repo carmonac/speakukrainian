@@ -13,7 +13,7 @@ import {
 } from '@speakukrainian/shared';
 import { BaseRepository, deepConvertTimestamps } from '../infra/firestore/base.repository.js';
 import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
-import { nextPublishedAt, pagePath, sectionPathOf } from './pages.rules.js';
+import { nextPublishedAt, pagePath, sectionPathOf, sourceSectionIdOf } from './pages.rules.js';
 
 /** `id` is the document id, so it is not duplicated inside the document body. */
 export function toDocumentData(page: ContentPage): Record<string, unknown> {
@@ -21,11 +21,18 @@ export function toDocumentData(page: ContentPage): Record<string, unknown> {
   return data;
 }
 
+/**
+ * Which request field named the section, so a refusal can be worded about — and
+ * pathed at — the control that set it. One value driving both is what stops the
+ * wording and the path drifting apart, which two parallel reasons would allow.
+ */
+export type SectionField = 'sectionId' | 'body.sourceSectionId';
+
 /** Why a write was refused. The repository reports; the service maps to HTTP. */
 export type PageWriteFailure =
   | { reason: 'not-found' }
-  | { reason: 'section-not-found'; sectionId: string }
-  | { reason: 'section-is-link' }
+  | { reason: 'section-not-found'; field: SectionField; sectionId: string }
+  | { reason: 'section-is-link'; field: SectionField }
   | { reason: 'slug-taken'; slug: string }
   | { reason: 'invalid'; issues: z.core.$ZodIssue[] };
 
@@ -71,14 +78,29 @@ export class PagesRepository extends BaseRepository<ContentPage> {
       // Every read happens before every write — Firestore rejects the reverse.
       const sectionDoc = await tx.get(this.sections.doc(input.sectionId));
       if (!sectionDoc.exists) {
-        return { ok: false, reason: 'section-not-found', sectionId: input.sectionId };
+        return {
+          ok: false,
+          reason: 'section-not-found',
+          field: 'sectionId',
+          sectionId: input.sectionId,
+        };
       }
       const section = sectionSchema.parse({
         id: sectionDoc.id,
         ...(deepConvertTimestamps(sectionDoc.data()!) as object),
       });
       if (section.kind === 'link') {
-        return { ok: false, reason: 'section-is-link' };
+        return { ok: false, reason: 'section-is-link', field: 'sectionId' };
+      }
+
+      const sourceId = sourceSectionIdOf(input.body);
+      // A source that *is* the owning section was read and checked a few lines
+      // up, so this reuses that answer rather than skipping the rule.
+      if (sourceId !== null && sourceId !== input.sectionId) {
+        const rejected = await this.checkSource(tx, sourceId);
+        if (rejected) {
+          return rejected;
+        }
       }
 
       const taken = await tx.get(this.slugQuery(input.sectionId, input.slug));
@@ -144,6 +166,18 @@ export class PagesRepository extends BaseRepository<ContentPage> {
         }
       }
 
+      // Deliberately `patch.body` and not `merged.body`: the rule guards the
+      // value this request is setting. A status-only patch — which is what
+      // `publish` and `unpublish` are — therefore costs no read and cannot be
+      // refused over a stored source it never touched.
+      const sourceId = sourceSectionIdOf(patch.body);
+      if (sourceId !== null) {
+        const rejected = await this.checkSource(tx, sourceId);
+        if (rejected) {
+          return rejected;
+        }
+      }
+
       const merged = { ...existing, ...patch };
 
       if (merged.slug !== existing.slug) {
@@ -187,6 +221,35 @@ export class PagesRepository extends BaseRepository<ContentPage> {
       tx.delete(ref);
       return { ok: true };
     });
+  }
+
+  /**
+   * The section a `subsection_list` body lists from, checked inside the caller's
+   * transaction so a section deleted between the check and the commit cannot be
+   * stored anyway — the same race the owning-section read above is inside for.
+   *
+   * Only `kind` is read off the snapshot, rather than parsing `sectionSchema`:
+   * one corrupt section anywhere in the collection would otherwise turn every
+   * page save that names it into a 500, and nothing here needs the rest of the
+   * document. The test is `=== 'link'` rather than `!== 'content'` because
+   * `sectionSchema.kind` carries no default — every section this API writes has
+   * one, so a document with neither value is corrupt rather than a link, and
+   * telling its author "a link section has no subsections" would be untrue.
+   */
+  private async checkSource(tx: Transaction, sourceId: string): Promise<PageWriteRejection | null> {
+    const doc = await tx.get(this.sections.doc(sourceId));
+    if (!doc.exists) {
+      return {
+        ok: false,
+        reason: 'section-not-found',
+        field: 'body.sourceSectionId',
+        sectionId: sourceId,
+      };
+    }
+    if (doc.get('kind') === 'link') {
+      return { ok: false, reason: 'section-is-link', field: 'body.sourceSectionId' };
+    }
+    return null;
   }
 
   /**

@@ -1,4 +1,4 @@
-import type { PublishStatus } from '@speakukrainian/shared';
+import type { PageBody, PublishStatus } from '@speakukrainian/shared';
 
 /**
  * The path and publishing arithmetic behind a page, kept apart from Firestore
@@ -50,6 +50,16 @@ export function rewritePagePath(
  */
 export function pagePathRange(sectionPath: string): { start: string; end: string } {
   return { start: `${sectionPath}/`, end: `${sectionPath}0` };
+}
+
+/**
+ * The section a body lists subsections from, or `null` when it follows the
+ * page's own. "Follow my own section" is stored as the *absent* key, so an
+ * omitted `sourceSectionId` and a body of another type collapse to the same
+ * answer and a caller never has to tell them apart.
+ */
+export function sourceSectionIdOf(body: PageBody | undefined): string | null {
+  return body?.type === 'subsection_list' ? (body.sourceSectionId ?? null) : null;
 }
 
 /**

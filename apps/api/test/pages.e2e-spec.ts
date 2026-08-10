@@ -433,6 +433,142 @@ describe('pages (e2e)', () => {
     await expect(listAll(`?sectionId=${link.id}`)).resolves.toEqual([]);
   });
 
+  it('refuses a subsection list whose source section does not exist or is a link', async () => {
+    const section = await createSection({ slug: 'e2e-src-section', title: { en: 'Source' } });
+    const link = await createSection({
+      slug: 'e2e-src-link',
+      title: { en: 'Link' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://example.com' },
+    });
+
+    const missing = await post({
+      sectionId: section.id,
+      slug: 'e2e-src-missing',
+      title: { en: 'Missing' },
+      body: { type: 'subsection_list', sourceSectionId: UNKNOWN_ID },
+    }).expect(404);
+    expect((missing.body as IssueBody).errors?.[0]?.path).toBe('body.sourceSectionId');
+    expect((missing.body as ErrorBody).message).toContain(UNKNOWN_ID);
+
+    const isLink = await post({
+      sectionId: section.id,
+      slug: 'e2e-src-link-page',
+      title: { en: 'Link source' },
+      body: { type: 'subsection_list', sourceSectionId: link.id },
+    }).expect(422);
+    expect((isLink.body as IssueBody).errors?.[0]?.path).toBe('body.sourceSectionId');
+    expect((isLink.body as ErrorBody).message).toContain('subsection list');
+
+    // A refusal has to refuse: neither page may be sitting in the section.
+    await expect(listAll(`?sectionId=${section.id}`)).resolves.toEqual([]);
+  });
+
+  it('accepts a real content source and a body that names none at all', async () => {
+    const section = await createSection({ slug: 'e2e-srcok-section', title: { en: 'Own' } });
+    const source = await createSection({ slug: 'e2e-srcok-source', title: { en: 'Source' } });
+
+    const named = await create({
+      sectionId: section.id,
+      slug: 'e2e-srcok-named',
+      title: { en: 'Named' },
+      body: { type: 'subsection_list', sourceSectionId: source.id },
+    });
+    const storedNamed = await read(named.id);
+    expect(storedNamed.body.type === 'subsection_list' && storedNamed.body.sourceSectionId).toBe(
+      source.id,
+    );
+
+    const own = await create({
+      sectionId: section.id,
+      slug: 'e2e-srcok-own',
+      title: { en: 'Own' },
+      body: { type: 'subsection_list' },
+    });
+    // "Follow my own section" is stored as the absent key. Defaulting it to the
+    // owning section would pin the page to a section it merely lives in today.
+    const storedOwn = await read(own.id);
+    expect(storedOwn.body.type).toBe('subsection_list');
+    expect('sourceSectionId' in storedOwn.body).toBe(false);
+  });
+
+  it('enforces the source rules on a patch and writes nothing when it refuses', async () => {
+    const section = await createSection({ slug: 'e2e-srcp-section', title: { en: 'Own' } });
+    const source = await createSection({ slug: 'e2e-srcp-source', title: { en: 'Source' } });
+    const link = await createSection({
+      slug: 'e2e-srcp-link',
+      title: { en: 'Link' },
+      kind: 'link',
+      link: { type: 'external', href: 'https://example.com' },
+    });
+    const page = await create({
+      sectionId: section.id,
+      slug: 'e2e-srcp-page',
+      title: { en: 'Page' },
+      body: { type: 'subsection_list', sourceSectionId: source.id },
+    });
+
+    const missing = await patch(page.id, {
+      body: { type: 'subsection_list', sourceSectionId: UNKNOWN_ID },
+    }).expect(404);
+    expect((missing.body as IssueBody).errors?.[0]?.path).toBe('body.sourceSectionId');
+
+    const isLink = await patch(page.id, {
+      body: { type: 'subsection_list', sourceSectionId: link.id },
+    }).expect(422);
+    expect((isLink.body as IssueBody).errors?.[0]?.path).toBe('body.sourceSectionId');
+
+    const stored = await read(page.id);
+    expect(stored.body.type === 'subsection_list' && stored.body.sourceSectionId).toBe(source.id);
+  });
+
+  it('still reads and repairs a page stored with a source that went bad', async () => {
+    // ADR-012: the rule guards arrivals. Once it lands this state is
+    // unreachable through the API, and the admin's source picker exists
+    // precisely to explain and repair it — so the document is written by hand.
+    const section = await createSection({ slug: 'e2e-srcbad-section', title: { en: 'Own' } });
+    const source = await createSection({ slug: 'e2e-srcbad-source', title: { en: 'Source' } });
+    const stamp = new Date().toISOString();
+    const ref = firestore.collection(COLLECTIONS.pages).doc();
+    await ref.set({
+      sectionId: section.id,
+      slug: 'e2e-srcbad-page',
+      path: `${section.path}/e2e-srcbad-page`,
+      title: { en: 'Dangling' },
+      body: {
+        type: 'subsection_list',
+        sourceSectionId: UNKNOWN_ID,
+        layout: 'grid',
+        showImages: true,
+        showDescriptions: true,
+      },
+      sortOrder: 0,
+      status: 'draft',
+      publishedAt: null,
+      audit: {
+        createdAt: stamp,
+        createdBy: editor.uid,
+        updatedAt: stamp,
+        updatedBy: editor.uid,
+      },
+    });
+
+    const stored = await read(ref.id);
+    expect(stored.body.type === 'subsection_list' && stored.body.sourceSectionId).toBe(UNKNOWN_ID);
+
+    // A status-only patch is checked against the value the request carries, not
+    // the stored one, so publishing is not refused over a field it never named.
+    await publish(ref.id).expect(200);
+
+    await patch(ref.id, {
+      body: { type: 'subsection_list', sourceSectionId: source.id },
+    }).expect(200);
+    const repaired = await read(ref.id);
+    expect(repaired.body.type === 'subsection_list' && repaired.body.sourceSectionId).toBe(
+      source.id,
+    );
+  });
+
   it('refuses a body carrying a field that belongs to another variant', async () => {
     const section = await createSection({ slug: 'e2e-strict-section', title: { en: 'Strict' } });
 

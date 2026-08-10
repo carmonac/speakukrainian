@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import type { SubsectionListPageBody } from '@speakukrainian/shared';
 import {
   nextPublishedAt,
   pagePath,
   pagePathRange,
   rewritePagePath,
   sectionPathOf,
+  sourceSectionIdOf,
 } from './pages.rules.js';
 
 describe('pagePath', () => {
@@ -61,6 +63,48 @@ describe('pagePathRange', () => {
     expect(inside('/ax/y')).toBe(false);
     expect(inside('/a0')).toBe(false);
     expect(inside('/a')).toBe(false);
+  });
+});
+
+describe('sourceSectionIdOf', () => {
+  const list = (extra: Partial<SubsectionListPageBody> = {}): SubsectionListPageBody => ({
+    type: 'subsection_list',
+    layout: 'grid',
+    showImages: true,
+    showDescriptions: true,
+    ...extra,
+  });
+
+  it('reads the source off a subsection list that names one', () => {
+    expect(sourceSectionIdOf(list({ sourceSectionId: 'zzzz0000zzzz0000zzzz' }))).toBe(
+      'zzzz0000zzzz0000zzzz',
+    );
+  });
+
+  it('is null for a subsection list that follows its own section', () => {
+    // The absent key is how "my own section" is stored, and it has to stay free
+    // of a section read.
+    expect(sourceSectionIdOf(list())).toBeNull();
+  });
+
+  it('is null for a body of another type and for no body at all', () => {
+    expect(
+      sourceSectionIdOf({
+        type: 'rich_text',
+        content: { en: '<p>Hi</p>' },
+        audioAssets: [],
+        imageAssets: [],
+      }),
+    ).toBeNull();
+    expect(
+      sourceSectionIdOf({
+        type: 'h5p_exercise',
+        h5pContentId: null,
+        explanationPosition: 'above',
+        trackResults: false,
+      }),
+    ).toBeNull();
+    expect(sourceSectionIdOf(undefined)).toBeNull();
   });
 });
 
