@@ -97,8 +97,13 @@ export type H5pExercisePageBody = z.infer<typeof h5pExercisePageBodySchema>;
  * supply on my behalf" — which is what seeds a new body. A caller building a
  * body to send or to store wants `PageBody`; a caller writing the literal that
  * `parse` fills in wants this.
+ *
+ * Named for `parse` rather than `PageBodyInput`, because every other `*Input`
+ * in this package — `CreateContentPageInput` below, `CreateSectionInput`,
+ * `UpdateLocaleInput` — is a request schema's *parsed* shape, the opposite side
+ * of the same schema.
  */
-export type PageBodyInput = z.input<typeof pageBodySchema>;
+export type PageBodyParseInput = z.input<typeof pageBodySchema>;
 
 /** A page's own id: `documentIdSchema` under the name the routes use. */
 export const pageIdSchema = documentIdSchema;

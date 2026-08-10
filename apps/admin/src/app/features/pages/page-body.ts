@@ -3,7 +3,7 @@ import {
   richTextPageBodySchema,
   subsectionListPageBodySchema,
   type PageBody,
-  type PageBodyInput,
+  type PageBodyParseInput,
   type PageType,
 } from '@speakukrainian/shared';
 
@@ -18,7 +18,7 @@ import {
  * optional rather than forbidden. Nor does it check any value rule (`min(1)`,
  * `z.url()`); those are only checked when the seed is parsed.
  */
-export type PageBodySeed<T extends PageType> = Extract<PageBodyInput, { type: T }>;
+export type PageBodySeed<T extends PageType> = Extract<PageBodyParseInput, { type: T }>;
 
 /**
  * Keyed on `PageType` and discriminated per key, so a fourth body type added to
