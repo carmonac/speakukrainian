@@ -492,6 +492,47 @@ describe('pages (e2e)', () => {
     expect('sourceSectionId' in storedOwn.body).toBe(false);
   });
 
+  it('accepts a source section whose stored document carries no kind', async () => {
+    // The rule tests `kind === 'link'` and not `kind !== 'content'`:
+    // `sectionSchema.kind` has no default, so a document with neither value is
+    // corrupt rather than a link, and refusing it with "a link section has no
+    // subsections" would be untrue. This API cannot write such a section, so
+    // the document is written by hand — and deleted again inside the test,
+    // because any listing that parses it would fail.
+    const section = await createSection({ slug: 'e2e-srckind-section', title: { en: 'Own' } });
+    const stamp = new Date().toISOString();
+    const ref = firestore.collection(COLLECTIONS.sections).doc();
+    await ref.set({
+      parentId: null,
+      ancestorIds: [],
+      depth: 0,
+      slug: 'e2e-srckind-source',
+      path: '/e2e-srckind-source',
+      title: { en: 'No kind' },
+      showInMenu: false,
+      sortOrder: 0,
+      status: 'draft',
+      audit: {
+        createdAt: stamp,
+        createdBy: editor.uid,
+        updatedAt: stamp,
+        updatedBy: editor.uid,
+      },
+    });
+
+    try {
+      const page = await create({
+        sectionId: section.id,
+        slug: 'e2e-srckind-page',
+        title: { en: 'Page' },
+        body: { type: 'subsection_list', sourceSectionId: ref.id },
+      });
+      expect(page.body.type === 'subsection_list' && page.body.sourceSectionId).toBe(ref.id);
+    } finally {
+      await ref.delete();
+    }
+  });
+
   it('enforces the source rules on a patch and writes nothing when it refuses', async () => {
     const section = await createSection({ slug: 'e2e-srcp-section', title: { en: 'Own' } });
     const source = await createSection({ slug: 'e2e-srcp-source', title: { en: 'Source' } });

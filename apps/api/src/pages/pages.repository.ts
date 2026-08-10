@@ -94,9 +94,7 @@ export class PagesRepository extends BaseRepository<ContentPage> {
       }
 
       const sourceId = sourceSectionIdOf(input.body);
-      // A source that *is* the owning section was read and checked a few lines
-      // up, so this reuses that answer rather than skipping the rule.
-      if (sourceId !== null && sourceId !== input.sectionId) {
+      if (sourceId !== null) {
         const rejected = await this.checkSource(tx, sourceId);
         if (rejected) {
           return rejected;
