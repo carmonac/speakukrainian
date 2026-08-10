@@ -55,6 +55,16 @@ describe('h5p content index (e2e)', () => {
     return saved;
   };
 
+  /**
+   * Each installed library object as `path@timeCreated`. The timestamp is what
+   * makes "untouched" distinguishable from "written again over the same names":
+   * an overwrite is a new object, and gets a new creation time.
+   */
+  const libraryObjects = async (): Promise<string[]> =>
+    (await storage.list(LIBRARY_PREFIX))
+      .map((object) => `${object.path}@${object.createdAt.toISOString()}`)
+      .sort();
+
   const listAs = async (
     token: string,
     query: string,
@@ -203,7 +213,7 @@ describe('h5p content index (e2e)', () => {
     it('leaves the installed libraries alone, so the same package uploads again', async () => {
       const bytes = await buildH5pPackage({ title: 'Library survivor' });
       const doomed = await upload(bytes);
-      const before = (await storage.list(LIBRARY_PREFIX)).map((object) => object.path).sort();
+      const before = await libraryObjects();
       const directoriesBefore = (await storage.listSubdirectories(LIBRARY_PREFIX)).sort();
 
       await request(server())
@@ -211,20 +221,12 @@ describe('h5p content index (e2e)', () => {
         .set('Authorization', `Bearer ${editor.idToken}`)
         .expect(204);
 
-      expect((await storage.list(LIBRARY_PREFIX)).map((object) => object.path).sort()).toEqual(
-        before,
-      );
+      expect(await libraryObjects()).toEqual(before);
       expect((await storage.listSubdirectories(LIBRARY_PREFIX)).sort()).toEqual(directoriesBefore);
 
       const again = await upload(bytes);
       expect(again.contentId).not.toBe(doomed.contentId);
-      // What this can show is that the delete garbage-collected nothing. What it
-      // cannot show is "not reinstalled" as opposed to "reinstalled over the
-      // same object names" — the dedupe itself is pinned by the patch-version
-      // case in `h5p.e2e-spec.ts`.
-      expect((await storage.list(LIBRARY_PREFIX)).map((object) => object.path).sort()).toEqual(
-        before,
-      );
+      expect(await libraryObjects()).toEqual(before);
     });
 
     it('answers 404 for an unknown id rather than a silent 204', async () => {
@@ -246,6 +248,41 @@ describe('h5p content index (e2e)', () => {
         .delete(`/api/h5p/content/${doomed.contentId}`)
         .set('Authorization', `Bearer ${editor.idToken}`)
         .expect(404);
+    });
+
+    it('removes a row whose stored document no longer satisfies the schema', async () => {
+      // Hand-written, because the API cannot produce it: a seed script or a
+      // console edit can, and this route is the only way to repair it. The
+      // read routes still refuse it — parse-on-read is what keeps a wrong
+      // shape out of a response — so the delete is the whole repair path.
+      const corruptId = randomUUID();
+      createdContentIds.push(corruptId);
+      await storage.put(`${CONTENT_PREFIX}${corruptId}/h5p.json`, Buffer.from('{}'));
+      await firestore
+        .collection(COLLECTIONS.h5pContent)
+        .doc(corruptId)
+        .set({
+          title: 'Corrupted by hand',
+          mainLibrary: 'SpeakTest.Main 1.0',
+          storagePath: `${CONTENT_PREFIX}${corruptId}`,
+          sizeBytes: 'not-a-number',
+          pageId: null,
+          audit: {
+            createdAt: '2026-05-01T00:00:00.000Z',
+            createdBy: 'editor-1',
+            updatedAt: '2026-05-01T00:00:00.000Z',
+            updatedBy: 'editor-1',
+          },
+        });
+
+      await request(server())
+        .delete(`/api/h5p/content/${corruptId}`)
+        .set('Authorization', `Bearer ${editor.idToken}`)
+        .expect(204);
+
+      expect(await storage.list(`${CONTENT_PREFIX}${corruptId}/`)).toEqual([]);
+      const document = await firestore.collection(COLLECTIONS.h5pContent).doc(corruptId).get();
+      expect(document.exists).toBe(false);
     });
 
     it('finishes a delete whose objects an earlier attempt already swept', async () => {
