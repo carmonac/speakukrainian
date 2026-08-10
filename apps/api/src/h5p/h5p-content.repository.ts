@@ -48,6 +48,17 @@ export class H5pContentRepository extends BaseRepository<H5pContent> {
   }
 
   /**
+   * Existence without a parse, the way `PagesRepository.remove` reads the
+   * document it is about to delete: one corrupt row would otherwise turn the
+   * only route that can remove it into a 500, and nothing on the delete path
+   * needs the rest of the document. `findById` keeps its parse, because a read
+   * that answers with a document does have to trust its shape.
+   */
+  async exists(id: string): Promise<boolean> {
+    return (await this.collection.doc(id).get()).exists;
+  }
+
+  /**
    * Newest first, which is the order an admin who has just uploaded something
    * reads this index in.
    *

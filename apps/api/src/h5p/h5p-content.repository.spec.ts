@@ -168,6 +168,30 @@ describe('H5pContentRepository', () => {
     expect(docs.size).toBe(0);
   });
 
+  it('reports a stored row whose shape is wrong as existing, without parsing it', async () => {
+    // The delete path's check. A parse here would make a corrupt row removable
+    // only with direct Firestore access, since no route could act on it.
+    const { firestore, docs } = createFirestoreDouble();
+    const repository = new H5pContentRepository(firestore);
+    const at = '2026-04-05T06:07:08.000Z';
+    docs.set(`h5pContent/${INPUT.id}`, {
+      ...toDocumentData({
+        ...INPUT,
+        audit: { createdAt: at, createdBy: 'editor-1', updatedAt: at, updatedBy: 'editor-1' },
+      }),
+      sizeBytes: 'not-a-number',
+    });
+
+    await expect(repository.exists(INPUT.id)).resolves.toBe(true);
+    await expect(repository.findById(INPUT.id)).rejects.toThrow();
+  });
+
+  it('reports an id nothing was stored under as not existing', async () => {
+    const { firestore } = createFirestoreDouble();
+
+    await expect(new H5pContentRepository(firestore).exists(INPUT.id)).resolves.toBe(false);
+  });
+
   it('converts stored timestamps to ISO strings on read', async () => {
     const { firestore, docs } = createFirestoreDouble();
     const repository = new H5pContentRepository(firestore);

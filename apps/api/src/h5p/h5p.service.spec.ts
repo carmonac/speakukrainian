@@ -7,11 +7,12 @@ import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { H5pError } from '@lumieducation/h5p-server';
 import type { H5PEditor, IContentMetadata, IUser } from '@lumieducation/h5p-server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type {
-  CreateH5pContentInput,
-  H5pContent,
-  ListH5pContentQuery,
-  Page,
+import {
+  h5pContentSchema,
+  type CreateH5pContentInput,
+  type H5pContent,
+  type ListH5pContentQuery,
+  type Page,
 } from '@speakukrainian/shared';
 import type { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
@@ -43,6 +44,13 @@ interface RepositorySpy {
   created: { input: CreateH5pContentInput; actorId: string }[];
   /** The index, keyed by content id — what `findById`, `list` and `delete` see. */
   stored: Map<string, H5pContent>;
+  /**
+   * Ids whose stored document does not satisfy `h5pContentSchema`: they exist,
+   * but the repository's parse-on-read throws instead of answering with them.
+   */
+  corrupt: Set<string>;
+  /** Ids `delete` actually removed, so a no-op is not mistaken for a delete. */
+  deleted: string[];
 }
 
 interface RepositoryFailures {
@@ -54,6 +62,8 @@ interface RepositoryFailures {
 function createRepositorySpy(failures: RepositoryFailures = {}): RepositorySpy {
   const created: { input: CreateH5pContentInput; actorId: string }[] = [];
   const stored = new Map<string, H5pContent>();
+  const corrupt = new Set<string>();
+  const deleted: string[] = [];
 
   const repository = {
     create: (input: CreateH5pContentInput, actorId: string): Promise<H5pContent> => {
@@ -65,19 +75,31 @@ function createRepositorySpy(failures: RepositoryFailures = {}): RepositorySpy {
       stored.set(input.id, content);
       return Promise.resolve(content);
     },
-    findById: (id: string): Promise<H5pContent | null> => Promise.resolve(stored.get(id) ?? null),
+    findById: (id: string): Promise<H5pContent | null> => {
+      if (corrupt.has(id)) {
+        // The real `fromDocument` parses, so a wrong-shaped document throws
+        // here rather than answering `null`.
+        return Promise.resolve().then(() =>
+          h5pContentSchema.parse({ ...indexed(id), sizeBytes: 'not-a-number' }),
+        );
+      }
+      return Promise.resolve(stored.get(id) ?? null);
+    },
+    exists: (id: string): Promise<boolean> => Promise.resolve(stored.has(id) || corrupt.has(id)),
     delete: (id: string): Promise<void> => {
       if (failures.onDelete) {
         return Promise.reject(failures.onDelete);
       }
       stored.delete(id);
+      corrupt.delete(id);
+      deleted.push(id);
       return Promise.resolve();
     },
     list: (query: ListH5pContentQuery): Promise<Page<H5pContent>> =>
       Promise.resolve({ items: [...stored.values()].slice(0, query.limit), nextCursor: null }),
   } as unknown as H5pContentRepository;
 
-  return { repository, created, stored };
+  return { repository, created, stored, corrupt, deleted };
 }
 
 /**
@@ -470,6 +492,20 @@ describe('H5pService index routes', () => {
 
     expect(storage.paths()).toEqual([]);
     expect(stored.has(INDEXED)).toBe(false);
+  });
+
+  it('removes a row whose stored document no longer satisfies the schema', async () => {
+    // This route is the only way to repair such a row, so the existence check
+    // must not parse: `findById` would throw here and answer 500, leaving the
+    // row removable only with direct Firestore access.
+    const { repository, corrupt, deleted } = createRepositorySpy();
+    corrupt.add(INDEXED);
+    await seedObjects();
+
+    await serviceOver(repository).remove(INDEXED);
+
+    expect(deleted).toEqual([INDEXED]);
+    expect(storage.paths().filter((path) => path.includes(INDEXED))).toEqual([]);
   });
 
   it('leaves the index document behind when the document delete fails, never an object', async () => {

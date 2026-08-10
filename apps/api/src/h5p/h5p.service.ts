@@ -141,15 +141,17 @@ export class H5pService {
    * sweeps whatever is left.
    *
    * So the Firestore document is the sole authority for the 404; storage state
-   * never decides a status code.
+   * never decides a status code. That authority is `exists`, not a read: a row
+   * whose stored shape no longer satisfies the schema still has to be removable
+   * through this route, which is the repair path the surviving-row case above
+   * relies on.
    *
    * Installed libraries under `h5p/libraries/` are deliberately untouched:
    * other content may use them, and a library with no dependents left is disk,
    * not a dangling reference.
    */
   async remove(contentId: string): Promise<void> {
-    const existing = await this.repository.findById(contentId);
-    if (!existing) {
+    if (!(await this.repository.exists(contentId))) {
       throw new NotFoundException(CONTENT_MISSING_MESSAGE);
     }
 
