@@ -34,23 +34,18 @@ const SEEDS: { [T in PageType]: PageBodySeed<T> } = {
 };
 
 /**
- * A map of functions rather than three `parse` calls in a `switch`, for two
- * things the compiler then checks and one it does not.
- *
- * What it checks: the **return** type rejects a key wired to the wrong schema —
- * `rich_text: (seed) => subsectionListPageBodySchema.parse(seed)` fails with
- * "missing the following properties: content, audioAssets, imageAssets" — and
- * the **parameter** type rejects a *call* that passes another variant's seed,
- * `PARSERS.rich_text(SEEDS.subsection_list)` being a TS2345. Indexing this and
- * `SEEDS` on the same generic key is what lets `emptyBodyFor` return a narrowed
- * body without a cast.
+ * A map rather than a `switch`, because a `switch` over a generic `T` cannot
+ * narrow what it returns without a cast — and a cast believes the seed instead
+ * of checking it, which is the hole `PageBodySeed` exists to close. Indexing
+ * this and `SEEDS` on one generic key is what lets `emptyBodyFor` return a
+ * narrowed body cast-free, and the return type rejects a key wired to another
+ * variant's schema.
  *
  * What it does not check: a parser that ignores its parameter and names a seed
  * itself, `rich_text: () => richTextPageBodySchema.parse(SEEDS.subsection_list)`.
- * `parse` takes `unknown`, so that compiles and throws at run time. Nothing here
- * makes it inexpressible; what catches it is `page-body.spec.ts`, which parses
- * every type through `emptyBodyFor` and compares the result against a seed
- * written independently of this file.
+ * `parse` takes `unknown`, so that compiles and throws at run time. What catches
+ * it is `page-body.spec.ts`, which parses every type through `emptyBodyFor` and
+ * compares the result against a seed written independently of this file.
  */
 const PARSERS: {
   [T in PageType]: (seed: PageBodySeed<T>) => Extract<PageBody, { type: T }>;
