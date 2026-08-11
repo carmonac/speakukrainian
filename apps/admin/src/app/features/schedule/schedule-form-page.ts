@@ -1,4 +1,13 @@
-import { Component, DestroyRef, computed, inject, input, signal, type OnInit } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+  type OnInit,
+} from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -264,26 +273,17 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
     return anchor === null ? {} : this.weekOf(anchor);
   });
 
+  constructor() {
+    // An effect and not `ngOnInit`, so it runs again whenever the route rebinds
+    // `formData()` — see `populate` for what that costs when it does not.
+    effect(() => this.populate());
+  }
+
   ngOnInit(): void {
-    const data = this.formData();
-    this.form.setValue(
-      toControlValue(
-        initialFormValue(
-          data.slot,
-          data.requestedDate,
-          data.requestedTime,
-          data.viewZone,
-          new Date(),
-        ),
-      ),
-    );
-    this.form.markAsPristine();
-
-    if (this.isBooked()) {
-      this.form.disable();
-    }
-    this.syncRepeatGroup(this.form.controls.repeats.value);
-
+    // These three are subscriptions on controls that outlive any one slot, so
+    // they are set up once and deliberately stay out of `populate` — running
+    // them again per slot would stack a second, then a third, handler on the
+    // same control.
     this.form.controls.repeats.valueChanges
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((repeats) => this.syncRepeatGroup(repeats));
@@ -301,6 +301,56 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
       this.overlapMessage.set(null);
       this.conflictId.set(null);
     });
+  }
+
+  /**
+   * Fills the form from the slot the route resolved — on **every** `formData()`,
+   * never once.
+   *
+   * `/schedule/:id` → `/schedule/:id` reuses this component under Angular's
+   * default `RouteReuseStrategy` (`future.routeConfig === curr.routeConfig`),
+   * and "Open the conflicting slot" offers exactly that navigation. Populating
+   * in `ngOnInit` therefore left the previous slot's date, times, zone and note
+   * on screen under the new slot's id, and the next Save wrote them onto it —
+   * and `form.disable()` running once meant a booked slot arrived at that way
+   * showed its read-only banner over fully editable controls. `.agent/plans/issue-5.md`
+   * predicted this the day sibling navigation was added.
+   *
+   * So everything the arrival of a slot decides belongs here: the values, the
+   * booked lock and its counterpart, the repeat group, the pristine/untouched
+   * state and the refusal bound to the previous slot's save.
+   */
+  private populate(): void {
+    const data = this.formData();
+    this.form.setValue(
+      toControlValue(
+        initialFormValue(
+          data.slot,
+          data.requestedDate,
+          data.requestedTime,
+          data.viewZone,
+          new Date(),
+        ),
+      ),
+    );
+
+    if (this.isBooked()) {
+      if (this.form.enabled) {
+        this.form.disable();
+      }
+    } else if (this.form.disabled) {
+      // The way back out of a booked slot. `enable()` reaches every child, so
+      // the repeat group is re-decided below rather than left open.
+      this.form.enable();
+    }
+    this.syncRepeatGroup(this.form.controls.repeats.value);
+
+    this.form.markAsPristine();
+    // A 409 leaves the time fields touched, which is what shows an error under
+    // `showOnceEdited`. A different slot has earned none of that.
+    this.form.markAsUntouched();
+    this.overlapMessage.set(null);
+    this.conflictId.set(null);
   }
 
   hasUnsavedChanges(): boolean {

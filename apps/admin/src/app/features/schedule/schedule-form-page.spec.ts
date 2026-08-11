@@ -24,6 +24,9 @@ import { routes } from './schedule.routes';
 const MADRID = 'Europe/Madrid';
 const KYIV = 'Europe/Kyiv';
 const KIEV = 'Europe/Kiev';
+const NEW_YORK = 'America/New_York';
+const PHOENIX = 'America/Phoenix';
+const DENVER = 'America/Denver';
 
 /**
  * The zone list a runtime hands over, cut to four entries and pinned here.
@@ -33,7 +36,7 @@ const KIEV = 'Europe/Kiev';
  * that it carries `Europe/Kiev` and **not** `Europe/Kyiv`, exactly as the real
  * list does.
  */
-const SUPPORTED = [KIEV, MADRID, 'America/New_York', 'UTC'];
+const SUPPORTED = [KIEV, MADRID, NEW_YORK, 'UTC'];
 
 /** Any other admin screen, so the form can be left for somewhere. */
 @Component({ selector: 'app-elsewhere-stub', template: 'elsewhere' })
@@ -367,11 +370,44 @@ describe('ScheduleFormPage', () => {
 
     // Chromium answers `Europe/Kiev` for a machine set to `Europe/Kyiv`, so
     // comparing zone names alone draws the identical line twice for this
-    // product's primary audience.
+    // product's primary audience. The zone assertion is what says the form
+    // really repainted onto the second slot — without it this half asserted
+    // `kyiv-1` a second time and passed however the rule was written.
     await harness.navigateByUrl('/schedule/kiev-1');
     harness.detectChanges();
+    expect(zoneText(harness)).toBe(KIEV);
     expect(find(harness, '.slot-form__interval-own')).toBe('10:00–11:00');
     expect(root(harness).querySelector('.slot-form__browser-interval')).toBeNull();
+  });
+
+  it('decides the second line on what it would say, not on the two zone names', async () => {
+    // Phoenix and Denver are two unrelated names on one offset in winter and on
+    // two in summer, so the pair separates "the names differ" from "the line
+    // would differ" without leaning on the Kyiv/Kiev spelling at all.
+    setup({
+      slots: [
+        slot('phoenix-jan', {
+          timeZone: PHOENIX,
+          startsAt: '2026-01-15T17:00:00Z',
+          endsAt: '2026-01-15T18:00:00Z',
+        }),
+        slot('phoenix-jul', {
+          timeZone: PHOENIX,
+          startsAt: '2026-07-15T17:00:00Z',
+          endsAt: '2026-07-15T18:00:00Z',
+        }),
+      ],
+      viewZone: DENVER,
+    });
+
+    const harness = await open('/schedule/phoenix-jan');
+    expect(find(harness, '.slot-form__interval-own')).toBe('10:00–11:00');
+    expect(root(harness).querySelector('.slot-form__browser-interval')).toBeNull();
+
+    await harness.navigateByUrl('/schedule/phoenix-jul');
+    harness.detectChanges();
+    expect(find(harness, '.slot-form__interval-own')).toBe('10:00–11:00');
+    expect(find(harness, '.slot-form__browser-interval')).toContain('11:00–12:00');
   });
 
   it('marks a slot that runs past midnight rather than refusing it', async () => {
@@ -580,5 +616,96 @@ describe('ScheduleFormPage', () => {
     await open('/schedule/missing');
 
     expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+  });
+
+  it('repaints onto the slot it was sent to rather than keeping the last one’s values', async () => {
+    // `/schedule/:id` → `/schedule/:id` reuses the component, and "Open the
+    // conflicting slot" is exactly that navigation. Populating once meant the
+    // slot arrived at wore the slot left behind, and the next Save wrote those
+    // values onto it.
+    const recorded = setup({
+      slots: [
+        slot('a', { note: { en: 'Slot A' } }),
+        slot('b', {
+          timeZone: NEW_YORK,
+          startsAt: '2026-03-09T14:00:00Z',
+          endsAt: '2026-03-09T15:30:00Z',
+          note: { en: 'Slot B' },
+        }),
+      ],
+    });
+    const harness = await open('/schedule/a');
+    fill(harness, '.slot-form__start', '14:30');
+    fill(harness, '.slot-form__end', '15:30');
+
+    await harness.navigateByUrl('/schedule/b');
+    harness.detectChanges();
+
+    expect(field(harness, '.slot-form__date').value).toBe('2026-03-09');
+    expect(field(harness, '.slot-form__start').value).toBe('10:00');
+    expect(field(harness, '.slot-form__end').value).toBe('11:30');
+    expect(zoneText(harness)).toBe(NEW_YORK);
+
+    await click(harness, '.slot-form__save');
+
+    // Nothing was edited on B, so the only thing on the wire is its own note,
+    // which `buildSlotPatch` always resends for a slot that has one. Carrying
+    // A's form turned B into a 23.5-hour Madrid slot with A's note.
+    expect(recorded.updated).toEqual([{ id: 'b', input: { note: { en: 'Slot B' } } }]);
+  });
+
+  it('arrives at another slot with no unsaved changes of its own', async () => {
+    const recorded = setup({ slots: [slot('a'), slot('b')] });
+    const harness = await open('/schedule/a');
+    fill(harness, '.slot-form__start', '14:30');
+
+    await harness.navigateByUrl('/schedule/b');
+    harness.detectChanges();
+    await harness.navigateByUrl('/sections');
+
+    // One dialog for leaving A dirty, and none for leaving B, which was never
+    // edited: a form that stayed dirty across the move would prompt about edits
+    // belonging to a slot that is no longer on screen.
+    expect(recorded.dialogs).toBe(1);
+    expect(TestBed.inject(Router).url).toBe('/sections');
+  });
+
+  it('locks the controls when the slot it was sent to is booked', async () => {
+    setup({ slots: [slot('open-1'), slot('taken', { status: 'booked', bookedBy: 'learner' })] });
+    const harness = await open('/schedule/open-1');
+    fill(harness, '.slot-form__start', '14:30');
+
+    await harness.navigateByUrl('/schedule/taken');
+    harness.detectChanges();
+
+    // The banner rendered from the first pass; the disabling did not, so the
+    // read-only screen sat over fully editable controls holding another slot's
+    // values.
+    expect(find(harness, '.slot-form__booked')).toBe(BOOKED_READ_ONLY);
+    expect(field(harness, '.slot-form__date').disabled).toBe(true);
+    expect(field(harness, '.slot-form__start').disabled).toBe(true);
+    expect(field(harness, '.slot-form__end').disabled).toBe(true);
+    expect(root(harness).querySelector('.slot-form__save')).toBeNull();
+  });
+
+  it('unlocks them again on the way out of a booked slot', async () => {
+    const recorded = setup({
+      slots: [slot('taken', { status: 'booked', bookedBy: 'learner' }), slot('open-1')],
+    });
+    const harness = await open('/schedule/taken');
+
+    await harness.navigateByUrl('/schedule/open-1');
+    harness.detectChanges();
+
+    expect(root(harness).querySelector('.slot-form__booked')).toBeNull();
+    expect(field(harness, '.slot-form__date').disabled).toBe(false);
+    expect(field(harness, '.slot-form__start').disabled).toBe(false);
+
+    fill(harness, '.slot-form__start', '09:30');
+    await click(harness, '.slot-form__save');
+
+    expect(recorded.updated).toEqual([
+      { id: 'open-1', input: { startsAt: '2026-03-06T08:30:00.000Z' } },
+    ]);
   });
 });
