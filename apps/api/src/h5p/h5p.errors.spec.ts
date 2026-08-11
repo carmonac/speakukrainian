@@ -1,7 +1,7 @@
 import { HttpException, InternalServerErrorException } from '@nestjs/common';
 import { AggregateH5pError, H5pError } from '@lumieducation/h5p-server';
 import { describe, expect, it } from 'vitest';
-import { toHttpException } from './h5p.errors.js';
+import { mapH5pErrors, toHttpException } from './h5p.errors.js';
 
 function bodyOf(exception: HttpException): Record<string, unknown> {
   const payload = exception.getResponse();
@@ -230,5 +230,30 @@ describe('toHttpException', () => {
     ).toBeNull();
     expect(toHttpException('boom')).toBeNull();
     expect(toHttpException(undefined)).toBeNull();
+  });
+});
+
+describe('mapH5pErrors', () => {
+  it('returns what the operation resolved with when nothing failed', async () => {
+    await expect(mapH5pErrors(async () => 'the model')).resolves.toBe('the model');
+  });
+
+  it('turns an error about the request into its HTTP answer', async () => {
+    const failing = mapH5pErrors(async () => {
+      throw new H5pError('h5p-player:content-missing', {}, 404);
+    });
+
+    await expect(failing).rejects.toMatchObject({
+      status: 404,
+      response: { message: 'That exercise does not exist.' },
+    });
+  });
+
+  it('rethrows a server fault untouched, so it stays a 500', async () => {
+    // The half that matters: a bucket that was unreachable must not reach the
+    // caller as a sentence about their file.
+    const outage = new Error('ECONNRESET');
+
+    await expect(mapH5pErrors(async () => Promise.reject(outage))).rejects.toBe(outage);
   });
 });

@@ -192,6 +192,30 @@ export function toHttpException(error: unknown): HttpException | null {
   );
 }
 
+/**
+ * Runs an operation that calls into the H5P library, with its errors already
+ * mapped onto HTTP: what `toHttpException` can attribute to the request is
+ * thrown as an `HttpException`, and everything else is rethrown untouched so it
+ * stays a 500.
+ *
+ * It lives here beside `toHttpException` rather than as a private helper on a
+ * service because every service that drives the library needs exactly this
+ * decision — the player's read paths, the editor's ajax surface and the save
+ * path to come — and the same four lines restated once per service is four
+ * places for "which errors are the caller's fault" to drift apart.
+ */
+export async function mapH5pErrors<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const http = toHttpException(error);
+    if (http) {
+      throw http;
+    }
+    throw error;
+  }
+}
+
 /** The backstop for the two families of plain `Error` the zip reader raises. */
 function unreadableArchiveException(error: unknown): HttpException | null {
   if (!(error instanceof Error)) {

@@ -2,7 +2,7 @@ import type { Readable } from 'node:stream';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { H5PAjaxEndpoint, H5PEditor, H5pError } from '@lumieducation/h5p-server';
 import type { IUser } from '@lumieducation/h5p-server';
-import { toHttpException } from './h5p.errors.js';
+import { mapH5pErrors } from './h5p.errors.js';
 import type { RangeCallback } from './h5p.responses.js';
 import { H5P_AJAX_ENDPOINT, H5P_EDITOR } from './h5p.tokens.js';
 
@@ -123,7 +123,7 @@ type TemporaryFileRangeCallback = Parameters<H5PAjaxEndpoint['getTemporaryFile']
  * mapped onto HTTP.
  *
  * The counterpart of `H5pServeService` on the authoring side, and the mapping
- * belongs here for the same reason: `toHttpException` returning `null` is the
+ * belongs here for the same reason: what `mapH5pErrors` declines to map is the
  * decision that an error is *this server's* fault, which is a judgement about
  * the library's behaviour rather than about the request.
  */
@@ -140,7 +140,7 @@ export class H5pEditorService {
   ) {}
 
   async getAjax(request: GetAjaxRequest, user: IUser): Promise<GetAjaxResult> {
-    return this.mapErrors(async () => {
+    return mapH5pErrors(async () => {
       assertAllowedAction(request.action, GET_AJAX_ACTIONS);
 
       return this.ajax.getAjax(
@@ -155,7 +155,7 @@ export class H5pEditorService {
   }
 
   async postAjax(request: PostAjaxRequest, user: IUser): Promise<PostAjaxResult> {
-    return this.mapErrors(async () => {
+    return mapH5pErrors(async () => {
       assertAllowedAction(request.action, POST_AJAX_ACTIONS);
 
       if (request.action === 'library-upload' && !request.packageUpload) {
@@ -193,7 +193,7 @@ export class H5pEditorService {
     user: IUser,
     range: RangeCallback,
   ): Promise<TemporaryFileResult> {
-    return this.mapErrors(async () => {
+    return mapH5pErrors(async () => {
       const file = await this.ajax.getTemporaryFile(
         filename,
         user,
@@ -245,22 +245,6 @@ export class H5pEditorService {
       this.logger.warn(
         `Sweeping expired H5P temporary files failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-    }
-  }
-
-  /**
-   * Everything the library raises that is about the request becomes an
-   * `HttpException`; everything else is rethrown untouched so it stays a 500.
-   */
-  private async mapErrors<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      const http = toHttpException(error);
-      if (http) {
-        throw http;
-      }
-      throw error;
     }
   }
 }
