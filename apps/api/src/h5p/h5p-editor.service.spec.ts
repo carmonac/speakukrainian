@@ -175,6 +175,39 @@ describe('H5pEditorService', () => {
       expect(harness.postAjax).not.toHaveBeenCalled();
     });
 
+    it('refuses files with no file part, rather than letting it be a 500', async () => {
+      // `postAjax` validates and parses `field` first, so a well-formed body
+      // gets all the way to `H5PEditor.saveContentFile`, which reads
+      // `file.mimetype` unconditionally — a `TypeError` and a 500 for a
+      // request that simply left a part out.
+      const status = await statusOf(
+        harness.service.postAjax(
+          { action: 'files', body: { field: '{"type":"audio","name":"file"}' } },
+          EDITOR,
+        ),
+      );
+
+      expect(status).toBe(400);
+      expect(harness.postAjax).not.toHaveBeenCalled();
+    });
+
+    it.each([['image'], ['video'], ['audio'], ['file']])(
+      'refuses files with no file part whatever the field type says (%s)',
+      async (type) => {
+        // The three media types are refused by the library's own mimetype check
+        // — after it has already dereferenced the file. `file` reaches further
+        // in still, so no field type may be relied on to fail safely.
+        const status = await statusOf(
+          harness.service.postAjax(
+            { action: 'files', body: { field: JSON.stringify({ type, name: 'file' }) } },
+            EDITOR,
+          ),
+        );
+
+        expect(status).toBe(400);
+      },
+    );
+
     it('passes an empty object for a request that carried no body at all', async () => {
       // `postAjax` does `'libraries' in body` on three of its five branches, so
       // `undefined` is `TypeError: Cannot use 'in' operator` and a 500. A 400

@@ -55,3 +55,48 @@ export function editorLanguage(value: unknown): string | undefined {
   }
   return value;
 }
+
+/**
+ * `LibraryName.validateMachineName`'s rule, restated for the same reason the
+ * language pattern is: the library refuses everything else with a plain
+ * `Error`, which `toHttpException` declines to map, so
+ * `?machineName=../../etc` would answer 500 for a query string the caller
+ * typed. No traversal follows from it — `libraryPrefix` refuses the name a
+ * second time — but a 500 is the wrong thing to tell a caller either way.
+ */
+const MACHINE_NAME = /^[\w.]+$/;
+
+/** The `?machineName` a caller asked for, or `undefined` when they asked for none. */
+export function editorMachineName(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || !MACHINE_NAME.test(value)) {
+    throw new BadRequestException('That is not a valid H5P library name.');
+  }
+  return value;
+}
+
+/**
+ * A `?majorVersion` or `?minorVersion`, or `undefined` when the caller asked
+ * for none.
+ *
+ * Left as the string the endpoint expects: it calls `.toString()` on both and
+ * then `Number.parseInt`, and handing it a number here would only make this
+ * route's contract differ from the library's for no gain. What has to happen
+ * here is the *refusal* — `LibraryName.validate` raises a plain `Error` for a
+ * version that does not parse, and a plain `Error` is a 500.
+ *
+ * An absent version is deliberately left to the endpoint, which answers its own
+ * 400 naming all three parameters at once; only a version the caller actually
+ * typed is judged here.
+ */
+export function editorLibraryVersion(value: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || Number.isNaN(Number.parseInt(value, 10))) {
+    throw new BadRequestException('That is not a valid H5P library version.');
+  }
+  return value;
+}

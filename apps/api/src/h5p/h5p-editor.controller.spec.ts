@@ -173,6 +173,54 @@ describe('H5pEditorController', () => {
       },
     );
 
+    it.each([['../../etc'], ['H5P Multi Choice'], ['H5P.Multi/Choice'], ['']])(
+      'refuses the machine name %j with a 400 and never reaches the service',
+      async (machineName) => {
+        // `LibraryName.validateMachineName` refuses these with a plain `Error`
+        // — a 500 for a query string the caller typed. No traversal follows
+        // from the first one, since `libraryPrefix` refuses it again, but the
+        // status is wrong either way.
+        await expect(
+          controller.ajaxGet('libraries', machineName, '1', '16', 'en', CALLER),
+        ).rejects.toThrow(BadRequestException);
+        expect(stub.recorded.gets).toEqual([]);
+      },
+    );
+
+    it.each([
+      ['a non-numeric major', 'x', '16'],
+      ['a non-numeric minor', '1', 'y'],
+      ['an empty major', '', '16'],
+      ['a word for a version', 'one', 'two'],
+    ])('refuses %s with a 400 and never reaches the service', async (_shape, major, minor) => {
+      // `LibraryName.validate` is where these are noticed, and it raises a
+      // plain `Error`, which the mapper declines: a 500.
+      await expect(
+        controller.ajaxGet('libraries', 'H5P.MultiChoice', major, minor, 'en', CALLER),
+      ).rejects.toThrow(BadRequestException);
+      expect(stub.recorded.gets).toEqual([]);
+    });
+
+    it('leaves an absent version to the endpoint, which names all three at once', async () => {
+      // The library's own 400 for `libraries` with no versions is a better
+      // answer than one this route invents, and it is the *invalid* version —
+      // not the missing one — that was the 500.
+      await controller.ajaxGet('libraries', 'H5P.MultiChoice', undefined, undefined, 'en', CALLER);
+
+      expect(stub.recorded.gets[0]?.request).toMatchObject({
+        machineName: 'H5P.MultiChoice',
+        majorVersion: undefined,
+        minorVersion: undefined,
+      });
+    });
+
+    it('accepts the versions the endpoint accepts, unparsed', async () => {
+      await controller.ajaxGet('libraries', 'H5P.MultiChoice', '1', '16', 'en', CALLER);
+
+      expect(stub.recorded.gets[0]?.request.majorVersion).toBe('1');
+      expect(stub.recorded.gets[0]?.request.minorVersion).toBe('16');
+    });
+
     it('treats an absent language as none rather than as a bad one', async () => {
       await controller.ajaxGet('content-type-cache', undefined, undefined, undefined, '', CALLER);
 

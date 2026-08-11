@@ -162,11 +162,15 @@ export class H5pEditorService {
         // `postAjax` reads `libraryUploadFile.name` before anything else, so
         // without this the request is a `TypeError` and a 500 instead of the
         // 400 a missing part deserves.
-        throw new H5pError(
-          'malformed-request',
-          { error: 'the request must carry a package in the "h5p" field' },
-          400,
-        );
+        throw missingPart('h5p');
+      }
+
+      if (request.action === 'files' && !request.upload) {
+        // The same defect one action over, and it survives the body being
+        // well formed: `postAjax` validates and parses `field` and then hands
+        // the missing part to `H5PEditor.saveContentFile`, which reads
+        // `file.mimetype` unconditionally.
+        throw missingPart('file');
       }
 
       return this.ajax.postAjax(
@@ -259,6 +263,22 @@ export class H5pEditorService {
       throw error;
     }
   }
+}
+
+/**
+ * A `POST /ajax` action that needs an uploaded part and did not get one.
+ *
+ * `malformed-request` rather than an id of this API's own, because that is the
+ * library's own answer to a request it cannot use and it is what the same
+ * request gets when the *body* is the part that is missing — one sentence for
+ * one fact, whichever half of the request was left out.
+ */
+function missingPart(field: string): H5pError {
+  return new H5pError(
+    'malformed-request',
+    { error: `the request must carry a file in the "${field}" field` },
+    400,
+  );
 }
 
 function assertAllowedAction(

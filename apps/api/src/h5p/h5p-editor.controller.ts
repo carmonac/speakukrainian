@@ -22,7 +22,12 @@ import type { AuthenticatedUser } from '../auth/firebase-auth.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
 import type { Env } from '../config/configuration.js';
 import { H5pEditorService, type AjaxUpload } from './h5p-editor.service.js';
-import { editorLanguage, wildcardPath } from './h5p.request.js';
+import {
+  editorLanguage,
+  editorLibraryVersion,
+  editorMachineName,
+  wildcardPath,
+} from './h5p.request.js';
 import { pipePartialStream, pipeWholeStream, rangeCallbackFor } from './h5p.responses.js';
 import { H5pAjaxUpload } from './h5p.upload.decorator.js';
 import { h5pUserFor } from './h5p.user.js';
@@ -80,9 +85,13 @@ export class H5pEditorController {
   /**
    * `content-type-cache` and `libraries`.
    *
-   * The version parameters are passed through as strings: the endpoint calls
-   * `.toString()` on them itself and then `Number.parseInt`, so parsing them
-   * here would only move where a non-numeric one is noticed.
+   * **Every one of the four query parameters is judged here**, because the
+   * route owns them and the library does not answer for them: an illegal
+   * machine name, a non-numeric version and a malformed language code are all
+   * plain `Error`s out of `LibraryName.validate` and `validateLanguageCode`,
+   * which `toHttpException` correctly declines to map — so each is a 500 for a
+   * query string the caller typed. The versions stay strings, which is what the
+   * endpoint wants; what moves here is the refusal, not the parsing.
    */
   @Get('ajax')
   @Roles('editor')
@@ -97,7 +106,13 @@ export class H5pEditorController {
     const user = callerOf(caller);
 
     return this.editor.getAjax(
-      { action, machineName, majorVersion, minorVersion, language: editorLanguage(language) },
+      {
+        action,
+        machineName: editorMachineName(machineName),
+        majorVersion: editorLibraryVersion(majorVersion),
+        minorVersion: editorLibraryVersion(minorVersion),
+        language: editorLanguage(language),
+      },
       user,
     );
   }
