@@ -160,6 +160,9 @@ describe('buildTranslationFunction', () => {
     expect(translate('nosuchnamespace:key', 'uk')).toBe('nosuchnamespace:key');
     expect(translate('nocolon', 'uk')).toBe('nocolon');
     expect(translate(':leadingcolon', 'uk')).toBe(':leadingcolon');
+    // A namespace with nothing after it: the `separator === key.length - 1`
+    // guard, which without this would be an untested branch.
+    expect(translate('client:', 'uk')).toBe('client:');
   });
 
   it('does not read a file path out of the requested language', () => {
@@ -192,6 +195,16 @@ describe('buildTranslationFunction over a partial locale', () => {
     const translate = buildTranslationFunction(english, stub({ size: '' }));
 
     expect(translate('client:size', 'uk')).toBe('Size');
+  });
+
+  it('resolves nothing for a namespace with an empty key after it', () => {
+    // `client:` is a namespace and no key. Over the real dictionaries the
+    // outcome is the same either way, so the guard for it is only observable
+    // against a dictionary that stores something under the empty key — drop
+    // `separator === key.length - 1` and this answers `'заглушка'`.
+    const translate = buildTranslationFunction(english, stub({ '': 'заглушка' }));
+
+    expect(translate('client:', 'uk')).toBe('client:');
   });
 
   it('prefers the overlay over an upstream file for the same locale', () => {

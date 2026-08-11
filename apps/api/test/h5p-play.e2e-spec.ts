@@ -172,13 +172,15 @@ describe('h5p serving (e2e)', () => {
       // decision ADR-007 recorded before #36 amended it. This is now the only
       // thing that says the `translationCallback` reached `H5PPlayer`: drop it
       // from the factory and every assertion below about `uk` and `es` fails.
-      const [fallback, ukrainian, ukrainianRegional, spanish, unknown] = await Promise.all([
-        request(server()).get(`/api/h5p/play/${exercise.contentId}`).expect(200),
-        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk`).expect(200),
-        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk-UA`).expect(200),
-        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=es`).expect(200),
-        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=zz`).expect(200),
-      ]);
+      const [fallback, ukrainian, ukrainianRegional, spanish, unknown, traversal] =
+        await Promise.all([
+          request(server()).get(`/api/h5p/play/${exercise.contentId}`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk-UA`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=es`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=zz`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=../../en`).expect(200),
+        ]);
 
       type Chrome = PlayerModelBody['integration']['l10n']['H5P'];
       const chrome = (response: { body: unknown }): Chrome =>
@@ -222,6 +224,12 @@ describe('h5p serving (e2e)', () => {
       expect(chrome(unknown)['fullscreen']).toBe('Fullscreen');
       // And no `?lang` at all is the documented default.
       expect(chrome(fallback)['fullscreen']).toBe('Fullscreen');
+
+      // `?lang` is a public query string, and the locales are read once at boot
+      // from a directory listing so it never becomes a path. Pinned end to end
+      // rather than only at the lookup, so that a controller which later builds
+      // a path out of it fails here.
+      expect(chrome(traversal)).toEqual(chrome(fallback));
     });
 
     it('serves every asset URL it advertises', async () => {
