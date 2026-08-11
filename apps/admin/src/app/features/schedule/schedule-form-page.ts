@@ -294,13 +294,12 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(() => this.form.controls.repeat.controls.until.updateValueAndValidity());
 
-    // Self-clearing, the way `applySlugConflict` is: the next value change
-    // re-runs the validators, which replace the whole `errors` object, and this
-    // drops the bound sentence alongside it.
-    this.form.valueChanges.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
-      this.overlapMessage.set(null);
-      this.conflictId.set(null);
-    });
+    // Self-clearing, the way `applySlugConflict` is — but on the whole form,
+    // because a 409 is about the interval and a free day is as much a fix as a
+    // free hour.
+    this.form.valueChanges
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => this.clearOverlapConflict());
   }
 
   /**
@@ -349,8 +348,7 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
     // A 409 leaves the time fields touched, which is what shows an error under
     // `showOnceEdited`. A different slot has earned none of that.
     this.form.markAsUntouched();
-    this.overlapMessage.set(null);
-    this.conflictId.set(null);
+    this.clearOverlapConflict();
   }
 
   hasUnsavedChanges(): boolean {
@@ -503,6 +501,28 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
     this.form.controls.startTime.setErrors({ overlap: true });
     this.form.controls.startTime.markAsTouched();
     this.form.controls.endTime.markAsTouched();
+  }
+
+  /**
+   * Drops a bound refusal, message **and** control error together.
+   *
+   * The error has to be cleared explicitly. `setErrors` is only replaced when
+   * that control's *own* validators re-run, and Angular re-runs them only when
+   * its own value changes — so clearing the two signals alone left an admin who
+   * fixed the overlap by moving the slot to a free **date** with Save dead
+   * behind `startTime`'s "Give the slot a start time." over a field holding a
+   * time. Any edit invalidates the refusal, because the API weighed the whole
+   * interval.
+   */
+  private clearOverlapConflict(): void {
+    this.overlapMessage.set(null);
+    this.conflictId.set(null);
+    const startTime = this.form.controls.startTime;
+    if (startTime.hasError('overlap')) {
+      // `emitEvent: false` keeps this out of the `form.valueChanges`
+      // subscription that called it.
+      startTime.updateValueAndValidity({ emitEvent: false });
+    }
   }
 }
 

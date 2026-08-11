@@ -237,6 +237,36 @@ async function openZones(harness: RouterTestingHarness): Promise<HTMLElement[]> 
   return Array.from(document.querySelectorAll<HTMLElement>('mat-option'));
 }
 
+async function pickZone(harness: RouterTestingHarness, zone: string): Promise<void> {
+  const option = (await openZones(harness)).find((entry) => text(entry) === zone);
+  if (option === undefined) {
+    throw new Error(`No ${zone} option to pick`);
+  }
+  option.click();
+  await harness.fixture.whenStable();
+  harness.detectChanges();
+}
+
+function saveDisabled(harness: RouterTestingHarness): boolean | undefined {
+  return root(harness).querySelector<HTMLButtonElement>('.slot-form__save')?.disabled;
+}
+
+/** A create form whose first save came back as the API's real overlap 409. */
+async function refusedAsOverlapping(): Promise<{
+  harness: RouterTestingHarness;
+  recorded: Recorded;
+}> {
+  const recorded = setup({
+    createFails: new HttpErrorResponse({
+      status: 409,
+      error: { message: 'overlaps the existing slot `taken-1` for this owner' },
+    }),
+  });
+  const harness = await open('/schedule/new?date=2026-03-09&time=09:00');
+  await click(harness, '.slot-form__save');
+  return { harness, recorded };
+}
+
 describe('ScheduleFormPage', () => {
   beforeEach(() => {
     history.replaceState({}, '');
@@ -543,23 +573,56 @@ describe('ScheduleFormPage', () => {
     expect(root(harness).querySelector('.slot-form__overlap')).toBeNull();
   });
 
-  it('clears a bound conflict as soon as a field is edited', async () => {
-    setup({
-      createFails: new HttpErrorResponse({
-        status: 409,
-        error: { message: 'overlaps the existing slot `taken-1` for this owner' },
-      }),
-    });
-    const harness = await open('/schedule/new?date=2026-03-09&time=09:00');
-    await click(harness, '.slot-form__save');
+  it('clears a bound conflict as soon as the start time is edited', async () => {
+    const { harness } = await refusedAsOverlapping();
 
     fill(harness, '.slot-form__start', '11:00');
 
     expect(root(harness).querySelector('.slot-form__overlap')).toBeNull();
     expect(root(harness).querySelector('.slot-form__conflict-link')).toBeNull();
-    expect(root(harness).querySelector<HTMLButtonElement>('.slot-form__save')?.disabled).toBe(
-      false,
-    );
+    expect(saveDisabled(harness)).toBe(false);
+  });
+
+  it('clears a bound conflict when the slot is moved to another date instead', async () => {
+    // Moving the slot to a free day is the most natural fix for an overlap, and
+    // it is not the field the refusal was bound to: `setErrors` is only replaced
+    // when the control's *own* validators re-run, so this left Save dead behind
+    // "Give the slot a start time." over a field holding 09:00.
+    const { harness, recorded } = await refusedAsOverlapping();
+
+    fill(harness, '.slot-form__date', '2026-03-19');
+
+    expect(root(harness).querySelector('.slot-form__overlap')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__start-error')).toBeNull();
+    expect(field(harness, '.slot-form__start').value).toBe('09:00');
+    expect(saveDisabled(harness)).toBe(false);
+
+    // Enabled and live: the second attempt really is sent.
+    await click(harness, '.slot-form__save');
+    expect(recorded.created).toHaveLength(2);
+    expect(recorded.created[1]?.startsAt).toBe('2026-03-19T07:00:00.000Z');
+  });
+
+  it('clears a bound conflict when the end time is edited instead', async () => {
+    const { harness } = await refusedAsOverlapping();
+
+    fill(harness, '.slot-form__end', '09:30');
+
+    expect(root(harness).querySelector('.slot-form__overlap')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__start-error')).toBeNull();
+    expect(saveDisabled(harness)).toBe(false);
+  });
+
+  it('clears a bound conflict when the zone is changed instead', async () => {
+    // A different zone is a different instant, so it is a fix for an overlap
+    // even though neither clock face moved.
+    const { harness } = await refusedAsOverlapping();
+
+    await pickZone(harness, MADRID);
+
+    expect(root(harness).querySelector('.slot-form__overlap')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__start-error')).toBeNull();
+    expect(saveDisabled(harness)).toBe(false);
   });
 
   it('refuses to edit a booked slot at all', async () => {
