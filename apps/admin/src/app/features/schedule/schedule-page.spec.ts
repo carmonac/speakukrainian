@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ListScheduleSlotsQuery, LocaleCode, ScheduleSlot } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { BROWSER_TIME_ZONE } from '../../core/time/browser-time-zone';
+import { SUPPORTED_TIME_ZONES } from '../../core/time/supported-time-zones';
 import { NO_SLOTS_THIS_WEEK, SLOTS_LOAD_FAILED } from './schedule-messages';
 import { ScheduleApi } from './schedule.api';
 import { routes } from './schedule.routes';
@@ -76,6 +77,11 @@ function setup(options: Options = {}): Recorded {
       const week = options.byWeek?.[query.from];
       return of<ScheduleSlot[]>(week ?? options.slots ?? []);
     },
+    // Only the form route reads one, and only the chip-link test goes there.
+    get: (id: string) => {
+      const found = (options.slots ?? []).find((entry) => entry.id === id);
+      return found === undefined ? throwError(() => new Error('not found')) : of(found);
+    },
   } as unknown as ScheduleApi;
 
   TestBed.configureTestingModule({
@@ -99,6 +105,9 @@ function setup(options: Options = {}): Recorded {
       // Never the machine's own zone: a leaked one fails as a slot in the wrong
       // day column, and only on a machine set to a different zone.
       { provide: BROWSER_TIME_ZONE, useValue: options.viewZone ?? KYIV },
+      // The chip-link test activates the form route, which reads it. Overridden
+      // here too, so nothing in this file depends on the runtime's own list.
+      { provide: SUPPORTED_TIME_ZONES, useValue: ['Europe/Kiev', MADRID] },
       {
         provide: LocalesStore,
         useValue: {
@@ -435,6 +444,55 @@ describe('SchedulePage', () => {
 
     expect(text(root(harness).querySelector('.schedule__failed'))).toBe(SLOTS_LOAD_FAILED);
     expect(root(harness).querySelector('.schedule__empty')).toBeNull();
+  });
+
+  it('opens New slot on today when today is in the week on screen', async () => {
+    setup();
+    const harness = await open('/schedule?from=2026-03-02');
+
+    // Today is Wednesday 4 March, which is in this week — so the new slot lands
+    // on the day the admin is most likely to mean.
+    expect(root(harness).querySelector('.schedule__new-slot')?.getAttribute('href')).toBe(
+      '/schedule/new?date=2026-03-04&time=09:00',
+    );
+  });
+
+  it('opens New slot on the visible week’s Monday when today is elsewhere', async () => {
+    setup();
+    const harness = await open('/schedule?from=2026-04-06');
+
+    // Otherwise New slot would open March's form while April is on screen.
+    expect(root(harness).querySelector('.schedule__new-slot')?.getAttribute('href')).toBe(
+      '/schedule/new?date=2026-04-06&time=09:00',
+    );
+  });
+
+  it('gives every day column its own add link', async () => {
+    setup();
+    const harness = await open('/schedule?from=2026-03-02');
+
+    const add = root(harness).querySelector(`[data-date="2026-03-06"] .schedule__add-slot`);
+    // A real anchor carrying that column's date, which is what makes `?date=`
+    // reachable by clicking rather than only by typing.
+    expect(add?.getAttribute('href')).toBe('/schedule/new?date=2026-03-06&time=09:00');
+  });
+
+  it('makes each chip a link to its own form', async () => {
+    setup({
+      slots: [
+        slot('madrid-morning', {
+          startsAt: '2026-03-06T08:00:00Z',
+          endsAt: '2026-03-06T09:00:00Z',
+        }),
+      ],
+    });
+    const harness = await open('/schedule?from=2026-03-02');
+
+    const link = chip(harness, 'madrid-morning').querySelector('.slot__link');
+    expect(link?.getAttribute('href')).toBe('/schedule/madrid-morning');
+
+    await click(harness, '.slot__link');
+    expect(TestBed.inject(Router).url).toBe('/schedule/madrid-morning');
   });
 
   it('says a genuinely empty week is empty, and still draws seven columns', async () => {

@@ -13,9 +13,11 @@ import {
   WEEK_OF,
 } from './schedule-messages';
 import type { ScheduleWeekData } from './schedule-week.resolver';
+import { DEFAULT_SLOT_START } from './schedule-form.model';
 import {
   addCivilDays,
   buildWeek,
+  defaultNewSlotDate,
   formatCivilDate,
   fullDateLabel,
   startOfWeek,
@@ -29,10 +31,10 @@ import {
  * on screen is derived from the resolved week.
  *
  * Read-only, so there is no `linkedSignal` and no local copy of the slots:
- * nothing here mutates, and a writable copy would be state with no writer. The
- * screen also links to neither `/schedule/new` nor `/schedule/:id` — creating
- * and editing slots are a separate issue and those routes do not exist yet, so
- * a link to one would land the admin on Not found.
+ * nothing here mutates, and a writable copy would be state with no writer.
+ * Authoring lives on `/schedule/new` and `/schedule/:id`, which this screen
+ * links to — every one of those links is a real anchor carrying query params,
+ * so a middle click opens a form in a new tab.
  */
 @Component({
   selector: 'app-schedule-page',
@@ -86,8 +88,22 @@ export class SchedulePage {
     from: formatCivilDate(startOfWeek(this.today())),
   }));
 
+  /**
+   * What the header's New slot link opens on: today when it is in the visible
+   * week, else that week's Monday, so the new slot lands in the week on screen.
+   * A day column's own link carries that column's date instead.
+   */
+  protected readonly newSlotParams = computed<Record<string, string>>(() => ({
+    date: formatCivilDate(defaultNewSlotDate(this.weekData().monday, this.today())),
+    time: DEFAULT_SLOT_START,
+  }));
+
   protected statusLabel(status: SlotStatus): string {
     return SLOT_STATUS_LABELS[status];
+  }
+
+  protected addSlotParams(date: string): Record<string, string> {
+    return { date, time: DEFAULT_SLOT_START };
   }
 
   private weekParams(days: number): Record<string, string> {
