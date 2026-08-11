@@ -771,4 +771,38 @@ describe('ScheduleFormPage', () => {
       { id: 'open-1', input: { startsAt: '2026-03-06T08:30:00.000Z' } },
     ]);
   });
+
+  it('closes the repeat group again after unlocking, so a later date leaves Save live', async () => {
+    // `form.enable()` reaches its children in declaration order with
+    // `onlySelf: true`, so `repeats.valueChanges` fires while `repeat` is still
+    // disabled and its subscription no-ops; the loop enables the group a moment
+    // later. Only the `syncRepeatGroup` in `populate` re-closes it. Left open,
+    // `until` holds the slot's own start date, and moving the slot *later* fails
+    // `untilNotBeforeValidator` inside a fieldset the edit route never draws —
+    // Save dead with no field on screen to explain it.
+    const recorded = setup({
+      slots: [
+        slot('taken', { status: 'booked', bookedBy: 'learner' }),
+        slot('open-1', { startsAt: '2026-03-20T08:00:00Z', endsAt: '2026-03-20T09:00:00Z' }),
+      ],
+    });
+    const harness = await open('/schedule/taken');
+
+    await harness.navigateByUrl('/schedule/open-1');
+    harness.detectChanges();
+
+    fill(harness, '.slot-form__date', '2026-03-25');
+
+    expect(root(harness).querySelector('.slot-form__repeat')).toBeNull();
+    expect(saveDisabled(harness)).toBe(false);
+
+    await click(harness, '.slot-form__save');
+
+    expect(recorded.updated).toEqual([
+      {
+        id: 'open-1',
+        input: { startsAt: '2026-03-25T08:00:00.000Z', endsAt: '2026-03-25T09:00:00.000Z' },
+      },
+    ]);
+  });
 });
