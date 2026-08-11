@@ -303,9 +303,20 @@ export class StorageService {
   }
 }
 
-/** Epoch when the object predates the field, so callers never see `Invalid Date`. */
+/**
+ * Epoch when the object carries no usable creation time — the field is absent,
+ * or its value does not parse — so callers never see an `Invalid Date`.
+ *
+ * The guarantee is what makes the value safe to compute with. Callers derive an
+ * expiry from this date and compare it against the clock, and every comparison
+ * against an `Invalid Date` is `false`: an object nothing knows the age of would
+ * silently outlive every sweep. One sentinel, recognisable and always in the
+ * past, is the only answer a caller can act on — and it belongs here, so that no
+ * caller has to decide for itself what an unusable creation time means.
+ */
 function createdAtOf(timeCreated: string | undefined): Date {
-  return timeCreated ? new Date(timeCreated) : new Date(0);
+  const parsed = timeCreated ? new Date(timeCreated) : null;
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed : new Date(0);
 }
 
 /**

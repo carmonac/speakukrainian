@@ -228,6 +228,17 @@ describe('StorageService.listUpTo', () => {
     expect(object?.sizeBytes).toBe(42);
     expect(object?.createdAt.toISOString()).toBe('2026-03-04T05:06:07.000Z');
   });
+
+  it('reports a creation time that does not parse as the epoch, not as an invalid date', async () => {
+    // An `Invalid Date` here would reach the sweep as an expiry that loses every
+    // comparison against the clock, so the object would never be deleted. The
+    // epoch is the same "age unknown, take it" answer a missing value gets.
+    const { service } = createService([{ objects: [{ name: 'a/x', timeCreated: 'not a date' }] }]);
+
+    const [object] = await service.listUpTo('a/', 10);
+
+    expect(object?.createdAt.getTime()).toBe(0);
+  });
 });
 
 describe('StorageService.listSubdirectories', () => {
