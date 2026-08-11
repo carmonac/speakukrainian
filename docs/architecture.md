@@ -272,10 +272,11 @@ being avoided is a label reading `client:fullscreen`, which is what `SimpleTrans
 `undefined`. A locale an admin adds at runtime therefore gets English chrome unless upstream ships
 it. Two named consequences of resolving the primary subtag rather than mapping BCP 47 onto
 upstream's filenames: `?lang=zh` gets English, because upstream has `zh-cn` and no `zh`; and
-`?lang=pt-BR` gets European rather than Brazilian Portuguese, because upstream names that file
-`pt_BR`, so only a caller spelling it upstream's way reaches it and the hyphen form every BCP 47
-client sends falls through to `pt`. (`es-MX` is unaffected only because upstream happens to ship
-both spellings.) Named and not fixed: this product's locales are `en`, `es` and `uk`, and a
+`?lang=pt-BR` is answered from `pt.json`, not from the `pt_BR.json` upstream also ships — two files
+that differ in 88 of their 167 keys — because upstream spells that name with an underscore, so only
+a caller spelling it the same way reaches it and the hyphen form every BCP 47 client sends falls
+through to the primary subtag. (`es-MX` is unaffected only because upstream happens to ship both
+spellings.) Named and not fixed: this product's locales are `en`, `es` and `uk`, and a
 filename mapping table is a second thing to keep in step with the dependency. The
 `metadata-semantics` and `copyright-semantics` namespaces are loaded so the editor's callback is no
 worse than the default it replaces, but no Ukrainian is authored for them: they are editor-facing

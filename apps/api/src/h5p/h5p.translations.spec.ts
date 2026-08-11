@@ -160,8 +160,10 @@ describe('buildTranslationFunction', () => {
     expect(translate('nosuchnamespace:key', 'uk')).toBe('nosuchnamespace:key');
     expect(translate('nocolon', 'uk')).toBe('nocolon');
     expect(translate(':leadingcolon', 'uk')).toBe(':leadingcolon');
-    // A namespace with nothing after it: the `separator === key.length - 1`
-    // guard, which without this would be an untested branch.
+    // A namespace with nothing after it. This pins the outcome — anything but
+    // the key echoed back fails here — not the `separator === key.length - 1`
+    // guard, which over the real dictionaries answers the same either way; the
+    // stub test below is what fails when that guard goes.
     expect(translate('client:', 'uk')).toBe('client:');
   });
 
