@@ -178,6 +178,14 @@ routes that create the garbage — an instance serving an upload is an instance 
 computed after the response and its failure is caught and logged, because an upload that succeeded
 may not answer 500 because a listing failed.
 
+One pass looks at `TEMP_SWEEP_BATCH_SIZE` objects (`StorageService.listUpTo`, one listing page) and
+not at the whole prefix. `StorageService.list` refuses a prefix past its 10 000-object ceiling
+rather than truncating, and `maybeSweep` swallows the rejection into a warning — so over `list` the
+sweep would switch itself off exactly when the accumulation it exists to prevent had happened, and
+stay off. The cost of the batch is that a listing is ordered by object name, so a prefix that stays
+wider than one page is only ever swept from the start of the alphabet; every temp file expires
+within `temporaryFileLifetime`, so a later pass reaches what an earlier one skipped.
+
 _IAM._ These adapters are the first code in the repo that calls `storage.objects.list` and
 deletes objects in bulk, so the Cloud Run service account needs `roles/storage.objectAdmin`
 (or `objectViewer` + `objectCreator` + `objectUser`), not merely create-and-read.
@@ -211,10 +219,20 @@ failure is caught, so the response is still well formed and nothing is ever cach
 is retried forever. What actually prevents it is that `h5p.module.ts` seeds that storage with
 `contentTypeCache: []` and `contentTypeCacheUpdate: Date.now()`; `get()` short-circuits on a truthy
 value and `[]` is truthy. The empty cache is not a placeholder: with `contentHubEnabled: false`
-there are no hub content types, so `[]` is the truth, and the fresh timestamp makes the response's
-`outdated` flag honest. `addLocalLibraries` still lists every installed library, which is what the
-editor's content-type selector reads. The e2e asserts `outdated === false`, which is the observable
-consequence of the seeding being read — a status check would pass either way.
+there are no hub content types, so `[]` is the truth. `addLocalLibraries` still lists every installed
+library, which is what the editor's content-type selector reads.
+
+The two seeds are independent and only one of them stops the request: `contentTypeCache` does, and
+`contentTypeCacheUpdate` only feeds `isOutdated()`. So the e2e watches `https.request`,
+`http.request` and `net.Socket.prototype.connect` for the duration of the call and asserts that no
+host outside this machine was reached — the app runs in the test process — with a companion test
+that drives a connection to a reserved name through the same probe, because an assertion that
+nothing was seen is worth nothing until something can be. `outdated === false` is asserted beside
+it, which is what pins the second seed. The **timestamp is honest only for
+`contentTypeCacheRefreshInterval`**, one day: an instance alive longer answers `outdated: true`,
+telling the editor client there are hub updates whose install action the allowlist then refuses with
+a 400. No outbound request follows from it — nothing this API exposes calls `updateIfNecessary` —
+so it is a misleading flag on a long-lived instance rather than a leak.
 
 _Base URL._ Every asset URL in a player model is generated from `H5P_BASE_URL`. It must be
 **absolute** wherever the page's origin differs from the API's, which is every local development

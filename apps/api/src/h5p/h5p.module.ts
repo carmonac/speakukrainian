@@ -101,10 +101,17 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
         // cached and the request is retried forever.
         //
         // The empty cache is not a placeholder: with `contentHubEnabled: false`
-        // there are no hub content types, so `[]` is the truth. The timestamp
-        // makes `isOutdated()` false, so the `outdated` flag in the response is
-        // honest too. `addLocalLibraries` still lists every installed library,
-        // which is what the editor's content-type selector actually needs.
+        // there are no hub content types, so `[]` is the truth.
+        // `addLocalLibraries` still lists every installed library, which is
+        // what the editor's content-type selector actually needs.
+        //
+        // The timestamp only makes `isOutdated()` false for
+        // `contentTypeCacheRefreshInterval` — one day — after boot, so an
+        // instance alive past that answers `outdated: true` to a client whose
+        // only response to it, installing from the hub, the action allowlist
+        // refuses with a 400. Nothing this API exposes calls
+        // `updateIfNecessary`, so no outbound request follows from it; it is a
+        // misleading flag on a long-lived instance and not a leak.
         await keyValueStorage.save('contentTypeCache', []);
         await keyValueStorage.save('contentTypeCacheUpdate', Date.now());
 
