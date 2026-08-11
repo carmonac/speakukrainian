@@ -10,6 +10,7 @@ export const H5P_CONFIG = Symbol('H5P_CONFIG');
 export const H5P_EDITOR = Symbol('H5P_EDITOR');
 export const H5P_PLAYER = Symbol('H5P_PLAYER');
 export const H5P_TEMPORARY_STORAGE = Symbol('H5P_TEMPORARY_STORAGE');
+export const H5P_TRANSLATE = Symbol('H5P_TRANSLATE');
 export const H5P_WORKING_DIRS = Symbol('H5P_WORKING_DIRS');
 
 /**

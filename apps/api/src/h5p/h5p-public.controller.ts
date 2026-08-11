@@ -89,10 +89,17 @@ export class H5pPublicController {
    * The model `@lumieducation/h5p-webcomponents` renders an exercise from.
    *
    * `?lang` selects the language of the player's own chrome — its fullscreen
-   * and copyright labels — and **today every value of it renders English**,
-   * because no `translationCallback` is wired. It is accepted and threaded
-   * through so that wiring one later needs no change to this route or to its
-   * callers. ADR-007 records that decision and what it will take to undo it.
+   * and copyright labels — and English is the fallback, per key, for anything
+   * the loaded locales do not cover. **Choosing it is the caller's job**: the
+   * public site is server-rendered and knows the reader's locale, so it passes
+   * that; absent `?lang` the answer is English. Exercise *content* is
+   * unaffected either way, since that comes out of the uploaded package. See
+   * ADR-007 and #36.
+   *
+   * `?lang` is deliberately not validated. `LibraryManager.getLanguage`
+   * swallows a lookup miss and the translation callback only reads maps already
+   * in memory, so a junk value is a 200 with English chrome — the right answer
+   * for a public read route, and never a filesystem path.
    *
    * Note for whoever adds the authoring routes: `POST h5p/content` means
    * "install an uploaded package" and must keep meaning that, so a save route

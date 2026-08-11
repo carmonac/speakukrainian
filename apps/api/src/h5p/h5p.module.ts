@@ -8,7 +8,11 @@ import {
   H5PPlayer,
   fsImplementations,
 } from '@lumieducation/h5p-server';
-import type { IPlayerModel, ITemporaryFileStorage } from '@lumieducation/h5p-server';
+import type {
+  IPlayerModel,
+  ITemporaryFileStorage,
+  ITranslationFunction,
+} from '@lumieducation/h5p-server';
 import type { Env } from '../config/configuration.js';
 import { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
@@ -28,9 +32,15 @@ import {
   H5P_EDITOR,
   H5P_PLAYER,
   H5P_TEMPORARY_STORAGE,
+  H5P_TRANSLATE,
   H5P_WORKING_DIRS,
   type H5pWorkingDirs,
 } from './h5p.tokens.js';
+import {
+  UK_OVERLAY,
+  buildTranslationFunction,
+  loadUpstreamTranslations,
+} from './h5p.translations.js';
 import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
 
 /**
@@ -63,6 +73,20 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
       useFactory: (config: ConfigService<Env, true>): H5PConfig =>
         createH5pConfig(config.get('H5P_BASE_URL', { infer: true })),
     },
+    {
+      /**
+       * How both the player and the editor localize the labels they render.
+       *
+       * Built once at boot from upstream's own 29 client locales plus the
+       * Ukrainian strings we author, because upstream ships none — see
+       * `h5p.translations.ts` for the per-key fallback rule and ADR-007 for why
+       * this is the one translation in the product that is not a
+       * `LocalizedText`.
+       */
+      provide: H5P_TRANSLATE,
+      useFactory: async (): Promise<ITranslationFunction> =>
+        buildTranslationFunction(await loadUpstreamTranslations(), UK_OVERLAY),
+    },
     H5pClientAssets,
     H5pContentStorage,
     H5pLibraryStorage,
@@ -80,12 +104,19 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
     },
     {
       provide: H5P_EDITOR,
-      inject: [H5P_CONFIG, H5pLibraryStorage, H5pContentStorage, H5P_TEMPORARY_STORAGE],
+      inject: [
+        H5P_CONFIG,
+        H5pLibraryStorage,
+        H5pContentStorage,
+        H5P_TEMPORARY_STORAGE,
+        H5P_TRANSLATE,
+      ],
       useFactory: async (
         config: H5PConfig,
         libraryStorage: H5pLibraryStorage,
         contentStorage: H5pContentStorage,
         temporaryStorage: ITemporaryFileStorage,
+        translate: ITranslationFunction,
       ): Promise<H5PEditor> => {
         // `InMemoryStorage` is only reachable through `fsImplementations`; it is
         // not a named export of the package root.
@@ -121,31 +152,54 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
         // the route, per CLAUDE.md rule 8, and the library never sees a request
         // that has not already passed it. No `contentUserDataStorage` either —
         // `trackResults` is off.
+        // **`translate` changes nothing observable today, and that is why it
+        // is here.** The editor's callback is reached only from
+        // `generateEditorIntegration`, which only `H5PEditor.render` calls, and
+        // no route renders an editor model yet; `getLibraryData`, which the
+        // `libraries` ajax action does expose, never goes through it. It is
+        // wired now so the editor-model route inherits the decision instead of
+        // making it a second time — and because the default it replaces is
+        // English-only for all three namespaces.
         return new H5PEditor(
           keyValueStorage,
           config,
           libraryStorage,
           contentStorage,
           temporaryStorage,
+          translate,
         );
       },
     },
     {
       provide: H5P_PLAYER,
-      inject: [H5pLibraryStorage, H5pContentStorage, H5P_CONFIG],
+      inject: [H5pLibraryStorage, H5pContentStorage, H5P_CONFIG, H5P_TRANSLATE],
       useFactory: (
         libraryStorage: H5pLibraryStorage,
         contentStorage: H5pContentStorage,
         config: H5PConfig,
+        translate: ITranslationFunction,
       ): H5PPlayer =>
         // The stock renderer returns an HTML page. Both front ends want the
         // model: the admin hands it to `@lumieducation/h5p-webcomponents` and
         // the public site will render it server-side. `IPlayerModel` is
         // JSON-safe, unlike `IEditorModel`, which carries a live `UrlGenerator`
         // whose only enumerable field is the whole server configuration.
-        new H5PPlayer(libraryStorage, contentStorage, config).setRenderer(
-          (model: IPlayerModel) => model,
-        ),
+        //
+        // The two `undefined`s are deliberate, not an accident of copy-paste:
+        // `translationCallback` is the sixth positional argument, and the
+        // fourth and fifth default correctly for `undefined` —
+        // `integrationObjectDefaults` is only ever spread, and `urlGenerator`
+        // is a default parameter of `new UrlGenerator(config)`. Getting the
+        // position wrong hands a function where the URL generator belongs and
+        // breaks every asset URL in the model.
+        new H5PPlayer(
+          libraryStorage,
+          contentStorage,
+          config,
+          undefined,
+          undefined,
+          translate,
+        ).setRenderer((model: IPlayerModel) => model),
     },
     {
       provide: H5P_AJAX_ENDPOINT,
