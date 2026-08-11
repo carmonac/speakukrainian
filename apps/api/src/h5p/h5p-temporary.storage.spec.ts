@@ -3,7 +3,8 @@ import type { ReadStream } from 'node:fs';
 import { H5PConfig, H5pError } from '@lumieducation/h5p-server';
 import type { IUser } from '@lumieducation/h5p-server';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { H5pTemporaryStorage } from './h5p-temporary.storage.js';
+import { MAX_STORAGE_LIST_RESULTS } from '../infra/storage/storage.service.js';
+import { H5pTemporaryStorage, TEMP_SWEEP_BATCH_SIZE } from './h5p-temporary.storage.js';
 import { InMemoryStorage } from './h5p.storage-fake.js';
 
 /**
@@ -230,6 +231,30 @@ describe('H5pTemporaryStorage', () => {
       expect(live?.expiresAt).toEqual(new Date(WRITTEN_AT.getTime() + LIFETIME_MS));
       expect(stale?.expiresAt.getTime()).toBeLessThan(NOW.getTime());
       expect(live?.expiresAt.getTime()).toBeGreaterThan(NOW.getTime());
+    });
+
+    it('answers a prefix far past the listing ceiling instead of failing closed', async () => {
+      // `StorageService.list` throws past `MAX_STORAGE_LIST_RESULTS`, and
+      // `maybeSweep` swallows that into a warning — so over `list` the sweep
+      // would switch itself off at 10 000 objects and stay off, which is
+      // exactly when the prefix it exists to keep small has grown. One batch
+      // that deletes something beats a listing that never returns.
+      for (let index = 0; index < MAX_STORAGE_LIST_RESULTS + 10; index += 1) {
+        const name = `bulk-${String(index).padStart(6, '0')}.png`;
+        objects.objects.set(`h5p/temp/${ALICE.id}/abandoned/${name}`, {
+          body: CLIP,
+          createdAt: LONG_AGO,
+        });
+      }
+
+      const files = await temporary.listFiles();
+
+      expect(files).toHaveLength(TEMP_SWEEP_BATCH_SIZE);
+      // A pass that returns a batch of files nothing may delete would be no
+      // better than the throw it replaces.
+      expect(files.filter((file) => file.expiresAt.getTime() < NOW.getTime()).length).toBe(
+        TEMP_SWEEP_BATCH_SIZE,
+      );
     });
 
     it('skips an object with no owner segment instead of throwing', async () => {

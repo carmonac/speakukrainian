@@ -154,6 +154,44 @@ export class StorageService {
   }
 
   /**
+   * At most `max` objects under `prefix`, in listing order, **deliberately
+   * truncated** rather than refused.
+   *
+   * The counterpart of `list` for a caller that only wants to *act* on objects
+   * and will be called again. For such a caller the cliff in `list` is the
+   * wrong answer twice over: it costs a full enumeration of a prefix nobody
+   * wanted materialised, and it fails hardest on exactly the prefix that has
+   * grown — so a sweep built on `list` stops working when the accumulation it
+   * exists to prevent has happened. A caller that needs the whole listing must
+   * still use `list`, because half a listing is worse than none.
+   *
+   * A GCS listing is ordered lexicographically by object name, so successive
+   * calls see the same window until objects in it are removed. That is what
+   * makes repeated truncated passes make progress, and it is also the limit
+   * worth knowing: a batch entirely made of objects the caller keeps is a pass
+   * that does nothing.
+   */
+  async listUpTo(prefix: string, max: number): Promise<StoredObject[]> {
+    const objects: StoredObject[] = [];
+
+    await this.eachPage({ prefix }, (files) => {
+      for (const file of files) {
+        if (objects.length >= max) {
+          break;
+        }
+        objects.push({
+          path: file.name,
+          sizeBytes: Number(file.metadata.size ?? 0),
+          createdAt: createdAtOf(file.metadata.timeCreated),
+        });
+      }
+      return objects.length < max;
+    });
+
+    return objects;
+  }
+
+  /**
    * Immediate pseudo-directories under `prefix`, without the trailing slash —
    * `h5p/libraries/` → `['H5P.Foo-1.0', 'H5P.Bar-1.2']`.
    */
@@ -240,7 +278,7 @@ export class StorageService {
    */
   private async eachPage(
     query: GetFilesOptions,
-    onPage: (files: File[], apiResponse: unknown) => void | Promise<void>,
+    onPage: (files: File[], apiResponse: unknown) => boolean | void | Promise<boolean | void>,
   ): Promise<void> {
     let next: GetFilesOptions | null = {
       ...query,
@@ -251,7 +289,11 @@ export class StorageService {
     while (next) {
       const page: GetFilesResponse = await this.bucket.getFiles(next);
       const [files, nextQuery, apiResponse] = page;
-      await onPage(files, apiResponse);
+      // A callback that returns `false` has seen enough, so the pages after it
+      // are never fetched.
+      if ((await onPage(files, apiResponse)) === false) {
+        return;
+      }
       next = (nextQuery as GetFilesOptions | null) ?? null;
     }
   }

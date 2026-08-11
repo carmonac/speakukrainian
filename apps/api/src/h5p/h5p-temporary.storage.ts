@@ -19,6 +19,25 @@ import {
 import { H5P_CONFIG } from './h5p.tokens.js';
 
 /**
+ * How many objects one `listFiles()` looks at.
+ *
+ * `ITemporaryFileStorage.listFiles` returns an array, so a listing is
+ * materialised whatever this is — and `StorageService.list` refuses a prefix
+ * wider than its ceiling rather than truncating, which would make the sweep
+ * fail permanently once `h5p/temp/` passed 10 000 objects: precisely when the
+ * accumulation it exists to prevent had happened. Its only caller,
+ * `TemporaryFileManager.cleanUp`, acts on what it is given and is called again
+ * on the next upload, so a batch is the right shape for it.
+ *
+ * One listing page, because this runs on the request path. The limit worth
+ * knowing: a listing is ordered by object name, so a pass whose batch holds
+ * only files an editor is still using deletes nothing — those files expire
+ * within `temporaryFileLifetime` and a later pass takes them, but a prefix that
+ * stays wider than the batch is only ever swept from the start of the alphabet.
+ */
+export const TEMP_SWEEP_BATCH_SIZE = 1_000;
+
+/**
  * The editor's scratch storage in Cloud Storage: `h5p/temp/<ownerId>/<filename>`.
  *
  * **The owner is a path prefix rather than an attribute**, which is what
@@ -126,10 +145,15 @@ export class H5pTemporaryStorage implements ITemporaryFileStorage {
    *
    * An object that does not parse into an owner and a filename is skipped
    * rather than thrown on: a stray object under `h5p/temp/` must not be able to
-   * stop the sweep for everybody.
+   * stop the sweep for everybody. `TEMP_SWEEP_BATCH_SIZE` is there for the same
+   * reason one size larger: neither a stray object nor a wide prefix may turn
+   * the sweep off.
    */
   async listFiles(user?: IUser): Promise<ITemporaryFile[]> {
-    const objects = await this.storage.list(user ? tempPrefix(user.id) : TEMP_ROOT_PREFIX);
+    const objects = await this.storage.listUpTo(
+      user ? tempPrefix(user.id) : TEMP_ROOT_PREFIX,
+      TEMP_SWEEP_BATCH_SIZE,
+    );
     const files: ITemporaryFile[] = [];
 
     for (const object of objects) {
