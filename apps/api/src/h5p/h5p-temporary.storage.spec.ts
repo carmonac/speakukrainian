@@ -257,6 +257,27 @@ describe('H5pTemporaryStorage', () => {
       );
     });
 
+    it('skips an object whose creation time the listing did not carry', async () => {
+      // The one direction the derivation may not fail in. A listing that comes
+      // back without `timeCreated` reads as the epoch, and `epoch + lifetime`
+      // is in the past — so dating this object would tell `cleanUp` to delete
+      // a file nothing knows the age of, along with every neighbour in the
+      // same listing. Not returning it leaks an object until a listing carries
+      // the time; returning it deletes an upload no route can restore.
+      objects.objects.set(`h5p/temp/${ALICE.id}/images/undated.png`, {
+        body: CLIP,
+        createdAt: new Date(0),
+      });
+
+      const swept = await temporary.listFiles();
+      const alices = await temporary.listFiles(ALICE);
+
+      expect(swept.map((file) => file.filename)).not.toContain('images/undated.png');
+      expect(swept).toHaveLength(3);
+      expect(alices.map((file) => file.filename)).not.toContain('images/undated.png');
+      expect(alices).toHaveLength(2);
+    });
+
     it('skips an object with no owner segment instead of throwing', async () => {
       // Anything under `h5p/temp/` that this adapter did not write. Throwing
       // here would stop the sweep for every owner, forever.

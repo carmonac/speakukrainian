@@ -159,7 +159,13 @@ exactly `now + temporaryFileLifetime`, so the expiry is a pure function of the w
 constant; storing it too would put a derived value in a second place that can disagree with the
 first. `StorageService.list` already returns `createdAt`, so `listFiles()` costs one listing and no
 extra round trips. The named cost is that changing `temporaryFileLifetime` re-dates every temp object
-already in the bucket, which for objects whose whole life is two hours is not a defect. The rejected
+already in the bucket, which for objects whose whole life is two hours is not a defect. **An object
+whose creation time the listing did not carry is skipped rather than dated**: `StorageService.list`
+maps a missing `timeCreated` to the epoch so callers never see an `Invalid Date`, and an expiry
+derived from the epoch is in the past for every lifetime — so reading the sentinel as a date would
+have the sweep delete every object in such a listing, an author's just-uploaded clip included.
+Leaking an object until a listing carries the time is recoverable; deleting a live upload is not,
+because no route can put it back. The rejected
 alternatives were a Firestore row (a second store that can disagree, with nothing to order the two
 writes against, because the row _is_ the only record of expiry), a companion `.metadata` object
 (N round trips where the derivation costs zero) and custom object metadata (needs two additions to

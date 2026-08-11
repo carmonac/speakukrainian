@@ -38,6 +38,18 @@ import { H5P_CONFIG } from './h5p.tokens.js';
 export const TEMP_SWEEP_BATCH_SIZE = 1_000;
 
 /**
+ * The creation time a listing that carried none comes back as.
+ *
+ * `StorageService.list` maps a missing `timeCreated` to the epoch so no caller
+ * ever sees an `Invalid Date`. For an expiry *derived* from that value it is
+ * the sentinel that matters most: `1970 + temporaryFileLifetime` is in the
+ * past for every conceivable lifetime, so a date read out of it says "delete
+ * this" about a file nothing knows the age of. No object is legitimately
+ * created at the epoch, so the value is unambiguous.
+ */
+const UNKNOWN_CREATION_TIME_MS = 0;
+
+/**
  * The editor's scratch storage in Cloud Storage: `h5p/temp/<ownerId>/<filename>`.
  *
  * **The owner is a path prefix rather than an attribute**, which is what
@@ -136,18 +148,26 @@ export class H5pTemporaryStorage implements ITemporaryFileStorage {
    * Every temporary file, or only one user's.
    *
    * `TemporaryFileManager.cleanUp` is the only caller that passes no user, and
-   * it deletes everything whose `expiresAt` is in the past — so the derivation
-   * below is what stands between a live editing session and its uploads
-   * disappearing underneath it. `StorageService.list` maps a missing
-   * `timeCreated` to the epoch, which would make every object look expired;
-   * `h5p-temporary.storage.spec.ts` drives two controlled creation times so
-   * that a live file surviving is asserted and not assumed.
+   * it deletes everything whose `expiresAt` is in the past — so what this
+   * method says about an object is a delete instruction, and the two things it
+   * cannot work out are both answered by leaving the object alone:
+   *
+   * An object whose creation time the listing did not carry
+   * (`UNKNOWN_CREATION_TIME_MS`) is skipped rather than dated from the epoch,
+   * which would expire it and every one of its neighbours in the same listing,
+   * the clip an author uploaded a minute ago included. Leaking an object is
+   * recoverable — a later listing that does carry the time sweeps it — and
+   * deleting a live upload is not, since no route can put it back.
    *
    * An object that does not parse into an owner and a filename is skipped
    * rather than thrown on: a stray object under `h5p/temp/` must not be able to
    * stop the sweep for everybody. `TEMP_SWEEP_BATCH_SIZE` is there for the same
    * reason one size larger: neither a stray object nor a wide prefix may turn
    * the sweep off.
+   *
+   * `h5p-temporary.storage.spec.ts` drives a controlled creation time for each
+   * case — one long past, one inside the lifetime and one absent — so that a
+   * live file surviving is asserted and not assumed.
    */
   async listFiles(user?: IUser): Promise<ITemporaryFile[]> {
     const objects = await this.storage.listUpTo(
@@ -159,6 +179,10 @@ export class H5pTemporaryStorage implements ITemporaryFileStorage {
     for (const object of objects) {
       const parsed = parseTempObjectPath(object.path);
       if (!parsed) {
+        continue;
+      }
+
+      if (object.createdAt.getTime() === UNKNOWN_CREATION_TIME_MS) {
         continue;
       }
 
