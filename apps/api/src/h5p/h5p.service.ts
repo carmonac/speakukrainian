@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { H5PEditor, LibraryName } from '@lumieducation/h5p-server';
-import type { IContentMetadata, IUser } from '@lumieducation/h5p-server';
+import type { IContentMetadata } from '@lumieducation/h5p-server';
 import {
   h5pSaveResultSchema,
   type H5pContent,
@@ -16,6 +16,7 @@ import { CONTENT_MISSING_MESSAGE, toHttpException } from './h5p.errors.js';
 import { assertSafePackageEntries } from './h5p.package-scan.js';
 import { contentPrefix, contentStoragePath } from './h5p.paths.js';
 import { H5P_EDITOR } from './h5p.tokens.js';
+import { h5pUserFor } from './h5p.user.js';
 
 @Injectable()
 export class H5pService {
@@ -39,9 +40,7 @@ export class H5pService {
    * questions truthfully.
    */
   async importPackage(file: Express.Multer.File, actorId: string): Promise<H5pSaveResult> {
-    // The permission system is `LaissezFaire`, so this user is only threaded
-    // through to the storage calls; authorization is the route's `@Roles`.
-    const user: IUser = { id: actorId, email: '', name: '', type: 'local' };
+    const user = h5pUserFor(actorId);
 
     try {
       // Before the library opens the package: `PackageImporter.extractPackage`

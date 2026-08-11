@@ -97,6 +97,18 @@ function packageEntries(options: PackageOptions = {}): RawZipEntry[] {
     },
     { name: `${MAIN_LIBRARY_DIR}/main.js`, content: 'window.SpeakTestMain = {};\n' },
     {
+      // Every runnable H5P library has one, and the editor's
+      // `GET /ajax?action=libraries` reads it: without it that route answers
+      // 404 for a library that is installed and fine. `json` is on
+      // `contentWhitelist`, which `libraryExtensionWhitelist` concatenates, so
+      // the package still validates.
+      name: `${MAIN_LIBRARY_DIR}/semantics.json`,
+      content: json([
+        { name: 'question', type: 'text', label: 'Question', widget: 'html' },
+        { name: 'clip', type: 'file', label: 'Pronunciation clip', optional: true },
+      ]),
+    },
+    {
       name: `${DEP_LIBRARY_DIR}/library.json`,
       content: json({
         title: 'Speak Test Dep',

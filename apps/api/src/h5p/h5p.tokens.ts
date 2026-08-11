@@ -14,13 +14,15 @@ export const H5P_WORKING_DIRS = Symbol('H5P_WORKING_DIRS');
 
 /**
  * Absolute paths of the local scratch directories, resolved once from
- * `H5P_TEMP_DIR` so multer and the temporary file storage cannot disagree
- * about where they are.
+ * `H5P_TEMP_DIR`.
+ *
+ * Only multer writes here, and only for the length of one request. The
+ * editor's temporary files are **not** local: they live in the bucket under
+ * `h5p/temp/<ownerId>/`, because a file written by one Cloud Run instance has
+ * to be readable by the next.
  */
 export interface H5pWorkingDirs {
   root: string;
-  /** Multer's destination for the incoming `.h5p`; emptied per request. */
+  /** Multer's destination for an incoming upload; emptied per request. */
   uploads: string;
-  /** Root of the editor's temporary file storage. */
-  editorTemp: string;
 }

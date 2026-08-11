@@ -52,9 +52,15 @@ export function createH5pConfig(baseUrl: string): H5PConfig {
     // nowhere to land.
     setFinishedEnabled: false,
 
-    // Keeps the server off `api.h5p.org` entirely: no content hub, no content
-    // type cache fetches, no usage statistics. That is a deployment property
-    // first and what makes the e2e hermetic second.
+    // No content hub, no usage statistics — but **these three settings alone do
+    // not keep the server off `api.h5p.org`**, and believing they did was a
+    // real defect. `ContentTypeCache.get()` falls through to `forceUpdate()` →
+    // `registerOrGetUuid()` whenever its key-value storage holds no cached
+    // value, and that is an HTTPS POST to `hubRegistrationEndpoint` on every
+    // `GET /ajax?action=content-type-cache`. `fetchingDisabled` does not
+    // prevent it; it is only a field in the registration payload. What actually
+    // prevents it is the seeded cache in `h5p.module.ts`, and this comment
+    // exists so that removing the seeding does not look free.
     contentHubEnabled: false,
     fetchingDisabled: 1,
     sendUsageStatistics: false,

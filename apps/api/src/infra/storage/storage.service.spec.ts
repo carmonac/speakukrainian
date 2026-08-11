@@ -175,6 +175,72 @@ describe('StorageService.list', () => {
   });
 });
 
+describe('StorageService.listUpTo', () => {
+  it('returns the first objects and stops asking for pages', async () => {
+    // The reason it exists: a caller that only acts on objects must not have to
+    // materialise a prefix wider than the ceiling to touch any of it, and must
+    // not pay for the pages it will never look at.
+    const { service, state } = createService([
+      { objects: [{ name: 'a/1' }, { name: 'a/2' }] },
+      { objects: [{ name: 'a/3' }] },
+    ]);
+
+    const objects = await service.listUpTo('a/', 2);
+
+    expect(objects.map((object) => object.path)).toEqual(['a/1', 'a/2']);
+    expect(state.queries).toHaveLength(1);
+  });
+
+  it('truncates inside a page rather than overshooting it', async () => {
+    const { service } = createService([{ objects: [{ name: 'a/1' }, { name: 'a/2' }] }]);
+
+    await expect(service.listUpTo('a/', 1)).resolves.toHaveLength(1);
+  });
+
+  it('returns everything under a prefix narrower than the batch', async () => {
+    const { service } = createService([
+      { objects: [{ name: 'a/1' }] },
+      { objects: [{ name: 'a/2' }] },
+    ]);
+
+    await expect(service.listUpTo('a/', 10)).resolves.toHaveLength(2);
+  });
+
+  it('does not throw where list would, which is the whole point of it', async () => {
+    const objects = (from: number, count: number): FakeObject[] =>
+      Array.from({ length: count }, (_unused, offset) => ({ name: `wide/${from + offset}` }));
+    const { service } = createService([
+      { objects: objects(0, MAX_STORAGE_LIST_RESULTS) },
+      { objects: objects(MAX_STORAGE_LIST_RESULTS, 5) },
+    ]);
+
+    await expect(service.list('wide/')).rejects.toThrow(/more than 10000 objects/);
+    await expect(service.listUpTo('wide/', 1_000)).resolves.toHaveLength(1_000);
+  });
+
+  it('reports the size and creation time the sweep derives an expiry from', async () => {
+    const { service } = createService([
+      { objects: [{ name: 'a/x', size: 42, timeCreated: '2026-03-04T05:06:07.000Z' }] },
+    ]);
+
+    const [object] = await service.listUpTo('a/', 10);
+
+    expect(object?.sizeBytes).toBe(42);
+    expect(object?.createdAt.toISOString()).toBe('2026-03-04T05:06:07.000Z');
+  });
+
+  it('reports a creation time that does not parse as the epoch, not as an invalid date', async () => {
+    // An `Invalid Date` here would reach the sweep as an expiry that loses every
+    // comparison against the clock, so the object would never be deleted. The
+    // epoch is the same "age unknown, take it" answer a missing value gets.
+    const { service } = createService([{ objects: [{ name: 'a/x', timeCreated: 'not a date' }] }]);
+
+    const [object] = await service.listUpTo('a/', 10);
+
+    expect(object?.createdAt.getTime()).toBe(0);
+  });
+});
+
 describe('StorageService.listSubdirectories', () => {
   it('returns the prefixes from every page, not only the last one', async () => {
     // The trap this pins: with auto-pagination the SDK accumulates files across

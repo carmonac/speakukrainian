@@ -1,7 +1,7 @@
 import { HttpException, InternalServerErrorException } from '@nestjs/common';
 import { AggregateH5pError, H5pError } from '@lumieducation/h5p-server';
 import { describe, expect, it } from 'vitest';
-import { toHttpException } from './h5p.errors.js';
+import { mapH5pErrors, toHttpException } from './h5p.errors.js';
 
 function bodyOf(exception: HttpException): Record<string, unknown> {
   const payload = exception.getResponse();
@@ -85,6 +85,62 @@ describe('toHttpException', () => {
     expect(exception?.getStatus()).toBe(status);
     expect(bodyOf(exception!)['message']).toBe(message);
     expect(bodyOf(exception!)['message']).not.toContain('package');
+  });
+
+  it.each([
+    ['malformed-request', 400, 'The editor sent a request this server could not understand.'],
+    [
+      'h5p-request:unsupported-ajax-action',
+      400,
+      'That editor action is not available on this server.',
+    ],
+    ['h5p-request:unusable-owner', 400, 'This account cannot store uploaded files on this server.'],
+    [
+      'storage-file-implementations:temporary-file-not-found',
+      404,
+      'That file is not in temporary storage. It may have expired.',
+    ],
+    ['invalid-main-library-name', 400, 'That is not a valid H5P library name.'],
+    [
+      'upload-validation-error',
+      400,
+      'That file could not be read as the kind of media the field expects.',
+    ],
+    ['missing-h5p-extension', 400, 'Upload a file with the .h5p extension.'],
+    ['library-not-found', 404, 'That library is not installed on this server.'],
+    ['library-missing', 404, 'That library is not installed on this server.'],
+  ] as const)('words %s for an author using the editor', (errorId, status, message) => {
+    // Every one of these is reachable from `GET`/`POST /api/h5p/ajax`. Without
+    // wording of its own each falls through to the generic sentence naming an
+    // id nobody outside this repo has seen.
+    const exception = toHttpException(new H5pError(errorId, { name: 'x' }, status));
+
+    expect(exception?.getStatus()).toBe(status);
+    expect(bodyOf(exception!)['message']).toBe(message);
+    expect(bodyOf(exception!)['message']).not.toContain('package');
+  });
+
+  it('reports a file type the editor may not upload as the author’s mistake, not a 500', () => {
+    // `H5PEditor.saveContentFile` raises this with no status argument, so
+    // `H5pError` defaults it to 500. Reported that way the author is told the
+    // server broke, and neither the rule nor the fix is anywhere in the answer.
+    const exception = toHttpException(
+      new H5pError('not-in-whitelist', { filename: 'evil.exe', 'files-allowed': 'png mp3' }),
+    );
+
+    expect(exception?.getStatus()).toBe(400);
+    expect(bodyOf(exception!)['message']).toBe(
+      'That kind of file cannot be uploaded into an exercise.',
+    );
+  });
+
+  it('leaves every other 500 from the library a 500', () => {
+    // The override above is a list of one id on purpose. A library install that
+    // timed out is this server's problem and must not become a 400 because it
+    // arrived through the same mapper.
+    expect(toHttpException(new H5pError('upload-package-failed-tmp', {}, 500))?.getStatus()).toBe(
+      500,
+    );
   });
 
   it('names the id for a 4xx it has no wording for, rather than saying nothing', () => {
@@ -174,5 +230,30 @@ describe('toHttpException', () => {
     ).toBeNull();
     expect(toHttpException('boom')).toBeNull();
     expect(toHttpException(undefined)).toBeNull();
+  });
+});
+
+describe('mapH5pErrors', () => {
+  it('returns what the operation resolved with when nothing failed', async () => {
+    await expect(mapH5pErrors(async () => 'the model')).resolves.toBe('the model');
+  });
+
+  it('turns an error about the request into its HTTP answer', async () => {
+    const failing = mapH5pErrors(async () => {
+      throw new H5pError('h5p-player:content-missing', {}, 404);
+    });
+
+    await expect(failing).rejects.toMatchObject({
+      status: 404,
+      response: { message: 'That exercise does not exist.' },
+    });
+  });
+
+  it('rethrows a server fault untouched, so it stays a 500', async () => {
+    // The half that matters: a bucket that was unreachable must not reach the
+    // caller as a sentence about their file.
+    const outage = new Error('ECONNRESET');
+
+    await expect(mapH5pErrors(async () => Promise.reject(outage))).rejects.toBe(outage);
   });
 });

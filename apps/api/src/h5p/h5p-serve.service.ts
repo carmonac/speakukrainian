@@ -2,7 +2,7 @@ import type { Readable } from 'node:stream';
 import { Inject, Injectable } from '@nestjs/common';
 import { H5PAjaxEndpoint, H5PPlayer } from '@lumieducation/h5p-server';
 import type { IPlayerModel, IUser } from '@lumieducation/h5p-server';
-import { toHttpException } from './h5p.errors.js';
+import { mapH5pErrors } from './h5p.errors.js';
 import { assertSafeContentId } from './h5p.paths.js';
 import type { RangeCallback } from './h5p.responses.js';
 import { H5P_AJAX_ENDPOINT, H5P_PLAYER } from './h5p.tokens.js';
@@ -51,7 +51,7 @@ export interface LibraryFileResult {
  * mapped onto HTTP.
  *
  * Controllers validate and delegate (CLAUDE.md), and the mapping belongs on
- * this side of that line: `toHttpException` returning `null` is the decision
+ * this side of that line: what `mapH5pErrors` declines to map is the decision
  * that an error is *this server's* fault, which is a judgement about the
  * library's behaviour rather than about the request.
  */
@@ -71,7 +71,7 @@ export class H5pServeService {
    * layers down inside a path builder.
    */
   async playerModel(contentId: string, language = DEFAULT_LANGUAGE): Promise<IPlayerModel> {
-    return this.mapErrors(async () => {
+    return mapH5pErrors(async () => {
       assertSafeContentId(contentId);
 
       // `H5pModule` sets a renderer that returns the model itself; the stock
@@ -87,7 +87,7 @@ export class H5pServeService {
     filename: string,
     range: RangeCallback,
   ): Promise<ContentFileResult> {
-    return this.mapErrors(async () => {
+    return mapH5pErrors(async () => {
       assertSafeContentId(contentId);
 
       const file = await this.ajax.getContentFile(contentId, filename, ANONYMOUS_USER, range);
@@ -104,26 +104,10 @@ export class H5pServeService {
   }
 
   async libraryFile(ubername: string, filename: string): Promise<LibraryFileResult> {
-    return this.mapErrors(async () => {
+    return mapH5pErrors(async () => {
       const file = await this.ajax.getLibraryFile(ubername, filename);
 
       return { mimetype: file.mimetype, contentLength: file.stats.size, stream: file.stream };
     });
-  }
-
-  /**
-   * Everything the library raises that is about the request becomes an
-   * `HttpException`; everything else is rethrown untouched so it stays a 500.
-   */
-  private async mapErrors<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      const http = toHttpException(error);
-      if (http) {
-        throw http;
-      }
-      throw error;
-    }
   }
 }

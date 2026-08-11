@@ -2,7 +2,7 @@ import { Readable } from 'node:stream';
 import { HttpStatus, UnsupportedMediaTypeException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { MAX_H5P_UPLOAD_BYTES } from '@speakukrainian/shared';
-import { h5pUploadOptions } from './h5p.multer.js';
+import { h5pEditorUploadOptions, h5pUploadOptions } from './h5p.multer.js';
 
 function fakeFile(
   originalname: string,
@@ -85,5 +85,25 @@ describe('h5pUploadOptions limits', () => {
     // Memory storage would hold 100 MB per concurrent upload, and the importer
     // wants a file path anyway.
     expect(h5pUploadOptions()).not.toHaveProperty('storage');
+  });
+});
+
+describe('h5pEditorUploadOptions', () => {
+  it('caps the ajax route at the same byte limit and one file', () => {
+    expect(h5pEditorUploadOptions().limits).toEqual({
+      fileSize: MAX_H5P_UPLOAD_BYTES,
+      files: 1,
+    });
+  });
+
+  it('installs no fileFilter, because the gate here is per action and the library owns it', () => {
+    // `action=files` is gated by `config.contentWhitelist` and
+    // `action=library-upload` by the `.h5p` extension. A filter here could only
+    // be one of the two, and would refuse what the other action accepts.
+    expect(h5pEditorUploadOptions()).not.toHaveProperty('fileFilter');
+  });
+
+  it('sets no storage engine, leaving the module to supply the disk destination', () => {
+    expect(h5pEditorUploadOptions()).not.toHaveProperty('storage');
   });
 });

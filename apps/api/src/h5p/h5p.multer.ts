@@ -53,3 +53,20 @@ export function h5pUploadOptions() {
     },
   };
 }
+
+/**
+ * Multer options for `POST /api/h5p/ajax`, which carries two possible file
+ * parts: `file` for `action=files` and `h5p` for `action=library-upload`.
+ *
+ * **No `fileFilter`, deliberately.** The library owns both gates on this route
+ * and it owns them per action — `config.contentWhitelist` for an editor upload,
+ * the `.h5p` extension for a package — so a filter here could only be one of
+ * the two and would refuse whatever the other action legitimately accepts.
+ *
+ * Disk rather than memory, inherited from `MulterModule`'s `dest` the same way
+ * `h5pUploadOptions` inherits it: a `library-upload` can carry a 100 MB
+ * package, and both `saveContentFile` and `uploadPackage` take a temp file path.
+ */
+export function h5pEditorUploadOptions() {
+  return { limits: { fileSize: MAX_H5P_UPLOAD_BYTES, files: 1 } };
+}

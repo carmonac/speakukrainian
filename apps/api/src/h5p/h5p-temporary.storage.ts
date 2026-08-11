@@ -1,0 +1,215 @@
+import type { ReadStream } from 'node:fs';
+import type { Readable } from 'node:stream';
+import { Inject, Injectable } from '@nestjs/common';
+import { H5PConfig, H5pError, utils } from '@lumieducation/h5p-server';
+import type {
+  IFileStats,
+  ITemporaryFile,
+  ITemporaryFileStorage,
+  IUser,
+} from '@lumieducation/h5p-server';
+import { StorageService } from '../infra/storage/storage.service.js';
+import {
+  TEMP_ROOT_PREFIX,
+  assertSafeOwnerId,
+  parseTempObjectPath,
+  tempObjectPath,
+  tempPrefix,
+} from './h5p.paths.js';
+import { H5P_CONFIG } from './h5p.tokens.js';
+
+/**
+ * How many objects one `listFiles()` looks at.
+ *
+ * `ITemporaryFileStorage.listFiles` returns an array, so a listing is
+ * materialised whatever this is — and `StorageService.list` refuses a prefix
+ * wider than its ceiling rather than truncating, which would make the sweep
+ * fail permanently once `h5p/temp/` passed 10 000 objects: precisely when the
+ * accumulation it exists to prevent had happened. Its only caller,
+ * `TemporaryFileManager.cleanUp`, acts on what it is given and is called again
+ * on the next upload, so a batch is the right shape for it.
+ *
+ * One listing page, because this runs on the request path. The limit worth
+ * knowing: a listing is ordered by object name, so a pass whose batch holds
+ * only files an editor is still using deletes nothing — those files expire
+ * within `temporaryFileLifetime` and a later pass takes them, but a prefix that
+ * stays wider than the batch is only ever swept from the start of the alphabet.
+ */
+export const TEMP_SWEEP_BATCH_SIZE = 1_000;
+
+/**
+ * The creation time a listing that carried none comes back as.
+ *
+ * `StorageService.list` maps a missing `timeCreated` to the epoch so no caller
+ * ever sees an `Invalid Date`. For an expiry *derived* from that value it is
+ * the sentinel that matters most: `1970 + temporaryFileLifetime` is in the
+ * past for every conceivable lifetime, so a date read out of it says "delete
+ * this" about a file nothing knows the age of. No object is legitimately
+ * created at the epoch, so the value is unambiguous.
+ */
+const UNKNOWN_CREATION_TIME_MS = 0;
+
+/**
+ * The editor's scratch storage in Cloud Storage: `h5p/temp/<ownerId>/<filename>`.
+ *
+ * **The owner is a path prefix rather than an attribute**, which is what
+ * `DirectoryTemporaryFileStorage` does on disk and what the interface forces.
+ * Every access names its owner — `fileExists(filename, user)`,
+ * `getFileStats(filename, user)`, `getFileStream(filename, user, …)`,
+ * `deleteFile(filename, ownerId)` — and a filename is unique only *within* an
+ * owner: `FilenameGenerator` produces `images/image-aB34xQz9.png` and checks
+ * uniqueness through `fileExists(f, user)`. So the owner has to be part of the
+ * key, and being part of the key is what makes one editor unable to read
+ * another's upload.
+ *
+ * **Expiry is derived, not stored:** `expiresAt = createdAt + temporaryFileLifetime`.
+ * `TemporaryFileManager.addFile` is the only caller of `saveFile` in the
+ * library and it always passes `new Date(Date.now() + config.temporaryFileLifetime)`,
+ * so the expiry is a pure function of the write time and one config constant.
+ * Storing it as well would put a derived value in a second place that can
+ * disagree with the first, and `StorageService.list` already returns
+ * `createdAt` from the listing itself — so `listFiles` costs one listing and no
+ * extra round trips.
+ *
+ * The named cost: changing `temporaryFileLifetime` re-dates every temp object
+ * already in the bucket. For objects whose whole life is two hours that is not
+ * a defect.
+ */
+@Injectable()
+export class H5pTemporaryStorage implements ITemporaryFileStorage {
+  constructor(
+    private readonly storage: StorageService,
+    @Inject(H5P_CONFIG) private readonly config: H5PConfig,
+  ) {}
+
+  /**
+   * No content type is set, for the same reason `H5pContentStorage.addFile`
+   * sets none: these bytes are never served from the bucket. `temp-files`
+   * streams them and sets its own headers.
+   *
+   * The `expirationTime` it was handed is returned unchanged, because that is
+   * the truth about *this* call even though `listFiles` derives the same value
+   * from the object's creation time afterwards.
+   */
+  async saveFile(
+    filename: string,
+    dataStream: ReadStream,
+    user: IUser,
+    expirationTime: Date,
+  ): Promise<ITemporaryFile> {
+    await this.storage.put(tempObjectPath(user.id, filename), dataStream);
+
+    return { expiresAt: expirationTime, filename, ownedByUserId: user.id };
+  }
+
+  async fileExists(filename: string, user: IUser): Promise<boolean> {
+    return this.storage.exists(tempObjectPath(user.id, filename));
+  }
+
+  async getFileStats(filename: string, user: IUser): Promise<IFileStats> {
+    const stats = await this.storage.stat(tempObjectPath(user.id, filename));
+    if (!stats) {
+      throw notFound(filename, user);
+    }
+
+    return { birthtime: stats.createdAt, size: stats.sizeBytes };
+  }
+
+  async getFileStream(
+    filename: string,
+    user: IUser,
+    rangeStart?: number,
+    rangeEnd?: number,
+  ): Promise<Readable> {
+    const path = tempObjectPath(user.id, filename);
+    if (!(await this.storage.exists(path))) {
+      throw notFound(filename, user);
+    }
+
+    return this.storage.createReadStream(
+      path,
+      rangeStart === undefined && rangeEnd === undefined
+        ? undefined
+        : { start: rangeStart, end: rangeEnd },
+    );
+  }
+
+  /**
+   * `StorageService.delete` ignores a missing object, which is what the
+   * interface asks for — "deletes the file (e.g. because it has expired)" has
+   * to be a no-op when the sweep races a save that already removed it.
+   */
+  async deleteFile(filename: string, ownerId: string): Promise<void> {
+    assertSafeOwnerId(ownerId);
+    await this.storage.delete(tempObjectPath(ownerId, filename));
+  }
+
+  /**
+   * Every temporary file, or only one user's.
+   *
+   * `TemporaryFileManager.cleanUp` is the only caller that passes no user, and
+   * it deletes everything whose `expiresAt` is in the past — so what this
+   * method says about an object is a delete instruction, and the two things it
+   * cannot work out are both answered by leaving the object alone:
+   *
+   * An object whose creation time the listing did not carry
+   * (`UNKNOWN_CREATION_TIME_MS`) is skipped rather than dated from the epoch,
+   * which would expire it and every one of its neighbours in the same listing,
+   * the clip an author uploaded a minute ago included. Leaking an object is
+   * recoverable — a later listing that does carry the time sweeps it — and
+   * deleting a live upload is not, since no route can put it back.
+   *
+   * An object that does not parse into an owner and a filename is skipped
+   * rather than thrown on: a stray object under `h5p/temp/` must not be able to
+   * stop the sweep for everybody. `TEMP_SWEEP_BATCH_SIZE` is there for the same
+   * reason one size larger: neither a stray object nor a wide prefix may turn
+   * the sweep off.
+   *
+   * `h5p-temporary.storage.spec.ts` drives a controlled creation time for each
+   * case — one long past, one inside the lifetime and one absent — so that a
+   * live file surviving is asserted and not assumed.
+   */
+  async listFiles(user?: IUser): Promise<ITemporaryFile[]> {
+    const objects = await this.storage.listUpTo(
+      user ? tempPrefix(user.id) : TEMP_ROOT_PREFIX,
+      TEMP_SWEEP_BATCH_SIZE,
+    );
+    const files: ITemporaryFile[] = [];
+
+    for (const object of objects) {
+      const parsed = parseTempObjectPath(object.path);
+      if (!parsed) {
+        continue;
+      }
+
+      if (object.createdAt.getTime() === UNKNOWN_CREATION_TIME_MS) {
+        continue;
+      }
+
+      files.push({
+        filename: parsed.filename,
+        ownedByUserId: parsed.ownerId,
+        expiresAt: new Date(object.createdAt.getTime() + this.config.temporaryFileLifetime),
+      });
+    }
+
+    return files;
+  }
+
+  /**
+   * Identical to `H5pContentStorage`'s, and for the same reason: a Cloud
+   * Storage object name is a flat string, so there is no `path.join` to
+   * normalise away whatever this leaves behind.
+   */
+  sanitizeFilename = (filename: string): string =>
+    utils.generalizedSanitizeFilename(filename, /[^A-Za-z0-9\-._!()/]/g, 240);
+}
+
+/** The id `DirectoryTemporaryFileStorage` raises, so both implementations answer alike. */
+function notFound(filename: string, user: IUser): H5pError {
+  return new H5pError(
+    'storage-file-implementations:temporary-file-not-found',
+    { filename, userId: user.id },
+    404,
+  );
+}

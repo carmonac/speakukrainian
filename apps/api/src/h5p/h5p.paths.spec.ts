@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   CONTENT_ROOT_PREFIX,
   LIBRARY_ROOT_PREFIX,
+  TEMP_ROOT_PREFIX,
   assertSafeContentId,
   assertSafeEntryName,
+  assertSafeOwnerId,
   assertSafeRelativePath,
   assertSafeRequestPath,
   contentObjectPath,
@@ -13,6 +15,9 @@ import {
   joinContentFilePath,
   libraryObjectPath,
   libraryPrefix,
+  parseTempObjectPath,
+  tempObjectPath,
+  tempPrefix,
 } from './h5p.paths.js';
 
 const LIBRARY = { machineName: 'H5P.MultiChoice', majorVersion: 1, minorVersion: 16 };
@@ -191,6 +196,66 @@ describe('library paths', () => {
 
   it('roots library listings at the shared storage prefix', () => {
     expect(LIBRARY_ROOT_PREFIX).toBe('h5p/libraries/');
+  });
+});
+
+describe('assertSafeOwnerId', () => {
+  it('accepts a Firebase-shaped uid', () => {
+    expect(() => assertSafeOwnerId('a'.repeat(28))).not.toThrow();
+    expect(() => assertSafeOwnerId('X4kQ_9-zLm2b')).not.toThrow();
+  });
+
+  it.each([[''], ['a/b'], ['..'], ['.'], ['a b'], ['0'.repeat(65)]])('rejects %j', (ownerId) => {
+    expect(() => assertSafeOwnerId(ownerId)).toThrow(H5pError);
+  });
+
+  it('refuses under an id of its own, since a uid is not a path the caller typed', () => {
+    const error = thrownBy(() => assertSafeOwnerId('a/b'));
+
+    expect(error.errorId).toBe('h5p-request:unusable-owner');
+    expect(error.httpStatusCode).toBe(400);
+  });
+});
+
+describe('temporary paths', () => {
+  const OWNER = 'aBcD1234efGH5678ijKL9012mnOP';
+
+  it('roots temporary listings at the shared storage prefix', () => {
+    expect(TEMP_ROOT_PREFIX).toBe('h5p/temp/');
+    expect(tempPrefix(OWNER)).toBe(`h5p/temp/${OWNER}/`);
+  });
+
+  it('puts the owner in the object name, because a filename is unique only per owner', () => {
+    expect(tempObjectPath(OWNER, 'images/clip.mp3')).toBe(`h5p/temp/${OWNER}/images/clip.mp3`);
+  });
+
+  it.each([['../../secret'], ['/etc/passwd'], ['a\\b'], ['a\u0000b'], ['']])(
+    'refuses to build a path out of the filename %j',
+    (filename) => {
+      expect(() => tempObjectPath(OWNER, filename)).toThrow(H5pError);
+    },
+  );
+
+  it('refuses to build a path out of an unsafe owner id', () => {
+    expect(() => tempObjectPath('../other', 'clip.mp3')).toThrow(H5pError);
+    expect(() => tempPrefix('')).toThrow(H5pError);
+  });
+
+  it('round-trips a nested filename', () => {
+    expect(parseTempObjectPath(tempObjectPath(OWNER, 'images/nested/clip.png'))).toEqual({
+      ownerId: OWNER,
+      filename: 'images/nested/clip.png',
+    });
+  });
+
+  it.each([
+    ['the bare root', 'h5p/temp/'],
+    ['an object with no filename', 'h5p/temp/owner'],
+    ['an object with an empty filename', 'h5p/temp/owner/'],
+    ['an object with no owner segment', 'h5p/temp//clip.png'],
+    ['a path under another prefix', 'h5p/content/abc/clip.png'],
+  ])('reads %s as unparseable rather than throwing', (_case, objectPath) => {
+    expect(parseTempObjectPath(objectPath)).toBeNull();
   });
 });
 

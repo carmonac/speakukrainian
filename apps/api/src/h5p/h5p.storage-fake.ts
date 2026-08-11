@@ -14,6 +14,7 @@ type StorageSurface = Pick<
   | 'exists'
   | 'stat'
   | 'list'
+  | 'listUpTo'
   | 'listSubdirectories'
   | 'deleteByPrefix'
   | 'createReadStream'
@@ -67,14 +68,15 @@ export class InMemoryStorage implements StorageSurface {
   }
 
   list(prefix: string): Promise<StoredObject[]> {
+    return Promise.resolve(this.under(prefix));
+  }
+
+  /** Truncated in object-name order, which is the order a real listing comes back in. */
+  listUpTo(prefix: string, max: number): Promise<StoredObject[]> {
     return Promise.resolve(
-      [...this.objects.entries()]
-        .filter(([path]) => path.startsWith(prefix))
-        .map(([path, object]) => ({
-          path,
-          sizeBytes: object.body.length,
-          createdAt: object.createdAt,
-        })),
+      this.under(prefix)
+        .sort((left, right) => (left.path < right.path ? -1 : 1))
+        .slice(0, max),
     );
   }
 
@@ -126,6 +128,16 @@ export class InMemoryStorage implements StorageSurface {
 
   paths(): string[] {
     return [...this.objects.keys()].sort();
+  }
+
+  private under(prefix: string): StoredObject[] {
+    return [...this.objects.entries()]
+      .filter(([path]) => path.startsWith(prefix))
+      .map(([path, object]) => ({
+        path,
+        sizeBytes: object.body.length,
+        createdAt: object.createdAt,
+      }));
   }
 
   /**
