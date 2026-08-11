@@ -548,6 +548,18 @@ describe('ScheduleFormPage', () => {
     expect(TestBed.inject(Router).url).toBe('/sections');
   });
 
+  it('asks before abandoning a new slot that was started', async () => {
+    // The create route carries the same guard as the edit one, and only its own
+    // test says so: an unsaved series is as easy to lose as an unsaved edit.
+    const recorded = setup();
+    const harness = await open('/schedule/new?date=2026-03-09&time=09:00');
+    fill(harness, '.slot-form__start', '11:00');
+
+    await harness.navigateByUrl('/sections');
+
+    expect(recorded.dialogs).toBe(1);
+  });
+
   it('does not ask on the way out of a form that was just saved', async () => {
     const recorded = setup({ slots: [slot('one-off')] });
     const harness = await open('/schedule/one-off');
