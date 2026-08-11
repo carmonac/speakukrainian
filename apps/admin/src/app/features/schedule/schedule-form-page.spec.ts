@@ -534,7 +534,9 @@ describe('ScheduleFormPage', () => {
     expect(field(harness, '.slot-form__date').disabled).toBe(true);
     expect(field(harness, '.slot-form__start').disabled).toBe(true);
     expect(root(harness).querySelector('.slot-form__save')).toBeNull();
-    expect(root(harness).querySelector('.slot-form__back')).toBeNull();
+    // Read-only is not a dead end: the way back is a link, not the browser's
+    // Back button.
+    expect(root(harness).querySelector('.slot-form__back')).not.toBeNull();
   });
 
   it('asks before leaving a form with unsaved edits', async () => {

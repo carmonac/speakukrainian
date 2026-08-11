@@ -145,19 +145,21 @@
           </fieldset>
         }
 
-        @if (!isBooked()) {
-          <div class="slot-form__actions">
-            <!-- "Back to the week", never "Cancel": cancelling a slot is a
-                 different action, and #56 puts its button on this row. -->
-            <a matButton class="slot-form__back" routerLink="/schedule" [queryParams]="weekParams()">
-              <mat-icon>arrow_back</mat-icon>
-              Back to the week
-            </a>
+        <div class="slot-form__actions">
+          <!-- "Back to the week", never "Cancel": cancelling a slot is a
+               different action, and #56 puts its button on this row. It stays on
+               a booked slot, which has no Save: read-only is not a dead end, and
+               browser Back is not a link. -->
+          <a matButton class="slot-form__back" routerLink="/schedule" [queryParams]="weekParams()">
+            <mat-icon>arrow_back</mat-icon>
+            Back to the week
+          </a>
+          @if (!isBooked()) {
             <button matButton="filled" type="submit" class="slot-form__save" [disabled]="form.invalid || saving()">
               Save
             </button>
-          </div>
-        }
+          }
+        </div>
       </form>
     </mat-card-content>
   </mat-card>
