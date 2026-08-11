@@ -247,17 +247,57 @@ setup: the admin runs on :4200 and a relative `/api/h5p/core/js/h5p.js` resolves
 overridden to `/editor-assets` because its default, `/editor`, is where the editor _model_ route
 goes — two different things one line apart in the URL space, and the collision would be silent.
 
-_Player language._ `GET /api/h5p/play/:contentId` accepts `?lang`, and **the player's own chrome
-renders in English whatever is asked for** — including `uk`. `H5PPlayer` localizes its labels
-through a `translationCallback`; `h5p.module.ts` passes none, so the constructor's English-only
-default is what runs. That is recorded here rather than fixed because fixing it is not a wiring
-change: `@lumieducation/h5p-server` ships client translations for 29 locales and **Ukrainian is not
-one of them** (nor is it among the 28 server-side ones), so wiring the callback would get `es` for
-free and still render English for this product's own language, which needs strings we write and
-then maintain. The parameter is accepted and threaded through so that doing it later changes the
-module and not the route or its callers. Exercise _content_ is unaffected — that comes out of the
-uploaded package. The e2e suite pins the English chrome, so the day a callback is wired the test
-that fails is the one that says so.
+_Player language (amended by #36)._ `GET /api/h5p/play/:contentId` accepts `?lang`, and it now
+selects the language of the player's own chrome. One `H5P_TRANSLATE` provider builds a single
+`ITranslationFunction` at boot and both `H5PPlayer` and `H5PEditor` are constructed with it — the
+editor half changes nothing observable today, since its callback is only reached from
+`H5PEditor.render` and no route renders an editor model, and it is wired anyway so that route
+inherits the decision rather than making it again.
+
+**Ukrainian is ours because upstream ships none.** `@lumieducation/h5p-server` carries client
+translations for 29 locales and `uk` is not among them (nor among the 28 server-side ones), so
+wiring the callback buys `es` and 27 others for free and still leaves this product's own language
+in English. Those 29 are read once at boot from a directory listing inside the installed package —
+never from a path built out of `?lang`, which is a public query string and would make a lookup a
+traversal. Ukrainian lives in `apps/api/src/h5p/h5p.translations.uk.ts` as flat i18next keys and
+**deliberately not** as a `LocalizedText` in `packages/shared`: these are H5P's own keys with H5P's
+own values, nothing here is admin-authored and no admin screen edits it, so CLAUDE.md rule 1 does
+not reach it. It is the one translation in the product that is not a `LocalizedText`.
+
+**The fallback is per key, not per file, English last.** A key is resolved by walking our overlay
+then upstream's file, for the requested locale lower-cased, then its primary subtag (`uk-UA` →
+`uk`), then English. So a locale nobody ships gets English whole, a partly translated locale gets
+English for exactly the keys it misses, and an empty value counts as missing — the failure mode
+being avoided is a label reading `client:fullscreen`, which is what `SimpleTranslator` answers, not
+`undefined`. A locale an admin adds at runtime therefore gets English chrome unless upstream ships
+it. Two named consequences of resolving the primary subtag rather than mapping BCP 47 onto
+upstream's filenames: `?lang=zh` gets English, because upstream has `zh-cn` and no `zh`; and
+`?lang=pt-BR` is answered from `pt.json`, not from the `pt_BR.json` upstream also ships — two files
+that differ in 88 of their 167 keys — because upstream spells that name with an underscore, so only
+a caller spelling it the same way reaches it and the hyphen form every BCP 47 client sends falls
+through to the primary subtag. (`es-MX` is unaffected only because upstream happens to ship both
+spellings.) Named and not fixed: this product's locales are `en`, `es` and `uk`, and a
+filename mapping table is a second thing to keep in step with the dependency. The
+`metadata-semantics` and `copyright-semantics` namespaces are loaded so the editor's callback is no
+worse than the default it replaces, but no Ukrainian is authored for them: they are editor-facing
+and no route exposes them yet.
+
+The Ukrainian key set is pinned against upstream's own `client/en.json` by a unit test, so an
+upstream rename fails on the dependency bump that introduces it instead of silently reverting a
+label to English. If the files ever fail to load — a package layout change, or an image that did
+not carry them — the loader warns and the API still boots. **What it degrades to is not English but
+the raw i18next keys:** `en` is an entry in the same map as every other locale rather than a floor
+beneath them, so every label reads `client:fullscreen` except the Ukrainian ones, which are compiled
+in. A last-resort English map compiled into this repo would make that degradation real and is
+deliberately absent — it would be a second copy of upstream's 169 strings, drifting from the first
+and needing its own parity test, to defend a state that today cannot arise on its own, since
+`H5PPlayer` statically requires the same `en.json` and so fails to import first. The branch that can
+fire alone is the package not resolving at all. The unit test is the alarm, and it fires where a
+human can act on it; the warning says the same thing to whoever is reading the logs instead.
+
+`?lang` is the caller's to choose: the public site is server-rendered and knows the reader's
+locale, so it passes it, and absent `?lang` the answer is `en`. Exercise _content_ is unaffected —
+that comes out of the uploaded package and is the author's to translate.
 
 _Who may read H5P content._ `GET /api/h5p/play/:contentId` and `GET /api/h5p/content/:contentId/*`
 are `@Public()`. **What protects them is the unguessable id, not publication state**, and that is a

@@ -40,8 +40,15 @@ interface PlayerModelBody {
   integration: {
     url: string;
     contents: Record<string, unknown>;
-    /** The player's own labels — its fullscreen and copyright chrome, not the exercise. */
-    l10n: { H5P: Record<string, string> };
+    /**
+     * The player's own labels — its fullscreen and copyright chrome, not the
+     * exercise.
+     *
+     * Mostly flat, but not entirely: `SemanticsLocalizer` copies the shape of
+     * `defaultClientStrings.json`, whose `discipline` entry is a nested object
+     * of three leaves.
+     */
+    l10n: { H5P: Record<string, string | Record<string, string>> };
   };
 }
 
@@ -160,23 +167,69 @@ describe('h5p serving (e2e)', () => {
       expect((response.body as ErrorBody).message).toBe('That path is not valid.');
     });
 
-    it('renders the player chrome in English whatever language is asked for', async () => {
-      // The decision ADR-007 records, pinned where it is observable. `H5PPlayer`
-      // has no `translationCallback`, and the library ships no Ukrainian client
-      // translation to give it, so `?lang` selects nothing today. The day one is
-      // wired this is the test that says so.
-      const [fallback, ukrainian, spanish] = await Promise.all([
-        request(server()).get(`/api/h5p/play/${exercise.contentId}`).expect(200),
-        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk`).expect(200),
-        request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=es`).expect(200),
-      ]);
+    it('renders the player chrome in the language asked for, and falls back to English', async () => {
+      // Replaces the test that pinned "English, whatever is asked for" — the
+      // decision ADR-007 recorded before #36 amended it. This is now the only
+      // thing that says the `translationCallback` reached `H5PPlayer`: drop it
+      // from the factory and every assertion below about `uk` and `es` fails.
+      const [fallback, ukrainian, ukrainianRegional, spanish, unknown, traversal] =
+        await Promise.all([
+          request(server()).get(`/api/h5p/play/${exercise.contentId}`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=uk-UA`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=es`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=zz`).expect(200),
+          request(server()).get(`/api/h5p/play/${exercise.contentId}?lang=../../en`).expect(200),
+        ]);
 
-      const chrome = (response: { body: unknown }): Record<string, string> =>
+      type Chrome = PlayerModelBody['integration']['l10n']['H5P'];
+      const chrome = (response: { body: unknown }): Chrome =>
         (response.body as PlayerModelBody).integration.l10n.H5P;
+      const labels = (of: Chrome): string[] =>
+        Object.values(of).flatMap((value) =>
+          typeof value === 'string' ? [value] : Object.values(value),
+        );
 
-      expect(chrome(ukrainian)['fullscreen']).toBe('Fullscreen');
-      expect(chrome(ukrainian)).toEqual(chrome(fallback));
-      expect(chrome(spanish)).toEqual(chrome(fallback));
+      // Ukrainian is ours — upstream ships none — so this is the assertion the
+      // whole issue exists for. `UK_CLIENT_STRINGS.fullscreen`, not imported:
+      // the e2e asserts what a browser receives, and importing the source would
+      // let a wrong value agree with itself.
+      expect(chrome(ukrainian)['fullscreen']).toBe('На весь екран');
+      expect(chrome(ukrainian)['fullscreen']).not.toBe('Fullscreen');
+      expect(chrome(ukrainian)['licenseC']).toBe('Авторське право');
+
+      // No label may render as a bare i18next key or as nothing at all: those
+      // are what `SimpleTranslator` and a half-filled overlay would produce, and
+      // both are worse than English. The count first, because an empty list
+      // would otherwise pass the filter.
+      expect(labels(chrome(ukrainian)).length).toBeGreaterThan(150);
+      expect(
+        labels(chrome(ukrainian)).filter(
+          (label) => label.trim() === '' || label.startsWith('client:'),
+        ),
+      ).toEqual([]);
+
+      // A region subtag resolves to its primary language, which is what an SSR
+      // locale of `uk-UA` will send.
+      expect(chrome(ukrainianRegional)).toEqual(chrome(ukrainian));
+
+      // Upstream's own Spanish, hard-coded on purpose: it pins that `es` came
+      // out of the dependency rather than out of anything we wrote, and a
+      // dependency bump that changes these two values is worth a human's eye.
+      expect(chrome(spanish)['fullscreen']).toBe('PantallaCompleta');
+      expect(chrome(spanish)['close']).toBe('Cerrar');
+
+      // An unknown locale is English, whole — not a key, not a blank.
+      expect(chrome(unknown)).toEqual(chrome(fallback));
+      expect(chrome(unknown)['fullscreen']).toBe('Fullscreen');
+      // And no `?lang` at all is the documented default.
+      expect(chrome(fallback)['fullscreen']).toBe('Fullscreen');
+
+      // `?lang` is a public query string, and the locales are read once at boot
+      // from a directory listing so it never becomes a path. Pinned end to end
+      // rather than only at the lookup, so that a controller which later builds
+      // a path out of it fails here.
+      expect(chrome(traversal)).toEqual(chrome(fallback));
     });
 
     it('serves every asset URL it advertises', async () => {
