@@ -16,9 +16,10 @@ import { UK_CLIENT_STRINGS } from './h5p.translations.uk.js';
 /**
  * These tests read the **real** installed `@lumieducation/h5p-server`, the way
  * `h5p.package-scan.spec.ts` does, because that is the only thing they are
- * worth asserting against: the loader warns and degrades to English rather than
- * throwing when the package's layout changes, so without a test reading the
- * same files that change is silent until a learner sees English labels.
+ * worth asserting against: the loader warns and skips rather than throwing when
+ * the package's layout changes, and what it degrades to is every label rendered
+ * as its literal i18next key, not English. So without a test reading the same
+ * files, that change is silent until a learner sees `client:fullscreen`.
  */
 const upstreamAsset = async (...segments: string[]): Promise<Record<string, string>> => {
   const manifest = createRequire(import.meta.url).resolve('@lumieducation/h5p-server/package.json');

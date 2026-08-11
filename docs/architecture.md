@@ -270,16 +270,29 @@ then upstream's file, for the requested locale lower-cased, then its primary sub
 English for exactly the keys it misses, and an empty value counts as missing — the failure mode
 being avoided is a label reading `client:fullscreen`, which is what `SimpleTranslator` answers, not
 `undefined`. A locale an admin adds at runtime therefore gets English chrome unless upstream ships
-it; `?lang=zh` does too, because upstream has `zh-cn` and no `zh`. The `metadata-semantics` and
-`copyright-semantics` namespaces are loaded so the editor's callback is no worse than the default
-it replaces, but no Ukrainian is authored for them: they are editor-facing and no route exposes
-them yet.
+it. Two named consequences of resolving the primary subtag rather than mapping BCP 47 onto
+upstream's filenames: `?lang=zh` gets English, because upstream has `zh-cn` and no `zh`; and
+`?lang=pt-BR` gets European rather than Brazilian Portuguese, because upstream names that file
+`pt_BR`, so only a caller spelling it upstream's way reaches it and the hyphen form every BCP 47
+client sends falls through to `pt`. (`es-MX` is unaffected only because upstream happens to ship
+both spellings.) Named and not fixed: this product's locales are `en`, `es` and `uk`, and a
+filename mapping table is a second thing to keep in step with the dependency. The
+`metadata-semantics` and `copyright-semantics` namespaces are loaded so the editor's callback is no
+worse than the default it replaces, but no Ukrainian is authored for them: they are editor-facing
+and no route exposes them yet.
 
 The Ukrainian key set is pinned against upstream's own `client/en.json` by a unit test, so an
 upstream rename fails on the dependency bump that introduces it instead of silently reverting a
 label to English. If the files ever fail to load — a package layout change, or an image that did
-not carry them — the loader warns and the chrome degrades to English rather than the API failing to
-boot; that is deliberate, and the unit test is the alarm that fires where a human can act on it.
+not carry them — the loader warns and the API still boots. **What it degrades to is not English but
+the raw i18next keys:** `en` is an entry in the same map as every other locale rather than a floor
+beneath them, so every label reads `client:fullscreen` except the Ukrainian ones, which are compiled
+in. A last-resort English map compiled into this repo would make that degradation real and is
+deliberately absent — it would be a second copy of upstream's 169 strings, drifting from the first
+and needing its own parity test, to defend a state that today cannot arise on its own, since
+`H5PPlayer` statically requires the same `en.json` and so fails to import first. The branch that can
+fire alone is the package not resolving at all. The unit test is the alarm, and it fires where a
+human can act on it; the warning says the same thing to whoever is reading the logs instead.
 
 `?lang` is the caller's to choose: the public site is server-rendered and knows the reader's
 locale, so it passes it, and absent `?lang` the answer is `en`. Exercise _content_ is unaffected —

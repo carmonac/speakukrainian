@@ -75,11 +75,22 @@ export const UK_OVERLAY: TranslationDictionaries = new Map([
  * the request's own string never reaches the filesystem.
  *
  * **Never throws.** A namespace directory that cannot be read, or a file that
- * will not parse, is warned about and skipped: the API has to boot, and the
- * degradation is English chrome rather than a crash. `h5p.translations.spec.ts`
- * is the alarm for that condition instead — it reads the real installed package
- * and fails on the commit that moved the files, which is when a human can act
- * on it.
+ * will not parse, is warned about and skipped, because the API has to boot.
+ * What that degrades to is *not* English: `en` is an entry in this same map
+ * rather than a floor beneath it, so a load that produced nothing renders every
+ * label as its literal i18next key — `client:fullscreen`, in every language
+ * except Ukrainian, which is compiled in. `h5p.translations.spec.ts` is the
+ * alarm instead: it reads the real installed package, so the commit that moves
+ * these files fails a test rather than shipping a player labelled `client:*`.
+ *
+ * A last-resort English map compiled in here would make the degradation real,
+ * and is deliberately absent: it would be a second copy of upstream's 169
+ * strings, drifting from the first and needing its own parity test, to defend a
+ * state that today cannot arise on its own — `H5PPlayer.js` statically
+ * `require`s the very same `assets/translations/client/en.json`, so a tree that
+ * is missing or corrupt fails the package's own import long before this runs.
+ * The one branch that can fire alone is `upstreamTranslationsRoot` returning
+ * `null`.
  */
 export async function loadUpstreamTranslations(): Promise<TranslationDictionaries> {
   const root = upstreamTranslationsRoot();
@@ -159,6 +170,11 @@ export function buildTranslationFunction(
  * lookups would be the same one.
  */
 function languageCandidates(language: string): string[] {
+  // `?? ''` guards a parameter whose type says it cannot be missing. Every
+  // caller of an `ITranslationFunction` is upstream's own untyped JavaScript,
+  // which hands on whatever it was given; without this, a `render` call that
+  // omitted the language would throw inside the player model instead of
+  // answering English.
   const lower = (language ?? '').toLowerCase();
   // BCP 47 uses `-`; upstream's own filenames also use `_` (`pt_BR`).
   const primary = lower.split(/[-_]/)[0] ?? '';
@@ -181,8 +197,11 @@ function upstreamTranslationsRoot(): string | null {
     );
     return join(dirname(manifest), 'build', 'assets', 'translations');
   } catch (error: unknown) {
+    // Say what an operator will actually see. A line promising English while
+    // the player renders `client:fullscreen` costs more time in an incident
+    // than no line at all.
     logger.warn(
-      `The H5P server package could not be resolved, so its translations were not loaded; the player chrome will be English only. ${String(error)}`,
+      `The H5P server package could not be resolved, so no translations were loaded; every player label will render as its raw i18next key ("client:fullscreen") in every language except Ukrainian, which is compiled in. ${String(error)}`,
     );
     return null;
   }
