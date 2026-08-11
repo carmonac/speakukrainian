@@ -1,11 +1,15 @@
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
 import type { INestApplication } from '@nestjs/common';
 import type { Firestore } from '@google-cloud/firestore';
 import { H5PConfig } from '@lumieducation/h5p-server';
-import type { H5PEditor } from '@lumieducation/h5p-server';
+import type { H5PEditor, ITemporaryFile, IUser } from '@lumieducation/h5p-server';
 import type { Auth } from 'firebase-admin/auth';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { COLLECTIONS, h5pSaveResultSchema, type H5pSaveResult } from '@speakukrainian/shared';
+import { H5pTemporaryStorage } from '../src/h5p/h5p-temporary.storage.js';
 import { H5P_CONFIG, H5P_EDITOR } from '../src/h5p/h5p.tokens.js';
 import { FIRESTORE } from '../src/infra/firestore/firestore.tokens.js';
 import { StorageService } from '../src/infra/storage/storage.service.js';
@@ -33,9 +37,83 @@ const CLIP_BYTES = Buffer.from(
   Uint8Array.from({ length: 8 * 1024 }, (_value, index) => (index * 37 + (index >> 8)) % 251),
 );
 
+/** Hosts a request may legitimately reach: this app, and the emulators it runs against. */
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0']);
+
 interface ErrorBody {
   statusCode: number;
   message: string;
+}
+
+/** Something `vi.spyOn` returned, read only for the arguments it recorded. */
+interface Probe {
+  mock: { calls: readonly (readonly unknown[])[] };
+  mockRestore: () => void;
+}
+
+function stripPort(value: string): string {
+  const withoutBrackets = /^\[(.+)]/.exec(value);
+  return withoutBrackets?.[1] ?? value.split(':')[0] ?? '';
+}
+
+/** Every host named anywhere in one call's arguments, whatever shape they took. */
+function hostsIn(args: readonly unknown[]): string[] {
+  const hosts: string[] = [];
+
+  for (const argument of args) {
+    if (argument instanceof URL) {
+      hosts.push(argument.hostname);
+    } else if (typeof argument === 'string') {
+      // A unix socket path is not a host, and `new URL` would not parse it.
+      if (!argument.startsWith('/')) {
+        hosts.push(URL.canParse(argument) ? new URL(argument).hostname : stripPort(argument));
+      }
+    } else if (typeof argument === 'object' && argument !== null) {
+      const options = argument as { hostname?: unknown; host?: unknown };
+      const named = options.hostname ?? options.host;
+      if (typeof named === 'string') {
+        hosts.push(stripPort(named));
+      }
+    }
+  }
+
+  return hosts.filter((host) => host !== '');
+}
+
+/**
+ * Every host this process opened an HTTP(S) request or a TCP connection to
+ * while `work` ran.
+ *
+ * **Two probes rather than one, because either alone is blind somewhere.** An
+ * agent reusing a kept-alive socket makes a second request with no `connect`,
+ * and a client that is not `node:http(s)` opens a connection with no `request`.
+ * The H5P library reaches the hub through axios and `follow-redirects`, neither
+ * of which is ours to depend on, so what is watched is the two places every one
+ * of them has to pass through. The app runs in this process, so this sees its
+ * traffic and not only the suite's.
+ */
+async function hostsReachedDuring(work: () => void | Promise<void>): Promise<string[]> {
+  const probes: Probe[] = [
+    vi.spyOn(https, 'request'),
+    vi.spyOn(http, 'request'),
+    vi.spyOn(net.Socket.prototype, 'connect'),
+  ];
+
+  try {
+    await work();
+    // Read before restoring: `mockRestore` resets the spy, and a probe read
+    // after it reports nothing whatever happened.
+    return probes.flatMap((probe) => probe.mock.calls.flatMap((call) => hostsIn(call)));
+  } finally {
+    for (const probe of probes) {
+      probe.mockRestore();
+    }
+  }
+}
+
+/** The hosts above that are not this machine — the ones a request must never reach. */
+function remoteAmong(hosts: readonly string[]): string[] {
+  return [...new Set(hosts.filter((host) => !LOCAL_HOSTS.has(host)))];
 }
 
 interface SavedFileBody {
@@ -171,19 +249,41 @@ describe('h5p editor ajax (e2e)', () => {
       ).toBe(true);
     });
 
-    it('does not reach out to api.h5p.org, which `outdated: false` is the observable proof of', async () => {
-      // `outdated` is `ContentTypeCache.isOutdated()`, which reads
-      // `contentTypeCacheUpdate` out of the key-value storage `h5p.module.ts`
-      // seeds. Remove the seeding and two things happen together: this reports
-      // `true`, **and** `get()` stops short-circuiting and falls through to
-      // `forceUpdate()` → `registerOrGetUuid()` → an HTTPS POST to
-      // `config.hubRegistrationEndpoint` on every single call. `fetchingDisabled`
-      // does not prevent that request; it is only a field in the payload. So
-      // this assertion is the one that pins the fix — a status check would pass
-      // either way, because the failure is caught and the body still arrives.
-      const response = await ajaxGet('action=content-type-cache').expect(200);
+    it('opens no connection to anything but this machine, and reports itself up to date', async () => {
+      // **The two halves of the seeding are independent, and this asserts both.**
+      // `contentTypeCache: []` is what stops the outbound call: `get()`
+      // short-circuits on a truthy stored value, and without it falls through
+      // to `forceUpdate()` → `registerOrGetUuid()` → an HTTPS POST to
+      // `config.hubRegistrationEndpoint` on every single call. That failure is
+      // caught, so the body still arrives and the status is still 200 — only
+      // the connection itself says whether it happened, which is why this
+      // watches for one rather than for a flag that merely correlates with it.
+      // `contentTypeCacheUpdate` is what makes `isOutdated()` false, and
+      // nothing else observes it, so it takes the second assertion.
+      let body: ContentTypeCacheBody | undefined;
 
-      expect((response.body as ContentTypeCacheBody).outdated).toBe(false);
+      const hosts = await hostsReachedDuring(async () => {
+        const response = await ajaxGet('action=content-type-cache').expect(200);
+        body = response.body as ContentTypeCacheBody;
+      });
+
+      expect(remoteAmong(hosts)).toEqual([]);
+      expect(body?.outdated).toBe(false);
+    });
+
+    it('is watched by a probe that can see an outbound connection', async () => {
+      // Without this the assertion above could equally mean the probe is blind,
+      // which is the failure mode it was written to replace. `.invalid` is
+      // reserved by RFC 2606 and never resolves, so the attempt is real and
+      // nothing leaves the machine.
+      const hosts = await hostsReachedDuring(() => {
+        const attempt = https.request({ host: 'hub.invalid', port: 443 });
+        // The name does not resolve, so this fails; nothing here waits for it.
+        attempt.on('error', () => undefined);
+        attempt.destroy();
+      });
+
+      expect(remoteAmong(hosts)).toContain('hub.invalid');
     });
   });
 
@@ -208,6 +308,35 @@ describe('h5p editor ajax (e2e)', () => {
       expect((response.body as ErrorBody).message).toBe(
         'The editor sent a request this server could not understand.',
       );
+    });
+
+    it.each([
+      ['a non-numeric major version', 'majorVersion=x&minorVersion=0'],
+      ['a non-numeric minor version', 'majorVersion=1&minorVersion=y'],
+      ['an empty version', 'majorVersion=&minorVersion=0'],
+    ])('answers 400 for %s rather than 500', async (_shape, versions) => {
+      // The *absent* versions are the endpoint's own 400 above; these reach
+      // `LibraryName.validate`, which raises a plain `Error` that the mapper
+      // correctly declines to map — a 500 for a query string the caller typed.
+      const response = await ajaxGet(
+        `action=libraries&machineName=${MAIN_LIBRARY.machineName}&${versions}`,
+      ).expect(400);
+
+      expect((response.body as ErrorBody).message).toBe('That is not a valid H5P library version.');
+    });
+
+    it.each([
+      ['a traversal', '../../etc'],
+      ['a name with a separator', 'H5P.Multi/Choice'],
+      ['an empty name', ''],
+    ])('answers 400 for %s in the machine name rather than 500', async (_shape, machineName) => {
+      const response = await ajaxGet(
+        `action=libraries&machineName=${encodeURIComponent(machineName)}&majorVersion=1&minorVersion=0`,
+      ).expect(400);
+
+      expect((response.body as ErrorBody).message).toBe('That is not a valid H5P library name.');
+      // Nothing about the server's own layout comes back with the refusal.
+      expect(response.text).not.toContain('h5p/libraries');
     });
 
     it('answers 404 for a library nobody installed', async () => {
@@ -317,6 +446,34 @@ describe('h5p editor ajax (e2e)', () => {
       await expect(
         storage.exists(`${TEMP_PREFIX}${otherEditor.uid}/${storedName(response)}`),
       ).resolves.toBe(false);
+    });
+
+    it.each([['audio'], ['image'], ['video'], ['file']])(
+      'answers 400 when no file part is sent for a %s field, rather than 500',
+      async (type) => {
+        // `postAjax` validates and parses `field` first, so a well-formed body
+        // gets all the way to `H5PEditor.saveContentFile`, which reads
+        // `file.mimetype` unconditionally: a `TypeError` and a 500 for a request
+        // that simply left a part out. The same defect the `library-upload`
+        // guard exists for.
+        const response = await ajaxPost('action=files&language=en')
+          .field('field', JSON.stringify({ type, name: 'file' }))
+          .expect(400);
+
+        expect((response.body as ErrorBody).message).toBe(
+          'The editor sent a request this server could not understand.',
+        );
+      },
+    );
+
+    it('answers 400 for a files request that is JSON and carries no part at all', async () => {
+      const response = await ajaxPost('action=files&language=en')
+        .send({ field: '{"type":"audio","name":"file"}' })
+        .expect(400);
+
+      expect((response.body as ErrorBody).message).toBe(
+        'The editor sent a request this server could not understand.',
+      );
     });
 
     it('refuses a file type that is not on the content whitelist, as a 400 and not a 500', async () => {
@@ -434,6 +591,30 @@ describe('h5p editor ajax (e2e)', () => {
 
   describe('the expiry sweep', () => {
     /**
+     * The sweep sees only what this suite wrote.
+     *
+     * `cleanUp()` enumerates the whole `h5p/temp/` prefix, and a lifetime of
+     * zero marks *every* object under it expired — including the scratch files
+     * of a session running beside this one, or of one that was interrupted. A
+     * test may not reach past its own fixtures on a shared bucket, so what is
+     * narrowed is the listing the sweep acts on, and nothing else: the real
+     * fake-gcs listing, the `createdAt + temporaryFileLifetime` derivation and
+     * the real `deleteFile` all still run underneath.
+     */
+    const scopeSweepToThisSuite = (): { mockRestore: () => void } => {
+      const temporary = app.get(H5pTemporaryStorage);
+      const owners = new Set([editor.uid, otherEditor.uid]);
+      const listFiles = temporary.listFiles.bind(temporary);
+
+      return vi
+        .spyOn(temporary, 'listFiles')
+        .mockImplementation(async (user?: IUser): Promise<ITemporaryFile[]> => {
+          const files = await listFiles(user);
+          return files.filter((file) => owners.has(file.ownedByUserId));
+        });
+    };
+
+    /**
      * A sweep against the real bucket, with the *lifetime* driven rather than
      * the clock.
      *
@@ -451,11 +632,13 @@ describe('h5p editor ajax (e2e)', () => {
     const sweepWithLifetime = async (lifetimeMs: number): Promise<void> => {
       const config = app.get<H5PConfig>(H5P_CONFIG);
       const original = config.temporaryFileLifetime;
+      const scope = scopeSweepToThisSuite();
       config.temporaryFileLifetime = lifetimeMs;
       try {
         await app.get<H5PEditor>(H5P_EDITOR).temporaryFileManager.cleanUp();
       } finally {
         config.temporaryFileLifetime = original;
+        scope.mockRestore();
       }
     };
 
