@@ -201,6 +201,18 @@ describe('H5pEditorController', () => {
       expect(stub.recorded.gets).toEqual([]);
     });
 
+    it('refuses a machine name for an action that would have ignored it', async () => {
+      // The choice recorded on `ajaxGet`, pinned so that "validate per action"
+      // is a decision to revisit rather than a change nothing notices:
+      // `getAjax` reads `machineName` only on its `libraries` branch, and
+      // mirroring that branch structure here would put the library's internals
+      // in this controller.
+      await expect(
+        controller.ajaxGet('content-type-cache', 'not valid', undefined, undefined, 'en', CALLER),
+      ).rejects.toThrow(BadRequestException);
+      expect(stub.recorded.gets).toEqual([]);
+    });
+
     it('leaves an absent version to the endpoint, which names all three at once', async () => {
       // The library's own 400 for `libraries` with no versions is a better
       // answer than one this route invents, and it is the *invalid* version —

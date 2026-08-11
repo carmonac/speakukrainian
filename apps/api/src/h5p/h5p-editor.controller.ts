@@ -92,6 +92,16 @@ export class H5pEditorController {
    * which `toHttpException` correctly declines to map — so each is a 500 for a
    * query string the caller typed. The versions stay strings, which is what the
    * endpoint wants; what moves here is the refusal, not the parsing.
+   *
+   * **All four are judged for every action, deliberately.**
+   * `H5PAjaxEndpoint.getAjax` reads `machineName` and the two versions only on
+   * its `libraries` branch, so `?action=content-type-cache&machineName=junk`
+   * is refused here where the endpoint would have ignored it. Validating per
+   * action would copy that branch structure into this controller, and the
+   * structure is the library's to change: the first time it reads one of these
+   * on another branch, a per-action list here is wrong and nothing fails.
+   * Refusing a query parameter the route cannot make sense of costs nothing
+   * real — no H5P client sends that combination — and it cannot rot.
    */
   @Get('ajax')
   @Roles('editor')

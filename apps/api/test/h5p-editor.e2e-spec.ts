@@ -600,6 +600,13 @@ describe('h5p editor ajax (e2e)', () => {
      * narrowed is the listing the sweep acts on, and nothing else: the real
      * fake-gcs listing, the `createdAt + temporaryFileLifetime` derivation and
      * the real `deleteFile` all still run underneath.
+     *
+     * **The rule this passes, for the next test tempted to `vi.spyOn` a live
+     * provider: a spy may narrow the input the assertion is made over, and may
+     * never narrow the behaviour under test.** A spy that stubbed out
+     * `listFiles` — or the derivation inside it — would leave a test that
+     * passes whether or not the sweep works, which is the failure this file
+     * has already had once.
      */
     const scopeSweepToThisSuite = (): { mockRestore: () => void } => {
       const temporary = app.get(H5pTemporaryStorage);
