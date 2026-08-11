@@ -1,0 +1,164 @@
+<section class="slot-form">
+  <mat-card class="slot-form__card">
+    @if (saving()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+
+    <mat-card-header>
+      <mat-card-title>{{ isEdit() ? 'Edit slot' : 'New slot' }}</mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content>
+      @if (isBooked()) {
+        <p class="slot-form__booked">{{ bookedReadOnly }}</p>
+      }
+
+      <form [formGroup]="form" (ngSubmit)="submit()" class="slot-form__form">
+        <fieldset class="slot-form__group">
+          <legend>When</legend>
+          <!-- The fields are on the slot's own clock, which is what this line
+               names. Without it a Madrid slot opened from Kyiv reads as an hour
+               out rather than as a different clock. -->
+          <p class="slot-form__zone-note">
+            {{ timesAreIn }}<strong class="slot-form__zone-name">{{ zoneValue() }}</strong>
+          </p>
+
+          <div class="slot-form__when">
+            <mat-form-field appearance="outline" class="slot-form__date-field">
+              <mat-label>Date</mat-label>
+              <input matInput type="date" formControlName="date" class="slot-form__date" />
+              <mat-error class="slot-form__date-error">Give the slot a date.</mat-error>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="slot-form__start-field">
+              <mat-label>Starts</mat-label>
+              <input matInput type="time" formControlName="startTime" class="slot-form__start" />
+              <!-- Which message, never whether: `showOnceEdited` owns when an
+                   error is displayed, and Material projects a `mat-error` only
+                   then. -->
+              @if (overlapMessage(); as conflict) {
+                <mat-error class="slot-form__overlap">{{ conflict }}</mat-error>
+              } @else {
+                <mat-error class="slot-form__start-error">Give the slot a start time.</mat-error>
+              }
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="slot-form__end-field">
+              <mat-label>Ends</mat-label>
+              <input matInput type="time" formControlName="endTime" class="slot-form__end" />
+              <mat-error class="slot-form__end-error">Give the slot an end time.</mat-error>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="slot-form__zone-field">
+              <mat-label>Time zone</mat-label>
+              <mat-select formControlName="timeZone" class="slot-form__zone" [compareWith]="compareZones">
+                @for (zone of zoneOptions(); track zone) {
+                  <mat-option [value]="zone">{{ zone }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          @if (form.hasError('zeroLength')) {
+            <p class="slot-form__zero-length">
+              A slot cannot start and end at the same time. To run past midnight, give an end time earlier than the
+              start.
+            </p>
+          }
+
+          @if (conflictId(); as id) {
+            <p class="slot-form__conflict">
+              <!-- Leaving a dirty form through this link goes through
+                   `unsavedChangesGuard`, which is correct and looks like a bug
+                   the first time. -->
+              <a class="slot-form__conflict-link" [routerLink]="['/schedule', id]"> Open the conflicting slot </a>
+            </p>
+          }
+
+          @if (ownIntervalLabel(); as own) {
+            <p class="slot-form__interval">
+              <span class="slot-form__interval-own">{{ own }}</span>
+              <span class="slot-form__interval-zone">{{ zoneValue() }}</span>
+              @if (interval()?.crossesMidnight) {
+                <span class="slot-form__crosses-midnight">{{ crossesMidnight }}</span>
+              }
+            </p>
+            @if (browserIntervalLabel(); as inBrowserZone) {
+              <p class="slot-form__browser-interval">
+                {{ browserZonePrefix }}{{ formData().viewZone }}{{ browserZoneSuffix }}
+                {{ inBrowserZone }}
+              </p>
+            }
+          }
+        </fieldset>
+
+        <fieldset class="slot-form__group">
+          <legend>Note</legend>
+          <!-- A note is localized plain text (ADR-014), authored through the one
+               text control the product allows (rule 3) — there is no textarea on
+               this screen. -->
+          <app-localized-rich-text-editor formControlName="note" [locales]="locales()" [inlineOnly]="true" />
+          @if (noteTooLong().length > 0) {
+            <p class="slot-form__note-error">The note is too long in {{ noteTooLong().join(', ').toUpperCase() }}.</p>
+          }
+        </fieldset>
+
+        @if (isEdit()) {
+          @if (isSeries()) {
+            <p class="slot-form__series-note">{{ editingOneOccurrence }}</p>
+          }
+        } @else {
+          <fieldset class="slot-form__group slot-form__repeat">
+            <legend>Repeat</legend>
+            <mat-checkbox formControlName="repeats" class="slot-form__repeats"> Repeats weekly </mat-checkbox>
+
+            @if (repeatsValue()) {
+              <div formGroupName="repeat">
+                <p class="slot-form__hint">{{ repeatDaysHint }}</p>
+                <div class="slot-form__days">
+                  @for (day of weekdayOrder; track day) {
+                    <mat-checkbox
+                      [class]="'slot-form__day-' + day"
+                      [checked]="isDayChecked(day)"
+                      (change)="toggleDay(day)"
+                    >
+                      {{ weekdayLabelFor(day) }}
+                    </mat-checkbox>
+                  }
+                </div>
+                @if (form.controls.repeat.controls.daysOfWeek.hasError('noDays')) {
+                  <p class="slot-form__days-error">Tick at least one day.</p>
+                }
+
+                <mat-form-field appearance="outline">
+                  <mat-label>Repeat until</mat-label>
+                  <input matInput type="date" formControlName="until" class="slot-form__until" />
+                  <mat-hint>{{ repeatUntilHint }}</mat-hint>
+                  <mat-error class="slot-form__until-error">{{
+                    form.controls.repeat.controls.until.hasError('untilBeforeStart')
+                      ? 'The last day cannot be before the start date.'
+                      : 'Give the repeat a last day.'
+                  }}</mat-error>
+                </mat-form-field>
+              </div>
+            }
+          </fieldset>
+        }
+
+        @if (!isBooked()) {
+          <div class="slot-form__actions">
+            <!-- "Back to the week", never "Cancel": cancelling a slot is a
+                 different action, and #56 puts its button on this row. -->
+            <a matButton class="slot-form__back" routerLink="/schedule" [queryParams]="weekParams()">
+              <mat-icon>arrow_back</mat-icon>
+              Back to the week
+            </a>
+            <button matButton="filled" type="submit" class="slot-form__save" [disabled]="form.invalid || saving()">
+              Save
+            </button>
+          </div>
+        }
+      </form>
+    </mat-card-content>
+  </mat-card>
+</section>

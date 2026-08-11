@@ -1,0 +1,121 @@
+.slot-form {
+  display: block;
+  padding: 24px;
+
+  &__card {
+    width: min(760px, 100%);
+    overflow: hidden;
+  }
+
+  &__form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  &__group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0 0 8px;
+    padding: 8px 12px 12px;
+    border: 1px solid var(--mat-sys-outline-variant, #cac4d0);
+    border-radius: 8px;
+
+    legend {
+      padding: 0 4px;
+      font-size: 0.75rem;
+      color: var(--mat-sys-on-surface-variant, #49454f);
+    }
+  }
+
+  // The date, the two times and the zone wrap rather than scroll: the zone name
+  // is the wide one, so it takes the whole row on its own when there is no space
+  // for it beside the times.
+  &__when {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  &__date-field,
+  &__start-field,
+  &__end-field {
+    flex: 1 1 140px;
+    min-width: 140px;
+  }
+
+  &__zone-field {
+    flex: 1 1 100%;
+  }
+
+  &__days {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  &__zone-note,
+  &__hint {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__booked,
+  &__series-note {
+    margin: 8px 0 0;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--mat-sys-surface-container-high, #ece6f0);
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  // The composed interval, muted: it repeats what the fields say, on purpose, so
+  // that "no silent shift" is visible to the admin rather than only true in a
+  // test.
+  &__interval,
+  &__browser-interval {
+    margin: 8px 0 0;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__interval {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  &__interval-own {
+    font-weight: 500;
+    color: var(--mat-sys-on-surface, #1d1b20);
+  }
+
+  &__crosses-midnight {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    background: var(--mat-sys-secondary-container, #e8def8);
+  }
+
+  &__zero-length,
+  &__days-error,
+  &__note-error {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--mat-sys-error, #b3261e);
+  }
+
+  &__conflict {
+    margin: 4px 0 0;
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+}
