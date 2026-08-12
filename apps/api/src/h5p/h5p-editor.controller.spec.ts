@@ -30,6 +30,7 @@ import { UploadLimitInterceptor } from '../common/upload-limit.interceptor.js';
 import type { Env } from '../config/configuration.js';
 import { H5pEditorController } from './h5p-editor.controller.js';
 import type {
+  ContentParametersResult,
   EditorModelResponse,
   GetAjaxRequest,
   H5pEditorService,
@@ -56,6 +57,7 @@ interface Recorded {
   gets: { request: GetAjaxRequest; user: IUser }[];
   posts: { request: PostAjaxRequest; user: IUser }[];
   models: { contentId?: string; language?: string; user: IUser }[];
+  parameters: { contentId: string; user: IUser }[];
   temporaryFiles: string[];
   sweeps: number;
 }
@@ -69,6 +71,13 @@ const MODEL: EditorModelResponse = {
   styles: ['/api/h5p/core/styles/h5p.css'],
 };
 
+/** What `getContentParameters` answers with, trimmed to the fields the route passes on. */
+const PARAMETERS = {
+  h5p: { title: 'Present perfect drill' },
+  library: 'SpeakTest.Main 1.0',
+  params: { metadata: { title: 'Present perfect drill' }, params: { question: 'Kyiv?' } },
+} as unknown as ContentParametersResult;
+
 interface Stub {
   service: H5pEditorService;
   recorded: Recorded;
@@ -77,7 +86,14 @@ interface Stub {
 }
 
 function createStub(): Stub {
-  const recorded: Recorded = { gets: [], posts: [], models: [], temporaryFiles: [], sweeps: 0 };
+  const recorded: Recorded = {
+    gets: [],
+    posts: [],
+    models: [],
+    parameters: [],
+    temporaryFiles: [],
+    sweeps: 0,
+  };
   let postFailure: Error | null = null;
 
   const service = {
@@ -101,6 +117,10 @@ function createStub(): Stub {
     ): Promise<EditorModelResponse> => {
       recorded.models.push({ contentId, language, user });
       return Promise.resolve(MODEL);
+    },
+    contentParameters: (contentId: string, user: IUser): Promise<ContentParametersResult> => {
+      recorded.parameters.push({ contentId, user });
+      return Promise.resolve(PARAMETERS);
     },
     temporaryFile: (
       filename: string,
@@ -465,6 +485,22 @@ describe('H5pEditorController editor model', () => {
     );
     expect(stub.recorded.models).toEqual([]);
   });
+
+  it('reads the parameters of the exercise the path named, as the caller', async () => {
+    const answer = await controller.contentParameters('ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77', CALLER);
+
+    expect(stub.recorded.parameters).toEqual([
+      { contentId: 'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77', user: CALLER_USER },
+    ]);
+    expect(answer).toEqual(PARAMETERS);
+  });
+
+  it('refuses a parameters request the guard somehow let through without a caller', async () => {
+    await expect(controller.contentParameters('ff6c4a3a', undefined)).rejects.toThrow(
+      UnauthorizedException,
+    );
+    expect(stub.recorded.parameters).toEqual([]);
+  });
 });
 
 /**
@@ -635,6 +671,7 @@ describe('H5pEditorController route metadata', () => {
     ['ajaxGet', H5pEditorController.prototype.ajaxGet],
     ['ajaxPost', H5pEditorController.prototype.ajaxPost],
     ['editorModel', H5pEditorController.prototype.editorModel],
+    ['contentParameters', H5pEditorController.prototype.contentParameters],
     ['temporaryFile', H5pEditorController.prototype.temporaryFile],
   ] as const;
 
@@ -693,6 +730,7 @@ describe('H5pEditorController route metadata', () => {
   it.each([
     ['ajaxGet', H5pEditorController.prototype.ajaxGet],
     ['editorModel', H5pEditorController.prototype.editorModel],
+    ['contentParameters', H5pEditorController.prototype.contentParameters],
     ['temporaryFile', H5pEditorController.prototype.temporaryFile],
   ] as const)('installs no upload interceptor on %s, which takes no file', (_name, route) => {
     expect(Reflect.getMetadata(INTERCEPTORS_METADATA, route)).toBeUndefined();
@@ -730,4 +768,13 @@ describe('H5pEditorController route metadata', () => {
       );
     },
   );
+
+  it('requires a content id on the parameters route, where there is nothing to create', () => {
+    expect(() => throughPipes('contentParameters', 'contentId', undefined)).toThrow(
+      BadRequestException,
+    );
+    expect(throughPipes('contentParameters', 'contentId', 'ff6c4a3a4d1f4f0f')).toBe(
+      'ff6c4a3a4d1f4f0f',
+    );
+  });
 });

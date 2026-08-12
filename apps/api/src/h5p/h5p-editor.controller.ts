@@ -27,6 +27,7 @@ import type { Env } from '../config/configuration.js';
 import {
   H5pEditorService,
   type AjaxUpload,
+  type ContentParametersResult,
   type EditorModelResponse,
 } from './h5p-editor.service.js';
 import {
@@ -205,6 +206,22 @@ export class H5pEditorController {
     @CurrentUser() caller?: AuthenticatedUser,
   ): Promise<EditorModelResponse> {
     return this.editor.editorModel(contentId, editorLanguage(language), callerOf(caller));
+  }
+
+  /**
+   * The stored parameters of one exercise — what the widget edits, and what a
+   * save posts straight back.
+   *
+   * The consumer is the page hosting the widget, not `h5peditor.js`; the
+   * service's docblock has the evidence.
+   */
+  @Get('params/:contentId')
+  @Roles('editor')
+  async contentParameters(
+    @Param('contentId', new ZodValidationPipe(documentIdSchema)) contentId: string,
+    @CurrentUser() caller?: AuthenticatedUser,
+  ): Promise<ContentParametersResult> {
+    return this.editor.contentParameters(contentId, callerOf(caller));
   }
 
   /**

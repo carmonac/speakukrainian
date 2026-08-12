@@ -128,6 +128,13 @@ type GetAjaxResult = Awaited<ReturnType<H5PAjaxEndpoint['getAjax']>>;
 type PostAjaxResult = Awaited<ReturnType<H5PAjaxEndpoint['postAjax']>>;
 
 /**
+ * `{ h5p, library, params: { metadata, params } }` — named through the endpoint
+ * for the same reason `GetAjaxResult` is, rather than re-declaring someone
+ * else's response shape.
+ */
+export type ContentParametersResult = Awaited<ReturnType<H5PAjaxEndpoint['getContentParameters']>>;
+
+/**
  * The range callback `getTemporaryFile` declares.
  *
  * It is narrower than the one it is handed to and than `getContentFile`'s: it
@@ -244,6 +251,28 @@ export class H5pEditorService {
       )) as IEditorModel;
 
       return { integration: model.integration, scripts: model.scripts, styles: model.styles };
+    });
+  }
+
+  /**
+   * The stored parameters of one exercise, in the shape a save posts back.
+   *
+   * **Who reads this, checked rather than assumed:** the *host page*. Joubel's
+   * `h5peditor-init.js` takes the parameters from a hidden form field
+   * (`new ns.Editor(library, $params.val(), …)`) and nothing under
+   * `apps/api/h5p/editor/` or `core/` contains this URL at all. The only
+   * reference to `UrlGenerator.parameters()` in the library is the default
+   * editor renderer's own page, which this API replaces — so the consumer is
+   * whatever renders the widget, which is #13's admin screen.
+   *
+   * The path matches `config.paramsUrl` (`/params`) under our `baseUrl`
+   * anyway, which keeps a future `setRenderer` change honest.
+   */
+  async contentParameters(contentId: string, user: IUser): Promise<ContentParametersResult> {
+    return mapH5pErrors(async () => {
+      assertSafeContentId(contentId);
+
+      return this.ajax.getContentParameters(contentId, user);
     });
   }
 

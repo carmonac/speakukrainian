@@ -136,6 +136,13 @@ interface LibraryDataBody {
   version: { major: number; minor: number };
 }
 
+/** What `GET params` answers with — the same object a save posts straight back. */
+interface ContentParametersBody {
+  h5p: { title: string };
+  library: string;
+  params: { metadata: { title: string }; params: Record<string, unknown> };
+}
+
 /** The three fields `GET editor` answers with, read the way a client reads them. */
 interface EditorModelBody {
   integration: {
@@ -172,6 +179,9 @@ describe('h5p editor ajax (e2e)', () => {
       .get(`/api/h5p/editor${contentId ? `/${contentId}` : ''}`)
       .query(language === undefined ? {} : { language })
       .set('Authorization', `Bearer ${token}`);
+
+  const contentParameters = (contentId: string, token = editor.idToken) =>
+    request(server()).get(`/api/h5p/params/${contentId}`).set('Authorization', `Bearer ${token}`);
 
   /**
    * The path an asset URL out of the editor model resolves to on this API.
@@ -735,6 +745,35 @@ describe('h5p editor ajax (e2e)', () => {
     });
   });
 
+  describe('GET params', () => {
+    it('answers with the stored metadata and parameters', async () => {
+      const response = await contentParameters(exercise.contentId).expect(200);
+
+      const body = response.body as ContentParametersBody;
+      expect(body.library).toBe(`${MAIN_LIBRARY.machineName} 1.0`);
+      expect(body.h5p.title).toBe(exercise.title);
+      expect(body.params.metadata.title).toBe(exercise.title);
+      // The fixture's own `content.json`, which is what the widget edits.
+      expect(body.params.params['question']).toBe('Have you ever been to Kyiv?');
+    });
+
+    it('answers 404 for an exercise nobody stored', async () => {
+      // The sentence is the storage adapter's, not `CONTENT_MISSING_MESSAGE`:
+      // `getContent` reads `h5p.json`, which is absent, so `H5pContentStorage`
+      // raises `content-file-missing`. Recorded as it is rather than reworded
+      // by adding an index read to a route that needs none — the save route is
+      // where the index is the authority, because there a wrong answer creates
+      // content under a caller-supplied id.
+      const response = await contentParameters('ffffffffffffffffffffffffffffffff').expect(404);
+
+      expect((response.body as ErrorBody).message).toBe('That file is not part of this exercise.');
+    });
+
+    it('answers 400 for a content id no document id could be', async () => {
+      await contentParameters('not.a.document.id').expect(400);
+    });
+  });
+
   describe('the expiry sweep', () => {
     /**
      * The sweep sees only what this suite wrote.
@@ -830,6 +869,7 @@ describe('h5p editor ajax (e2e)', () => {
         name: 'GET editor/:contentId',
         call: (token) => editorModel(exercise.contentId, undefined, token),
       },
+      { name: 'GET params', call: (token) => contentParameters(exercise.contentId, token) },
       { name: 'GET temp-files', call: (token) => tempFile('audios/audio-anything.mp3', token) },
     ];
 

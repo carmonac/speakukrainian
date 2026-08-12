@@ -330,6 +330,45 @@ describe('H5pEditorService', () => {
     });
   });
 
+  describe('content parameters', () => {
+    /** Content written straight through the storage adapter, as an import would leave it. */
+    const seedContent = async (): Promise<string> =>
+      new H5pContentStorage(harness.objects.asStorageService()).addContent(
+        {
+          title: 'Present perfect drill',
+          language: 'en',
+          mainLibrary: 'SpeakTest.Main',
+          embedTypes: ['iframe'],
+          preloadedDependencies: [
+            { machineName: 'SpeakTest.Main', majorVersion: 1, minorVersion: 0 },
+          ],
+          license: 'U',
+          defaultLanguage: 'en',
+        },
+        { question: 'Have you ever been to Kyiv?' },
+        EDITOR,
+      );
+
+    it('answers with the metadata and the parameters, in the shape a save posts back', async () => {
+      const contentId = await seedContent();
+
+      const answer = await harness.service.contentParameters(contentId, EDITOR);
+
+      expect(answer.library).toBe('SpeakTest.Main 1.0');
+      expect(answer.h5p.title).toBe('Present perfect drill');
+      expect(answer.params.metadata.title).toBe('Present perfect drill');
+      expect(answer.params.params).toEqual({ question: 'Have you ever been to Kyiv?' });
+    });
+
+    it('answers 404 for an exercise nobody stored', async () => {
+      expect(await statusOf(harness.service.contentParameters('not-here', EDITOR))).toBe(404);
+    });
+
+    it('refuses an unsafe content id with a 400', async () => {
+      expect(await statusOf(harness.service.contentParameters('../../etc', EDITOR))).toBe(400);
+    });
+  });
+
   describe('temporary files', () => {
     it('reads back a file the caller owns, with its size and mimetype', async () => {
       const clip = Buffer.from('a pronunciation clip');
