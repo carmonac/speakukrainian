@@ -25,7 +25,9 @@ export type LocaleCode = z.infer<typeof localeCodeSchema>;
  * are built from it and `locale.ts` imports this file: importing it back would
  * be an ESM cycle with the constant in its temporal dead zone while these
  * schemas are being constructed, which crashes at module evaluation rather than
- * failing a test.
+ * failing a test — vitest resolves each module on its own, and `tsc` compiles
+ * the cycle happily. The package's `postbuild` script imports the built package
+ * for exactly that reason, so reintroducing the cycle fails `pnpm build`.
  */
 export const MAX_LOCALES = 100;
 
