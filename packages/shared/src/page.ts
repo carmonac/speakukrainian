@@ -8,31 +8,39 @@ import {
   publishStatusSchema,
   richTextSchema,
   slugSchema,
+  storedAssetRefSchema,
+  storedLocalizedTextSchema,
+  storedRichTextSchema,
 } from './common.js';
 
 export const pageTypeSchema = z.enum(['rich_text', 'subsection_list', 'h5p_exercise']);
 export type PageType = z.infer<typeof pageTypeSchema>;
 
 /**
- * A free-form article. The rich text may embed images and `<audio>` players —
- * audio is a first-class part of the learning content, not a decoration.
+ * A free-form article, as a stored document holds it. The rich text may embed
+ * images and `<audio>` players — audio is a first-class part of the learning
+ * content, not a decoration.
+ *
+ * Its localized fields read through the lenient `stored*` variants (ADR-012);
+ * {@link richTextPageBodySchema} below is the bounded shape a request takes.
  */
-export const richTextPageBodySchema = z.strictObject({
+export const storedRichTextPageBodySchema = z.strictObject({
   type: z.literal('rich_text'),
-  content: richTextSchema,
+  content: storedRichTextSchema,
   /**
    * Audio assets referenced by the editor content, tracked separately so we can
    * garbage-collect orphaned uploads and preload the right files.
    */
-  audioAssets: z.array(assetRefSchema).default([]),
-  imageAssets: z.array(assetRefSchema).default([]),
+  audioAssets: z.array(storedAssetRefSchema).default([]),
+  imageAssets: z.array(storedAssetRefSchema).default([]),
 });
 
 /**
  * An index page that lists the child sections of its parent — this is what
- * produces pages like `/grammar-points/`.
+ * produces pages like `/grammar-points/`. Stored shape; see
+ * {@link subsectionListPageBodySchema} for the bounded one.
  */
-export const subsectionListPageBodySchema = z.strictObject({
+export const storedSubsectionListPageBodySchema = z.strictObject({
   type: z.literal('subsection_list'),
   /**
    * Defaults to the page's own parent section when omitted. Constrained to a
@@ -47,43 +55,70 @@ export const subsectionListPageBodySchema = z.strictObject({
   showImages: z.boolean().default(true),
   showDescriptions: z.boolean().default(true),
   /** Optional lead-in text rendered above the list. */
-  intro: richTextSchema.optional(),
+  intro: storedRichTextSchema.optional(),
 });
 
 /**
  * An interactive H5P exercise plus an optional explanation. The `.h5p` package
  * is uploaded through the admin panel and can be re-edited in place via the
- * H5P authoring widget.
+ * H5P authoring widget. Stored shape; see {@link h5pExercisePageBodySchema}.
  */
-export const h5pExercisePageBodySchema = z.strictObject({
+export const storedH5pExercisePageBodySchema = z.strictObject({
   type: z.literal('h5p_exercise'),
   /** H5P content id assigned by the H5P server. Null until the first upload. */
   h5pContentId: z.string().min(1).nullable().default(null),
   /** Machine name of the H5P library, e.g. `H5P.MultiChoice`. Informational. */
   h5pLibrary: z.string().optional(),
   /** Explanation or instructions shown alongside the exercise. */
-  explanation: richTextSchema.optional(),
+  explanation: storedRichTextSchema.optional(),
   explanationPosition: z.enum(['above', 'below']).default('above'),
   /** Whether learner attempts are recorded (xAPI). Off for anonymous practice. */
   trackResults: z.boolean().default(false),
 });
 
 /**
- * The three variants are `strictObject` rather than `object` because zod strips
+ * The bounded variants a request takes, derived from the stored ones so the two
+ * cannot drift in anything but the bounds. `.extend()` preserves the strict
+ * catchall and the other fields' `.default()`s, so each stays as strict and as
+ * defaulted as the block below describes.
+ */
+export const richTextPageBodySchema = storedRichTextPageBodySchema.extend({
+  content: richTextSchema,
+  audioAssets: z.array(assetRefSchema).default([]),
+  imageAssets: z.array(assetRefSchema).default([]),
+});
+
+export const subsectionListPageBodySchema = storedSubsectionListPageBodySchema.extend({
+  intro: richTextSchema.optional(),
+});
+
+export const h5pExercisePageBodySchema = storedH5pExercisePageBodySchema.extend({
+  explanation: richTextSchema.optional(),
+});
+
+/**
+ * The variants are `strictObject` rather than `object` because zod strips
  * an unrecognized key from a plain object *silently*: a body posted as
  * `{ type: 'subsection_list', content: {…} }` would parse, store none of the
  * content and answer 200, which is a save reporting success for a write that
  * did not happen. Strict members turn the same body into an
  * `unrecognized_keys` issue pathed at `body`.
  *
- * Nothing has ever written a page document, so no stored body can fail the
- * stricter rule and ADR-012's stored/input split buys nothing here — the rule
- * lives on this one schema, which the stored and the request shapes share.
+ * Nothing has ever written a page document, so no stored body can fail *that*
+ * rule and it holds on both shapes. The **length** rules are the ones ADR-012
+ * separates, so they live on the bounded variants alone.
  */
 export const pageBodySchema = z.discriminatedUnion('type', [
   richTextPageBodySchema,
   subsectionListPageBodySchema,
   h5pExercisePageBodySchema,
+]);
+
+/** What the repository parses a stored body with: the same shape, unbounded. */
+export const storedPageBodySchema = z.discriminatedUnion('type', [
+  storedRichTextPageBodySchema,
+  storedSubsectionListPageBodySchema,
+  storedH5pExercisePageBodySchema,
 ]);
 export type PageBody = z.infer<typeof pageBodySchema>;
 export type RichTextPageBody = z.infer<typeof richTextPageBodySchema>;
@@ -108,11 +143,19 @@ export type PageBodyParseInput = z.input<typeof pageBodySchema>;
 /** A page's own id: `documentIdSchema` under the name the routes use. */
 export const pageIdSchema = documentIdSchema;
 
-export const seoSchema = z.object({
+/** The SEO block as a stored document holds it — lenient, per ADR-012. */
+export const storedSeoSchema = z.object({
+  metaTitle: storedLocalizedTextSchema.optional(),
+  metaDescription: storedLocalizedTextSchema.optional(),
+  ogImage: storedAssetRefSchema.optional(),
+  noIndex: z.boolean().default(false),
+});
+
+/** The same block as a request may carry it: every localized field is bounded. */
+export const seoSchema = storedSeoSchema.extend({
   metaTitle: localizedTextSchema.optional(),
   metaDescription: localizedTextSchema.optional(),
   ogImage: assetRefSchema.optional(),
-  noIndex: z.boolean().default(false),
 });
 export type Seo = z.infer<typeof seoSchema>;
 
@@ -141,9 +184,14 @@ export const contentPageSchema = z
     slug: editableContentPageFields.slug,
     /** Full public path, e.g. `/grammar-points/present-simple/intro`. */
     path: z.string().startsWith('/'),
-    title: editableContentPageFields.title,
-    body: editableContentPageFields.body,
-    seo: editableContentPageFields.seo,
+    /**
+     * Read through the lenient variants (ADR-012): the localized length and
+     * entry-count bounds arrived after documents existed, and this schema is
+     * what the repository parses every document it reads with.
+     */
+    title: storedLocalizedTextSchema,
+    body: storedPageBodySchema,
+    seo: storedSeoSchema.optional(),
     sortOrder: editableContentPageFields.sortOrder.default(0),
     status: editableContentPageFields.status.default('draft'),
     publishedAt: z.string().nullable().default(null),

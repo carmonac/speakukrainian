@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_LOCALES, MAX_LOCALIZED_TEXT_LENGTH, MAX_RICH_TEXT_LENGTH } from './common.js';
 import {
   SECTION_ROOT_PARENT,
   createSectionSchema,
@@ -8,6 +9,17 @@ import {
   sectionSchema,
   updateSectionSchema,
 } from './section.js';
+
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+
+/** Distinct codes `localeCodeSchema` accepts (`zaa`, `zab`, …), one character each. */
+const oneCharInLocales = (count: number): Record<string, string> =>
+  Object.fromEntries(
+    Array.from({ length: count }, (_unused, index) => [
+      `z${LETTERS[Math.floor(index / LETTERS.length)]}${LETTERS[index % LETTERS.length]}`,
+      'x',
+    ]),
+  );
 
 const audit = {
   createdAt: '2026-01-01T00:00:00Z',
@@ -99,6 +111,46 @@ describe('sectionSchema', () => {
     expect(sectionSchema.safeParse({ ...baseSection, slug: 'Grammar Points' }).success).toBe(false);
   });
 
+  it('still reads a stored section whose localized fields are over the input bounds', () => {
+    // ADR-012 again, and this is the test that keeps the public menu up: the
+    // repository parses every section it reads through this schema, and
+    // `GET /api/menu` reads every section, so a bound here would 500 the
+    // anonymous navigation, the admin tree and this section's own edit screen at
+    // once — leaving no screen from which to repair it.
+    const stored = {
+      ...baseSection,
+      title: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+      description: oneCharInLocales(MAX_LOCALES + 1),
+      menuLabel: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+      image: {
+        path: 'images/2026/08/a.png',
+        url: 'https://cdn.test/a.png',
+        contentType: 'image/png',
+        sizeBytes: 1024,
+        alt: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+      },
+    };
+
+    const result = sectionSchema.safeParse(stored);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.title).toEqual(stored.title);
+    expect(Object.keys(result.data?.description ?? {})).toHaveLength(MAX_LOCALES + 1);
+    expect(result.data?.image?.alt).toEqual(stored.image.alt);
+
+    // The same document is refused on the way in, which is what makes the
+    // leniency above a decision rather than an absent rule.
+    const { id: _id, parentId: _parentId, ancestorIds: _a, depth: _d, path: _p, ...input } = stored;
+    const refused = createSectionSchema.safeParse(input);
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues.map((issue) => issue.path.join('.'))).toEqual([
+      'title.en',
+      'description',
+      'image.alt.en',
+      'menuLabel.en',
+    ]);
+  });
+
   it('defaults a stored document written before the flags existed', () => {
     const { showInMenu: _showInMenu, sortOrder: _sortOrder, status: _status, ...old } = baseSection;
 
@@ -185,6 +237,60 @@ describe('createSectionSchema', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+  });
+
+  it('refuses an over-long title entry, pathed to the locale', () => {
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening', uk: 'я'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['title', 'uk']);
+  });
+
+  it(`refuses a menuLabel carrying more than ${MAX_LOCALES} translations`, () => {
+    // Every value is one character, so this is refused for the number of
+    // translations and nothing else.
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening' },
+      menuLabel: oneCharInLocales(MAX_LOCALES + 1),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['menuLabel']);
+    expect(result.error?.issues[0]?.message).toContain(String(MAX_LOCALES));
+  });
+
+  it('refuses an over-long image alt entry, pathed to the locale', () => {
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening' },
+      image: {
+        path: 'images/2026/08/a.png',
+        url: 'https://cdn.test/a.png',
+        contentType: 'image/png',
+        sizeBytes: 1024,
+        alt: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['image', 'alt', 'en']);
+  });
+
+  it('accepts a description a real section could carry', () => {
+    const description = { en: `<p>${'Verbs of motion. '.repeat(200)}</p>` };
+    expect(description.en.length).toBeGreaterThan(MAX_LOCALIZED_TEXT_LENGTH);
+
+    const result = createSectionSchema.safeParse({
+      slug: 'listening',
+      title: { en: 'Listening' },
+      description,
+    });
+
+    expect(result.success).toBe(true);
   });
 
   it.each(['https://example.com/x', 'http://a.test'])(
@@ -284,6 +390,18 @@ describe('updateSectionSchema', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.path).toEqual(['link', 'href']);
+  });
+
+  it('still applies the localized length bounds after .partial()', () => {
+    // `.partial()` wraps a field in optional and keeps everything inside it, so
+    // a bound that only held on the create schema would let an edit store what
+    // a create refused. The same trap the `.default()` comment warns about.
+    const result = updateSectionSchema.safeParse({
+      description: { en: `<p>${'a'.repeat(MAX_RICH_TEXT_LENGTH)}</p>` },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['description', 'en']);
   });
 
   it('rejects an invalid value for a field it does carry', () => {

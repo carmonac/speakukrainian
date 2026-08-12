@@ -8,6 +8,9 @@ import {
   publishStatusSchema,
   richTextSchema,
   slugSchema,
+  storedAssetRefSchema,
+  storedLocalizedTextSchema,
+  storedRichTextSchema,
 } from './common.js';
 
 /**
@@ -165,12 +168,18 @@ export const sectionSchema = z
     slug: editableSectionFields.slug,
     /** Full public path built from the ancestor slugs, e.g. `/grammar-points/present-simple`. */
     path: z.string().startsWith('/'),
-    title: editableSectionFields.title,
-    description: editableSectionFields.description,
-    image: editableSectionFields.image,
+    /**
+     * The four localized fields are read through the lenient `stored*`
+     * variants, the same ADR-012 split as `link` below and for the same reason:
+     * the length and entry-count bounds were added after documents existed, and
+     * this schema is what the repository parses every document it reads with.
+     */
+    title: storedLocalizedTextSchema,
+    description: storedRichTextSchema.optional(),
+    image: storedAssetRefSchema.optional(),
 
     showInMenu: editableSectionFields.showInMenu.default(false),
-    menuLabel: editableSectionFields.menuLabel,
+    menuLabel: storedLocalizedTextSchema.optional(),
 
     /**
      * The stored target is read through the lenient

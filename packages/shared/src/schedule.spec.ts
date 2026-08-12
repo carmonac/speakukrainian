@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_LOCALES } from './locale.js';
+import { MAX_LOCALES } from './common.js';
 import {
   MAX_SCHEDULE_RANGE_DAYS,
   MAX_SLOT_NOTE_LENGTH,
