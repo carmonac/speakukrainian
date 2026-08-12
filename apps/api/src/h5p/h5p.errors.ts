@@ -168,8 +168,10 @@ const CLIENT_FAULT_IDS = new Set(['not-in-whitelist']);
  * when it is not one this API can attribute to the request.
  *
  * An `H5pError` carries its own status and is mapped straight through. A plain
- * `Error` is mapped only when it matches one of the two narrow zip-reader
- * families above; everything else returns `null`.
+ * `Error` is mapped only when it matches one of the narrow families
+ * `plainErrorException` enumerates — the two zip-reader ones, raised while a
+ * package is being read, and the metadata-schema one the save path raises;
+ * everything else returns `null`.
  *
  * That `null` is the point of the function. A storage outage, a bug in an
  * adapter or a broken Firestore connection is not the caller's file being
