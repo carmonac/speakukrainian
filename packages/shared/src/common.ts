@@ -115,6 +115,13 @@ export type LocalizedText = z.infer<typeof localizedTextSchema>;
  * The stored variant, lenient for the same two reasons
  * {@link storedLocalizedTextSchema} carries — and the sanitizer one bites here
  * in particular, since this is the field it rewrites.
+ *
+ * Leniency here fixes the *read* half of that only: a body the sanitizer grew
+ * past the bound is still served and still repairable, but the next save carries
+ * it back and {@link richTextSchema} refuses it, so a title-only edit on that
+ * page fails until the text is shortened. Accepted rather than given slack —
+ * slack only moves the boundary — and the closure is to re-parse the sanitized
+ * body at the write boundary, which is a follow-up issue. See ADR-012.
  */
 export const storedRichTextSchema = z.record(localeCodeSchema, z.string());
 

@@ -467,6 +467,21 @@ re-serializes what it cleans (`&` becomes `&amp;`, `controls` becomes `controls=
 passes at exactly the bound is therefore stored over it, and a bounded stored schema would make the
 API refuse to read a document it had just written, with no attacker involved.
 
+_The split fixes the read half of that, and only the read half._ A page whose sanitized body ended
+up over the bound reads, renders and can be repaired — but it cannot be saved again with its body
+unchanged. The admin sends the whole `body` on every save, so a title-only edit on that page answers
+400 at `body.content.en`, and the toast the admin raises drops the issue path, so it does not name
+the field or the locale. The bound gets no slack in exchange, because slack only moves the boundary
+a few characters further out while the read-side leniency is the half worth having. The residual is
+accepted: the window is `sanitized > bound ≥ raw`, a few characters wide at a bound already ~25× a
+long lesson, and nothing in it is lost, unreadable or unrepairable. It is also the one case where
+the admin's "a length refusal is unreachable in real authoring, so a toast is enough and nothing is
+bound to a field" decision fails on its own terms — this refusal arrives on a page the author saved
+successfully and did not lengthen. Closing it means re-parsing the sanitized body against the input
+schema at the write boundary and refusing there, so the API never writes a body it would not accept
+back; that is a follow-up issue, and it would leave this ADR's split resting on legacy documents
+alone, which is reason enough on its own.
+
 _Obligation:_ reading leniently is not permission to publish. A projection that hands a stored
 value to a client re-checks it against the input schema and drops what fails — `buildMenu` leaves
 a section whose stored href the write path would refuse out of the menu. Otherwise the leniency
