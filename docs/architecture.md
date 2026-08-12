@@ -471,16 +471,25 @@ _The split fixes the read half of that, and only the read half._ A page whose sa
 up over the bound reads, renders and can be repaired — but it cannot be saved again with its body
 unchanged. The admin sends the whole `body` on every save, so a title-only edit on that page answers
 400 at `body.content.en`, and the toast the admin raises drops the issue path, so it does not name
-the field or the locale. The bound gets no slack in exchange, because slack only moves the boundary
-a few characters further out while the read-side leniency is the half worth having. The residual is
-accepted: the window is `sanitized > bound ≥ raw`, a few characters wide at a bound already ~25× a
-long lesson, and nothing in it is lost, unreadable or unrepairable. It is also the one case where
-the admin's "a length refusal is unreachable in real authoring, so a toast is enough and nothing is
-bound to a field" decision fails on its own terms — this refusal arrives on a page the author saved
-successfully and did not lengthen. Closing it means re-parsing the sanitized body against the input
-schema at the write boundary and refusing there, so the API never writes a body it would not accept
-back; that is a follow-up issue, and it would leave this ADR's split resting on legacy documents
-alone, which is reason enough on its own.
+the field or the locale. The bound gets no slack in exchange, because the sanitizer's growth scales
+with how many constructs it rewrites rather than costing a fixed number of characters, so no fixed
+slack closes the window — it only relocates it — while the read-side leniency is the half worth
+having. The residual is accepted because the window is `sanitized > bound ≥ raw` and its width is
+exactly what the sanitizer adds to that body: **nothing** for HTML the editor serializes, since
+ProseMirror escapes `&` itself and `audio.extension.ts` already emits `controls="true"` — an
+editor-shaped body of 99 743 characters is stored at 99 743 and saves again unchanged — so through
+the admin the window is unreachable rather than merely narrow. It opens only for a client sending
+constructs the editor never emits: 1 000 bare `&` in a 99 000-character body is stored at 103 000
+and refuses the next save, 5 000 of them at 119 000, which is thousands of characters wide, not a
+few. Reaching it at all takes a body near a bound that already clears the heaviest page anyone could
+plausibly author by 1.7× and a deliberately heavy one by ~4.5× (`common.ts` carries the
+measurement), and nothing in the window is lost, unreadable or unrepairable. It is also the one case
+where the admin's "a length refusal is unreachable in real authoring, so a toast is enough and
+nothing is bound to a field" decision fails on its own terms — this refusal arrives on a page the
+author saved successfully and did not lengthen. Closing it means re-parsing the sanitized body
+against the input schema at the write boundary and refusing there, so the API never writes a body it
+would not accept back; that is a follow-up issue, and it would leave this ADR's split resting on
+legacy documents alone, which is reason enough on its own.
 
 _Obligation:_ reading leniently is not permission to publish. A projection that hands a stored
 value to a client re-checks it against the input schema and drops what fails — `buildMenu` leaves
