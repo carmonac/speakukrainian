@@ -5,7 +5,7 @@ import {
   H5PEditor,
   fsImplementations,
 } from '@lumieducation/h5p-server';
-import type { IUser } from '@lumieducation/h5p-server';
+import type { IEditorModel, IUser } from '@lumieducation/h5p-server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { H5pContentStorage } from './h5p-content.storage.js';
@@ -57,13 +57,18 @@ async function createHarness(): Promise<Harness> {
   await keyValueStorage.save('contentTypeCache', []);
   await keyValueStorage.save('contentTypeCacheUpdate', Date.now());
 
+  // `setRenderer` exactly as `h5p.module.ts` sets it: the stock renderer
+  // answers `render` with an HTML page, so without it the model cases below
+  // would be asserting over a string. Mirroring the module here means the
+  // module's own call is *not* what these cases pin — `h5p-editor.e2e-spec.ts`
+  // is, over the real provider graph, the same way the player's renderer is.
   const editor = new H5PEditor(
     keyValueStorage,
     config,
     new H5pLibraryStorage(storage),
     new H5pContentStorage(storage),
     new H5pTemporaryStorage(storage, config),
-  );
+  ).setRenderer((model: IEditorModel) => model);
   const endpoint = new H5PAjaxEndpoint(editor);
 
   return {
@@ -240,6 +245,88 @@ describe('H5pEditorService', () => {
       )) as { data: unknown };
 
       expect(answer.data).toEqual({});
+    });
+  });
+
+  describe('the editor model', () => {
+    it('answers with exactly the three fields the widget boots from', async () => {
+      const model = await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      // A field the library adds to `IEditorModel` shows up here, which is the
+      // half of the leak an absent-`urlGenerator` assertion cannot see.
+      expect(Object.keys(model).sort()).toEqual(['integration', 'scripts', 'styles']);
+      expect(model.scripts.length + model.styles.length).toBeGreaterThan(40);
+    });
+
+    it.each([
+      ['installLibraryLockMaxOccupationTime'],
+      ['contentWhitelist'],
+      ['libraryWhitelist'],
+      ['hubRegistrationEndpoint'],
+      ['maxFileSize'],
+    ])('carries no part of the server configuration: %s', async (key) => {
+      // **This is the assertion that matters.** `render` returns a live
+      // `UrlGenerator` whose only serialisable own property is the whole
+      // 41-key `H5PConfig`, and each of these five keys exists only there —
+      // none of them appears anywhere in `generateIntegration` or
+      // `generateEditorIntegration`. Asserting the *absence of `urlGenerator`*
+      // would pass for a future field that carries the same config; a
+      // substring assertion over the serialised body would not.
+      const model = await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      expect(JSON.stringify(model)).not.toContain(key);
+    });
+
+    it('does not carry the url generator either', async () => {
+      // The weaker of the two, kept because it names the field this is really
+      // about. It is not a replacement for the substring cases above: on its
+      // own it passes for any new field that also holds the configuration.
+      const model = await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      expect(model).not.toHaveProperty('urlGenerator');
+    });
+
+    it('names the exercise being edited, and nothing when there is not one yet', async () => {
+      const existing = await harness.service.editorModel('some-content-id', undefined, EDITOR);
+      const fresh = await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      expect(existing.integration.editor?.nodeVersionId).toBe('some-content-id');
+      expect(fresh.integration.editor?.nodeVersionId).toBeUndefined();
+    });
+
+    it('leaves the editor chrome English for uk, which upstream does not ship', async () => {
+      // ADR-007, amendment 3: `H5P_TRANSLATE` localizes the strings this
+      // *server* renders, and Joubel's own authoring UI comes from
+      // `editor-assets/language/<code>.js` — 26 locales upstream, without
+      // `uk`. `getLanguageReplacer` returns identity for one it does not have,
+      // so `language/en.js` stays in the list. Recorded as an outcome rather
+      // than as a plan, so that shipping `uk` upstream makes this fail loudly.
+      const model = await harness.service.editorModel(undefined, 'uk', EDITOR);
+
+      // The URLs carry a `?version=` cache buster, so the match is on the
+      // file and not on the end of the string.
+      expect(model.scripts.some((url) => url.includes('language/en.js'))).toBe(true);
+      expect(model.scripts.some((url) => url.includes('language/es.js'))).toBe(false);
+    });
+
+    it('swaps in the editor language file for a locale upstream does ship', async () => {
+      const model = await harness.service.editorModel(undefined, 'es', EDITOR);
+
+      expect(model.scripts.some((url) => url.includes('language/es.js'))).toBe(true);
+      expect(model.scripts.some((url) => url.includes('language/en.js'))).toBe(false);
+    });
+
+    it('defaults to English when the caller asked for no language', async () => {
+      const model = await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      expect(model.integration.editor?.language).toBe('en');
+    });
+
+    it('refuses an unsafe content id with a 400 and never renders', async () => {
+      const render = vi.spyOn(harness.editor, 'render');
+
+      expect(await statusOf(harness.service.editorModel('../../etc', undefined, EDITOR))).toBe(400);
+      expect(render).not.toHaveBeenCalled();
     });
   });
 

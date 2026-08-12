@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { BadRequestException, HttpException, UnauthorizedException } from '@nestjs/common';
-import { HTTP_CODE_METADATA, INTERCEPTORS_METADATA } from '@nestjs/common/constants.js';
+import type { PipeTransform } from '@nestjs/common';
+import {
+  HTTP_CODE_METADATA,
+  INTERCEPTORS_METADATA,
+  PATH_METADATA,
+  ROUTE_ARGS_METADATA,
+} from '@nestjs/common/constants.js';
 import type { ConfigService } from '@nestjs/config';
 import type { IUser } from '@lumieducation/h5p-server';
 import express from 'express';
@@ -24,6 +30,7 @@ import { UploadLimitInterceptor } from '../common/upload-limit.interceptor.js';
 import type { Env } from '../config/configuration.js';
 import { H5pEditorController } from './h5p-editor.controller.js';
 import type {
+  EditorModelResponse,
   GetAjaxRequest,
   H5pEditorService,
   PostAjaxRequest,
@@ -34,15 +41,33 @@ import type { RangeCallback } from './h5p.responses.js';
 
 const CALLER: AuthenticatedUser = { uid: 'editor000001', email: 'e@x.local', role: 'editor' };
 
+/**
+ * The `IUser` the caller above becomes. Spelled out rather than taken from
+ * `h5pUserFor`, so the assertion is about the value and not about the function
+ * agreeing with itself: this id is the prefix every temporary file this caller
+ * writes is stored under.
+ */
+const CALLER_USER: IUser = { id: CALLER.uid, email: 'e@x.local', name: '', type: 'local' };
+
 /** A clip whose every window differs from every other, so a range assertion means something. */
 const CLIP = Buffer.from(Uint8Array.from({ length: 4096 }, (_value, index) => (index * 37) % 251));
 
 interface Recorded {
   gets: { request: GetAjaxRequest; user: IUser }[];
   posts: { request: PostAjaxRequest; user: IUser }[];
+  models: { contentId?: string; language?: string; user: IUser }[];
   temporaryFiles: string[];
   sweeps: number;
 }
+
+/** Enough of an editor model to tell one call's answer from another's. */
+const MODEL: EditorModelResponse = {
+  integration: {
+    editor: { nodeVersionId: 'from-the-service' },
+  } as EditorModelResponse['integration'],
+  scripts: ['/api/h5p/core/js/h5p.js'],
+  styles: ['/api/h5p/core/styles/h5p.css'],
+};
 
 interface Stub {
   service: H5pEditorService;
@@ -52,7 +77,7 @@ interface Stub {
 }
 
 function createStub(): Stub {
-  const recorded: Recorded = { gets: [], posts: [], temporaryFiles: [], sweeps: 0 };
+  const recorded: Recorded = { gets: [], posts: [], models: [], temporaryFiles: [], sweeps: 0 };
   let postFailure: Error | null = null;
 
   const service = {
@@ -68,6 +93,14 @@ function createStub(): Stub {
         return Promise.reject(failure);
       }
       return Promise.resolve({ answered: ajaxRequest.action });
+    },
+    editorModel: (
+      contentId: string | undefined,
+      language: string | undefined,
+      user: IUser,
+    ): Promise<EditorModelResponse> => {
+      recorded.models.push({ contentId, language, user });
+      return Promise.resolve(MODEL);
     },
     temporaryFile: (
       filename: string,
@@ -384,6 +417,56 @@ describe('H5pEditorController', () => {
   });
 });
 
+describe('H5pEditorController editor model', () => {
+  let stub: Stub;
+  let controller: H5pEditorController;
+
+  beforeEach(() => {
+    stub = createStub();
+    controller = createController(stub);
+  });
+
+  it('asks for a new exercise when the path carries no content id', async () => {
+    const model = await controller.editorModel(undefined, undefined, CALLER);
+
+    expect(stub.recorded.models).toEqual([
+      { contentId: undefined, language: undefined, user: CALLER_USER },
+    ]);
+    expect(model).toEqual(MODEL);
+  });
+
+  it('asks for the exercise the path named, as the authenticated caller', async () => {
+    await controller.editorModel('ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77', 'es', CALLER);
+
+    expect(stub.recorded.models).toEqual([
+      {
+        contentId: 'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77',
+        language: 'es',
+        user: CALLER_USER,
+      },
+    ]);
+  });
+
+  it.each([['not a code'], ['english'], ['uk-'], ['../etc']])(
+    'refuses the language %j with a 400 and never reaches the service',
+    async (language) => {
+      // `H5PEditor.render` calls `validateLanguageCode`, which refuses these
+      // with a plain `Error` — a 500 for a query parameter the caller typed.
+      await expect(controller.editorModel(undefined, language, CALLER)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(stub.recorded.models).toEqual([]);
+    },
+  );
+
+  it('refuses a request the guard somehow let through without a caller', async () => {
+    await expect(controller.editorModel(undefined, undefined, undefined)).rejects.toThrow(
+      UnauthorizedException,
+    );
+    expect(stub.recorded.models).toEqual([]);
+  });
+});
+
 /**
  * `temp-files` over a real Express app, with the service replaced by a stub that
  * answers *anything* it is asked for.
@@ -527,10 +610,31 @@ function accepts(instance: MulterInstance, originalname: string): boolean {
   return outcome;
 }
 
+/** One route parameter's pipes, read off the handler Nest will actually run. */
+function paramPipesOf(handler: string, name: string): PipeTransform<unknown, unknown>[] {
+  const metadata = (Reflect.getMetadata(ROUTE_ARGS_METADATA, H5pEditorController, handler) ??
+    {}) as Record<string, { data?: unknown; pipes?: unknown[] }>;
+  const parameter = Object.values(metadata).find((entry) => entry.data === name);
+
+  if (!parameter) {
+    throw new Error(`${handler} has no route parameter named ${name}`);
+  }
+  return (parameter.pipes ?? []) as PipeTransform<unknown, unknown>[];
+}
+
+/** Runs a parameter's pipes in order, as Nest does before calling the handler. */
+function throughPipes(handler: string, name: string, value: unknown): unknown {
+  return paramPipesOf(handler, name).reduce<unknown>(
+    (carried, pipe) => pipe.transform(carried, { type: 'param', data: name }),
+    value,
+  );
+}
+
 describe('H5pEditorController route metadata', () => {
   const routes = [
     ['ajaxGet', H5pEditorController.prototype.ajaxGet],
     ['ajaxPost', H5pEditorController.prototype.ajaxPost],
+    ['editorModel', H5pEditorController.prototype.editorModel],
     ['temporaryFile', H5pEditorController.prototype.temporaryFile],
   ] as const;
 
@@ -586,12 +690,44 @@ describe('H5pEditorController route metadata', () => {
     );
   });
 
-  it('installs no upload interceptor on the two routes that take no file', () => {
-    expect(
-      Reflect.getMetadata(INTERCEPTORS_METADATA, H5pEditorController.prototype.ajaxGet),
-    ).toBeUndefined();
-    expect(
-      Reflect.getMetadata(INTERCEPTORS_METADATA, H5pEditorController.prototype.temporaryFile),
-    ).toBeUndefined();
+  it.each([
+    ['ajaxGet', H5pEditorController.prototype.ajaxGet],
+    ['editorModel', H5pEditorController.prototype.editorModel],
+    ['temporaryFile', H5pEditorController.prototype.temporaryFile],
+  ] as const)('installs no upload interceptor on %s, which takes no file', (_name, route) => {
+    expect(Reflect.getMetadata(INTERCEPTORS_METADATA, route)).toBeUndefined();
   });
+
+  it('registers the editor model on both paths, as one array and not two decorators', () => {
+    // **The whole reason this assertion exists.** Express 5 has no
+    // `:contentId?`, and two stacked `@Get`s do not register two routes:
+    // `RequestMapping` writes `PATH_METADATA` with a single value, so the
+    // second overwrites the first and one path silently ceases to exist —
+    // nothing throws, and every unit test that calls the handler directly
+    // still passes.
+    expect(Reflect.getMetadata(PATH_METADATA, H5pEditorController.prototype.editorModel)).toEqual([
+      'editor',
+      'editor/:contentId',
+    ]);
+  });
+
+  it('validates the content id in the path, and tolerates its absence', () => {
+    // `.optional()` is load-bearing: Nest runs a param pipe even when the
+    // parameter is absent, so a bare `documentIdSchema` would turn
+    // `GET /api/h5p/editor` — the route for an exercise that does not exist
+    // yet — into a 400.
+    expect(throughPipes('editorModel', 'contentId', undefined)).toBeUndefined();
+    expect(throughPipes('editorModel', 'contentId', 'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77')).toBe(
+      'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77',
+    );
+  });
+
+  it.each([['../etc'], ['a/b'], ['has.dots'], ['']])(
+    'refuses the content id %j in the path',
+    (contentId) => {
+      expect(() => throughPipes('editorModel', 'contentId', contentId)).toThrow(
+        BadRequestException,
+      );
+    },
+  );
 });

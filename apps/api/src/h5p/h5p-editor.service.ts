@@ -1,8 +1,9 @@
 import type { Readable } from 'node:stream';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { H5PAjaxEndpoint, H5PEditor, H5pError } from '@lumieducation/h5p-server';
-import type { IUser } from '@lumieducation/h5p-server';
+import type { ContentId, IEditorModel, IUser } from '@lumieducation/h5p-server';
 import { mapH5pErrors } from './h5p.errors.js';
+import { assertSafeContentId } from './h5p.paths.js';
 import type { RangeCallback } from './h5p.responses.js';
 import { H5P_AJAX_ENDPOINT, H5P_EDITOR } from './h5p.tokens.js';
 
@@ -15,13 +16,18 @@ import { H5P_AJAX_ENDPOINT, H5P_EDITOR } from './h5p.tokens.js';
 export const TEMP_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 
 /**
- * The language `POST /ajax` falls back to.
+ * The language `POST /ajax` and the editor model fall back to.
  *
  * `H5PEditor.listLibraryLanguageFiles` — the `translations` action — declares
  * `language` as required and hands it straight to `validateLanguageCode`, which
  * refuses `undefined` with a plain `Error` and therefore a 500. `getLibraryData`
  * on the GET side already defaults to `en` for itself, so defaulting here is the
  * same answer said one layer earlier rather than a new behaviour.
+ *
+ * `H5PEditor.render` defaults to `en` too, in its own signature; passing it
+ * explicitly keeps one answer to "what language is this API's fallback" rather
+ * than two that can drift, and it is the same default `H5pServeService` gives
+ * the player.
  */
 const DEFAULT_LANGUAGE = 'en';
 
@@ -79,6 +85,21 @@ export interface PostAjaxRequest {
   /** The `h5p` part — `action=library-upload`. */
   packageUpload?: AjaxUpload;
 }
+
+/**
+ * What `GET /editor` and `GET /editor/:contentId` answer with.
+ *
+ * **`Pick`, never `Omit<IEditorModel, 'urlGenerator'>`.** `H5PEditor.render`
+ * returns a live `UrlGenerator` alongside the three fields below, and its only
+ * serialisable own property is `config` — the whole `H5PConfig`, 41 keys and
+ * 1.6 KB of this server's setup, including `maxFileSize`, `contentWhitelist`,
+ * `libraryWhitelist`, `hubRegistrationEndpoint`, `siteType`, `uuid` and
+ * `installLibraryLockMaxOccupationTime`. An `Omit` would keep admitting every
+ * field a future version of the library adds, which is the same defect written
+ * in the type system instead of in the response. A field is added here only by
+ * naming it.
+ */
+export type EditorModelResponse = Pick<IEditorModel, 'integration' | 'scripts' | 'styles'>;
 
 export interface TemporaryFileResult {
   mimetype: string;
@@ -185,6 +206,44 @@ export class H5pEditorService {
         undefined,
         request.packageUpload,
       );
+    });
+  }
+
+  /**
+   * What the H5P authoring widget boots from: the integration object, the core
+   * scripts and the core styles, for an existing exercise or for a new one.
+   *
+   * `contentId` is `undefined` for content that has never been saved. The
+   * library declares it as a plain `ContentId` and carries it through to
+   * `integration.editor.nodeVersionId`, where `undefined` is exactly right —
+   * the widget reads it as "this is new".
+   *
+   * The response is built by naming three fields; see `EditorModelResponse` for
+   * what the fourth one carries and why it may never be spread in.
+   */
+  async editorModel(
+    contentId: string | undefined,
+    language: string | undefined,
+    user: IUser,
+  ): Promise<EditorModelResponse> {
+    return mapH5pErrors(async () => {
+      if (contentId !== undefined) {
+        // The id becomes a storage prefix inside `generateIntegration`'s URLs
+        // and inside every read the widget makes afterwards.
+        assertSafeContentId(contentId);
+      }
+
+      // `h5p.module.ts` sets a renderer that returns the model itself; the
+      // stock one returns an HTML page. `render` is typed `Promise<string |
+      // any>` for that reason, and the cast is what the renderer choice buys
+      // back — the same trade `H5pServeService.playerModel` makes.
+      const model = (await this.editor.render(
+        contentId as ContentId,
+        language ?? DEFAULT_LANGUAGE,
+        user,
+      )) as IEditorModel;
+
+      return { integration: model.integration, scripts: model.scripts, styles: model.styles };
     });
   }
 

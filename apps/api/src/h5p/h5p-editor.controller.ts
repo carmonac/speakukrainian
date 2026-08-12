@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
+  Param,
   Post,
   Query,
   Req,
@@ -17,11 +18,17 @@ import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { IUser } from '@lumieducation/h5p-server';
 import type { Request, Response } from 'express';
+import { documentIdSchema } from '@speakukrainian/shared';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/firebase-auth.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
+import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import type { Env } from '../config/configuration.js';
-import { H5pEditorService, type AjaxUpload } from './h5p-editor.service.js';
+import {
+  H5pEditorService,
+  type AjaxUpload,
+  type EditorModelResponse,
+} from './h5p-editor.service.js';
 import {
   editorLanguage,
   editorLibraryVersion,
@@ -170,6 +177,34 @@ export class H5pEditorController {
     } finally {
       await this.removeUploads([upload, packageUpload]);
     }
+  }
+
+  /**
+   * Everything the H5P authoring widget needs to boot, for an existing exercise
+   * (`editor/:contentId`) or for one that does not exist yet (`editor`).
+   *
+   * **The array path is load-bearing.** Express 5 dropped `:contentId?`
+   * (`path-to-regexp` v8), and the obvious replacement — two stacked `@Get`
+   * decorators — silently registers only **one** route: `RequestMapping` writes
+   * `PATH_METADATA` with a single value, so the second decorator overwrites the
+   * first and one of the two paths simply does not exist, with nothing thrown
+   * and nothing logged. `RouterExplorer.extractRouterPath` and
+   * `RoutePathFactory.appendToAllIfDefined` both handle an array, which is the
+   * supported form. `h5p-editor.controller.spec.ts` asserts the metadata,
+   * because that silence is the whole problem.
+   *
+   * **`.optional()` is load-bearing too.** Nest runs a param pipe even when the
+   * parameter is absent, so a bare `documentIdSchema` would turn
+   * `GET /api/h5p/editor` — the create case — into a 400.
+   */
+  @Get(['editor', 'editor/:contentId'])
+  @Roles('editor')
+  async editorModel(
+    @Param('contentId', new ZodValidationPipe(documentIdSchema.optional())) contentId?: string,
+    @Query('language') language?: string,
+    @CurrentUser() caller?: AuthenticatedUser,
+  ): Promise<EditorModelResponse> {
+    return this.editor.editorModel(contentId, editorLanguage(language), callerOf(caller));
   }
 
   /**

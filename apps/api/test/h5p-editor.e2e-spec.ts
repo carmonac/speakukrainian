@@ -136,6 +136,16 @@ interface LibraryDataBody {
   version: { major: number; minor: number };
 }
 
+/** The three fields `GET editor` answers with, read the way a client reads them. */
+interface EditorModelBody {
+  integration: {
+    editor: { assets: { js: string[]; css: string[] }; nodeVersionId?: string; language: string };
+    l10n: { H5P: Record<string, string> };
+  };
+  scripts: string[];
+  styles: string[];
+}
+
 describe('h5p editor ajax (e2e)', () => {
   let app: INestApplication;
   let auth: Auth;
@@ -156,6 +166,25 @@ describe('h5p editor ajax (e2e)', () => {
 
   const ajaxPost = (query: string, token = editor.idToken) =>
     request(server()).post(`/api/h5p/ajax?${query}`).set('Authorization', `Bearer ${token}`);
+
+  const editorModel = (contentId?: string, language?: string, token = editor.idToken) =>
+    request(server())
+      .get(`/api/h5p/editor${contentId ? `/${contentId}` : ''}`)
+      .query(language === undefined ? {} : { language })
+      .set('Authorization', `Bearer ${token}`);
+
+  /**
+   * The path an asset URL out of the editor model resolves to on this API.
+   *
+   * `H5P_BASE_URL` may be relative (production, one origin) or absolute (every
+   * development machine, where the admin is on another port), so the model
+   * carries either shape and only the path is ours to request. The same helper
+   * `h5p-play.e2e-spec.ts` uses, for the same reason.
+   */
+  const apiPathOf = (url: string): string | null => {
+    const path = url.startsWith('http') ? new URL(url).pathname + new URL(url).search : url;
+    return path.startsWith('/api/h5p/') ? path : null;
+  };
 
   const tempFile = (filename: string, token = editor.idToken) =>
     request(server())
@@ -589,6 +618,123 @@ describe('h5p editor ajax (e2e)', () => {
     });
   });
 
+  describe('GET editor', () => {
+    it('serves every asset URL the widget would load', async () => {
+      // The mechanical half of "the editor loads": if `baseUrl`,
+      // `editorLibraryUrl` or the routes ever disagree, or the fetch script did
+      // not run, one of these is a 404. Every URL rather than a sample,
+      // because a wiring mistake affects a whole family.
+      const response = await editorModel(exercise.contentId).expect(200);
+      const model = response.body as EditorModelBody;
+
+      const paths = [
+        ...new Set(
+          [
+            ...model.scripts,
+            ...model.styles,
+            ...model.integration.editor.assets.js,
+            ...model.integration.editor.assets.css,
+          ]
+            .map(apiPathOf)
+            .filter((path): path is string => path !== null),
+        ),
+      ];
+
+      // Otherwise an empty list would pass this vacuously. The model advertises
+      // 50 distinct assets — 8 core scripts, 34 editor scripts, 3 core styles
+      // and 5 editor styles — so anything near zero means the collection, not
+      // the routes.
+      expect(paths.length).toBeGreaterThan(40);
+      expect(paths.some((path) => path.startsWith('/api/h5p/core/'))).toBe(true);
+      expect(paths.some((path) => path.startsWith('/api/h5p/editor-assets/'))).toBe(true);
+
+      const answers = await Promise.all(
+        paths.map(async (path) => [path, (await request(server()).get(path)).status] as const),
+      );
+      expect(answers.filter(([, status]) => status !== 200)).toEqual([]);
+    });
+
+    it('carries no part of this server’s configuration, on the wire', async () => {
+      // Asserted over the serialised body and not only in the service spec,
+      // because the serialisation *is* what the acceptance criterion is about:
+      // `render` hands back a live `UrlGenerator` whose only serialisable own
+      // property is the entire 41-key `H5PConfig`. Naming the config keys
+      // rather than `urlGenerator` is what makes this survive the library
+      // adding a second field that carries the same object.
+      const response = await editorModel(exercise.contentId).expect(200);
+
+      expect(Object.keys(response.body as object).sort()).toEqual([
+        'integration',
+        'scripts',
+        'styles',
+      ]);
+      for (const key of [
+        'installLibraryLockMaxOccupationTime',
+        'contentWhitelist',
+        'libraryWhitelist',
+        'hubRegistrationEndpoint',
+        'maxFileSize',
+        'urlGenerator',
+      ]) {
+        expect(JSON.stringify(response.body)).not.toContain(key);
+      }
+    });
+
+    it('answers without a content id, for an exercise that does not exist yet', async () => {
+      // The array path, over HTTP. Two stacked `@Get` decorators would register
+      // only one of the two routes and answer this one with a 404, with nothing
+      // in the unit suite going red.
+      const response = await request(server())
+        .get('/api/h5p/editor')
+        .set('Authorization', `Bearer ${editor.idToken}`)
+        .expect(200);
+
+      const model = response.body as EditorModelBody;
+      expect(model.integration.editor.nodeVersionId).toBeUndefined();
+      expect(model.scripts.length).toBeGreaterThan(0);
+    });
+
+    it('names the exercise being edited when the path carries one', async () => {
+      const response = await editorModel(exercise.contentId).expect(200);
+
+      expect((response.body as EditorModelBody).integration.editor.nodeVersionId).toBe(
+        exercise.contentId,
+      );
+    });
+
+    it('localizes the strings this server renders and leaves Joubel’s chrome English for uk', async () => {
+      // ADR-007 amendment 3. `H5P_TRANSLATE` covers `integration.l10n.H5P`;
+      // the authoring UI itself comes from `editor-assets/language/<code>.js`,
+      // and upstream ships 26 of those without `uk`.
+      const ukrainian = await editorModel(exercise.contentId, 'uk').expect(200);
+      const spanish = await editorModel(exercise.contentId, 'es').expect(200);
+
+      const uk = ukrainian.body as EditorModelBody;
+      const es = spanish.body as EditorModelBody;
+      expect(uk.integration.l10n.H5P['fullscreen']).not.toBe(es.integration.l10n.H5P['fullscreen']);
+      expect(uk.scripts.some((url) => url.includes('language/en.js'))).toBe(true);
+      expect(es.scripts.some((url) => url.includes('language/es.js'))).toBe(true);
+    });
+
+    it.each([['not a code'], ['english'], ['uk-']])(
+      'answers 400 for the language %j rather than 500',
+      async (language) => {
+        const response = await editorModel(exercise.contentId, language).expect(400);
+
+        expect((response.body as ErrorBody).message).toBe('That is not a valid language code.');
+      },
+    );
+
+    it('answers 400 for a content id no document id could be', async () => {
+      const response = await request(server())
+        .get('/api/h5p/editor/not.a.document.id')
+        .set('Authorization', `Bearer ${editor.idToken}`)
+        .expect(400);
+
+      expect((response.body as ErrorBody).message).toBe('Validation failed');
+    });
+  });
+
   describe('the expiry sweep', () => {
     /**
      * The sweep sees only what this suite wrote.
@@ -679,6 +825,11 @@ describe('h5p editor ajax (e2e)', () => {
     const routes = (): { name: string; call: (token?: string) => request.Test }[] => [
       { name: 'GET ajax', call: (token) => ajaxGet('action=content-type-cache', token) },
       { name: 'POST ajax', call: (token) => ajaxPost('action=libraries', token) },
+      { name: 'GET editor', call: (token) => editorModel(undefined, undefined, token) },
+      {
+        name: 'GET editor/:contentId',
+        call: (token) => editorModel(exercise.contentId, undefined, token),
+      },
       { name: 'GET temp-files', call: (token) => tempFile('audios/audio-anything.mp3', token) },
     ];
 
@@ -693,6 +844,7 @@ describe('h5p editor ajax (e2e)', () => {
 
     it.each([
       ['GET ajax', '/api/h5p/ajax?action=content-type-cache'],
+      ['GET editor', '/api/h5p/editor'],
       ['GET temp-files', '/api/h5p/temp-files/audios/audio-anything.mp3'],
     ])('refuses an unauthenticated caller on %s', async (_name, path) => {
       await request(server()).get(path).expect(401);
