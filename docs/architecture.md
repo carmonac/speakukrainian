@@ -1001,15 +1001,30 @@ body its own header contradicts. The reasoning differs by transfer encoding and 
 so the filter must not branch on it — it cannot reliably tell what has already gone out.
 `h5p.responses.ts` answers the same moment the same way, and the e2e that pins that behaviour asserts
 the client sees an aborted connection. The level is `error` even when the exception is a 4xx: the
-fact recorded is not the exception's status but that a response reported as succeeding is a lie.
+fact recorded is not the exception's status but that a response reported as succeeding is a lie. The
+one truncation that is _not_ this server's fault is a client that navigates away mid-download, and it
+stays out of this line only because both write paths swallow it on purpose — `h5p-public.controller.ts`'s
+`sendFile` callback resolves rather than rejects once `res.headersSent`, and `h5p.responses.ts`'s
+reporter returns early once the response is closed. A streaming route that lets an abandoned transfer
+reject instead will earn an `error` line per abandoned seek; keeping that habit is what this rule
+costs its callers.
 
 The guard runs **first** and returns, before any classification, so a 5xx raised after the first byte
 produces exactly one line — the truncation one, which strictly dominates "the answer was a 500" when
 no 500 was ever sent.
 
 _Cost:_ `destroy()` kills that TCP connection, so a pipelined request behind the broken one dies with
-it. Accepted; identical to the sibling path that has already shipped. And a half-installed dev
-machine now writes an `error` line per request for its missing client tree, which is the point.
+it. Accepted; identical to the sibling path that has already shipped. The guard also keys on
+`headersSent` rather than on whether the response is still open, so a failure arriving after a
+response had already **completed** normally would sever a healthy socket. No `@Res()` route throws
+after `end()` today, and the behaviour this replaced — the write throwing out of the filter, leaving
+the client to time out — is worse in every case, but a route that grows a post-`end()` `finally`
+should be read against this paragraph. A half-installed dev machine now writes an `error` line per
+request for its missing client tree, which is the point. Two `error` lines for one failure is the
+ceiling, not three: `h5p.service.ts`'s rollback line and the hand-written cause lines fire on
+disjoint failures — a failed index write is not an `H5pError`, so it reaches the filter through the
+unrecognised-error branch rather than through the sanitizer — so a save that fails leaves the
+rollback line and the filter's, and an H5P fault leaves the cause line and the filter's.
 
 _Rejected:_ a `try`/`catch` around the write, which converts the symptom into a swallowed error and
 still leaves the socket in whatever state the partial write put it. _Rejected:_ branching on the
@@ -1023,6 +1038,14 @@ reaching the filter's guard through HTTP would need a fault injected between the
 can see; asserting it through supertest means spying on `Logger.prototype` inside the running app,
 which passes just as well against an implementation logging from the wrong place. The honest e2e
 evidence is that the suite passes unchanged.
+
+**Keep the guard anyway.** Unreachable is a fact about the five `@Res()` routes that exist today, not
+about the filter: four in `h5p-public.controller.ts` and one — `GET /api/h5p/temp-files/*path` —
+added later, by a different issue, to a different controller. What saves them is a `res.headersSent`
+check living in a third file that neither route declaration mentions, so route six inherits the
+hazard without inheriting the check. Deleting the guard as dead code removes the only place the
+invariant does not have to be re-derived per route, and what it prevents shows up as a client that
+hangs rather than as a stack trace pointing back here.
 
 ## Data model
 

@@ -100,19 +100,18 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // write below would throw from inside a filter, where a throw has nowhere
     // left to go.
     //
-    // `destroy` and not `end`: `end` on a chunked response writes the
-    // terminating zero-length chunk, which is the wire saying *that was all of
-    // it*, so a truncated clip is reported to the client as a complete one —
-    // worse than the failure being handled. With a declared `Content-Length`
-    // the client can at least count the shortfall, but the connection then
-    // returns to the keep-alive pool having sent a body its own header
-    // contradicts. The reasoning differs by transfer encoding and the answer
-    // does not, so this deliberately does not branch on it; `h5p.responses.ts`
-    // answers the same moment the same way.
+    // `destroy` and not `end`: `end` writes a chunked response's terminating
+    // zero-length chunk, so a truncated clip is reported to the client as a
+    // complete one — worse than the failure being handled. The filter cannot
+    // tell what has already gone out, so it deliberately does not branch on the
+    // transfer encoding; `h5p.responses.ts` answers this moment the same way.
     //
-    // `error` even when the exception is a 4xx: what is recorded is not the
-    // exception's status but that a response the client was told had succeeded
-    // is truncated, which is this server's fault whatever raised it.
+    // `error` even for a 4xx: what is recorded is not the exception's status
+    // but that a response the client was told had succeeded is truncated. The
+    // one truncation that is not this server's fault is a client navigating
+    // away mid-download, and it reaches here only from a write path that
+    // rejects rather than resolves — both of ours resolve, on purpose.
+    // ADR-017 carries the rest of the argument.
     if (response.headersSent) {
       this.logger.error(
         `${request.method} ${request.url} failed after the response had started with ${response.statusCode}, so its body is truncated`,
@@ -143,11 +142,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
       // A 4xx is the caller's mistake and the routine vocabulary of a working
       // API: a line per rejected validation is noise that buries the lines that
       // matter. A 5xx is this server's, and nothing above the filter is
-      // guaranteed to have said so. That is not the rule the `exposedClientError`
-      // branch follows, which does `warn` its 4xx — those are raised by
-      // middleware before any of our code runs, so nothing else has the chance
-      // to record them, whereas a `BadRequestException` came from code that
-      // could log if it had anything to add.
+      // guaranteed to have said so. The `exposedClientError` branch below does
+      // `warn` its 4xx, since those are raised before any of our code runs and
+      // nothing else has the chance to record them; ADR-017 has the table.
       //
       // `>= 500` and not `=== 500`: the one 5xx `HttpException` in the tree that
       // does not log by hand is the 503 `h5p-public.controller.ts` answers for a
