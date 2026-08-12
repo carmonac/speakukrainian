@@ -291,6 +291,33 @@ describe('localized bounds on a page request', () => {
     expect(result.error?.issues[0]?.path).toEqual(['body', 'explanation', 'uk']);
   });
 
+  it.each(['imageAssets', 'audioAssets'])(
+    'refuses an over-long alt on a body %s entry, pathed through the array',
+    (field) => {
+      // The one bound the derivation re-applies by hand: `.extend()` replaces
+      // both asset arrays wholesale, so a later simplification of that extend
+      // would drop it without changing anything else.
+      const result = createContentPageSchema.safeParse(
+        page({
+          type: 'rich_text',
+          content: { en: '<p>ok</p>' },
+          [field]: [
+            {
+              path: 'images/2026/08/motion-0.png',
+              url: storageUrl('images/2026/08/motion-0.png'),
+              contentType: 'image/png',
+              sizeBytes: 2048,
+              alt: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+            },
+          ],
+        }),
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['body', field, 0, 'alt', 'en']);
+    },
+  );
+
   it('refuses an over-long meta description, pathed to the locale', () => {
     const result = createContentPageSchema.safeParse(
       page(
