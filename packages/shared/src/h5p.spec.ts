@@ -10,6 +10,8 @@ import {
   isH5pPackageFilename,
   listH5pContentQuerySchema,
   notAnH5pPackageMessage,
+  saveH5pContentSchema,
+  updateH5pContentSchema,
 } from './h5p.js';
 
 const validInput = {
@@ -102,5 +104,122 @@ describe('isH5pPackageFilename', () => {
 
   it('pins the extension constant the message and the filter share', () => {
     expect(H5P_PACKAGE_EXTENSION).toBe('.h5p');
+  });
+});
+
+/**
+ * A full `h5p.json` as `GET /api/h5p/params/:contentId` hands it back, so the
+ * round trip is asserted as a unit test and not only over HTTP.
+ */
+const storedMetadata = {
+  title: 'Present perfect drill',
+  language: 'en',
+  mainLibrary: 'H5P.MultiChoice',
+  embedTypes: ['iframe'],
+  license: 'U',
+  defaultLanguage: 'en',
+  preloadedDependencies: [{ machineName: 'H5P.MultiChoice', majorVersion: 1, minorVersion: 16 }],
+};
+
+const saveInput = {
+  library: 'H5P.MultiChoice 1.16',
+  params: {
+    metadata: storedMetadata,
+    params: { question: 'Have you ever been to Kyiv?', answers: [{ text: 'Yes' }] },
+  },
+};
+
+describe('saveH5pContentSchema', () => {
+  it('accepts exactly what /params returned, plus the library it names', () => {
+    const parsed = saveH5pContentSchema.parse(saveInput);
+
+    expect(parsed.library).toBe('H5P.MultiChoice 1.16');
+    expect(parsed.params.params).toEqual(saveInput.params.params);
+  });
+
+  it('keeps every h5p.json field past title, since the library owns that format', () => {
+    // Re-declaring H5P's metadata schema here would be a second source of
+    // truth for someone else's format, and a round trip would start losing
+    // fields the library wrote itself.
+    const parsed = saveH5pContentSchema.parse(saveInput);
+
+    expect(parsed.params.metadata).toEqual(storedMetadata);
+  });
+
+  it('keeps unknown keys inside the parameters, which are the library semantics', () => {
+    const parsed = saveH5pContentSchema.parse({
+      ...saveInput,
+      params: { ...saveInput.params, params: { whateverTheSemanticsSay: { nested: true } } },
+    });
+
+    expect(parsed.params.params).toEqual({ whateverTheSemanticsSay: { nested: true } });
+  });
+
+  it.each([
+    ['no library', { ...saveInput, library: undefined }],
+    ['an empty library', { ...saveInput, library: '' }],
+    ['no params object', { library: saveInput.library }],
+    ['no metadata', { ...saveInput, params: { params: {} } }],
+    ['no metadata title', { ...saveInput, params: { params: {}, metadata: { language: 'en' } } }],
+    [
+      'an empty title',
+      { ...saveInput, params: { params: {}, metadata: { ...storedMetadata, title: '' } } },
+    ],
+    [
+      'a title of 256 characters',
+      {
+        ...saveInput,
+        params: { params: {}, metadata: { ...storedMetadata, title: 'a'.repeat(256) } },
+      },
+    ],
+  ])('rejects a body with %s', (_shape, body) => {
+    expect(saveH5pContentSchema.safeParse(body).success).toBe(false);
+  });
+
+  it.each([
+    ['absent', { ...saveInput, params: { metadata: storedMetadata } }],
+    ['an array', { ...saveInput, params: { metadata: storedMetadata, params: [] } }],
+    ['a string', { ...saveInput, params: { metadata: storedMetadata, params: 'question' } }],
+  ])('rejects parameters that are %s', (_shape, body) => {
+    // The trap this case exists for: an `unknown` field is an *optional* key in
+    // Zod, so `z.unknown()` here would admit a body with no parameters at all,
+    // and `scanForFiles(undefined, …)` is a `TypeError` and a 500.
+    expect(saveH5pContentSchema.safeParse(body).success).toBe(false);
+  });
+
+  it('accepts a title at the 255-character limit, so the bound is pinned from both sides', () => {
+    const body = {
+      ...saveInput,
+      params: { params: {}, metadata: { ...storedMetadata, title: 'a'.repeat(255) } },
+    };
+
+    expect(saveH5pContentSchema.safeParse(body).success).toBe(true);
+  });
+});
+
+describe('updateH5pContentSchema', () => {
+  it('carries the three fields a save recomputes and nothing else', () => {
+    // `pageId` in particular: it is `null` today, but attaching an exercise to
+    // a page is the first thing the admin exercise screen does, and a save
+    // that rewrote the row would silently detach it.
+    expect(Object.keys(updateH5pContentSchema.shape).sort()).toEqual([
+      'mainLibrary',
+      'sizeBytes',
+      'title',
+    ]);
+  });
+
+  it('parses the input a save builds', () => {
+    const parsed = updateH5pContentSchema.parse({
+      title: 'Present perfect drill',
+      mainLibrary: 'H5P.MultiChoice 1.16',
+      sizeBytes: 8192,
+    });
+
+    expect(parsed).toEqual({
+      title: 'Present perfect drill',
+      mainLibrary: 'H5P.MultiChoice 1.16',
+      sizeBytes: 8192,
+    });
   });
 });

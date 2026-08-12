@@ -50,6 +50,8 @@ function createFirestoreDouble(): Double {
 
   const docRef = (collection: string, id: string) => ({
     id,
+    /** What a real `DocumentReference` calls it, and what the transaction writes by. */
+    path: `${collection}/${id}`,
     get: (): Promise<Snapshot> =>
       Promise.resolve({
         id,
@@ -99,6 +101,41 @@ function createFirestoreDouble(): Double {
       doc: (id: string) => docRef(name, id),
       ...query(name, { orderBy: [], limit: null, after: null }),
     }),
+    /**
+     * The two rules a transaction exists for, so a body that breaks either
+     * fails here rather than passing quietly: a read after a write is refused,
+     * and writes are buffered until the body has run to completion — which is
+     * what makes "the missing-id branch writes nothing" observable in `docs`.
+     */
+    runTransaction: async <T>(
+      work: (tx: {
+        get: (target: unknown) => Promise<unknown>;
+        set: (ref: { path: string }, data: Record<string, unknown>) => void;
+      }) => Promise<T>,
+    ): Promise<T> => {
+      const buffered = new Map<string, Record<string, unknown>>();
+      let wrote = false;
+
+      const result = await work({
+        get: (target: unknown) => {
+          if (wrote) {
+            return Promise.reject(
+              new Error('Firestore transactions require all reads before all writes'),
+            );
+          }
+          return (target as { get: () => Promise<unknown> }).get();
+        },
+        set: (ref, data) => {
+          wrote = true;
+          buffered.set(ref.path, data);
+        },
+      });
+
+      for (const [path, data] of buffered) {
+        docs.set(path, data);
+      }
+      return result;
+    },
   } as unknown as Firestore;
 
   return { firestore, docs, queries };
@@ -219,6 +256,89 @@ describe('H5pContentRepository', () => {
 
     expect(found?.audit.createdAt).toBe('2026-04-05T06:07:08.000Z');
     expect(found?.title).toBe(INPUT.title);
+  });
+});
+
+describe('H5pContentRepository.update', () => {
+  const PAGE_ID = 'page-the-exercise-is-attached-to';
+
+  /** A stored row with a **non-null** `pageId`, which is what makes the case below real. */
+  function seed(docs: Map<string, Record<string, unknown>>): void {
+    const at = '2026-04-05T06:07:08.000Z';
+    docs.set(
+      `h5pContent/${INPUT.id}`,
+      toDocumentData({
+        ...INPUT,
+        pageId: PAGE_ID,
+        audit: { createdAt: at, createdBy: 'editor-1', updatedAt: at, updatedBy: 'editor-1' },
+      }),
+    );
+  }
+
+  const PATCH = {
+    title: 'Edited in the widget',
+    mainLibrary: 'H5P.MultiChoice 1.16',
+    sizeBytes: 8,
+  };
+
+  it('records who saved and when, and leaves who created it alone', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs);
+
+    const updated = await new H5pContentRepository(firestore).update(INPUT.id, PATCH, 'editor-2');
+
+    expect(updated?.title).toBe('Edited in the widget');
+    expect(updated?.audit.updatedBy).toBe('editor-2');
+    expect(updated?.audit.createdBy).toBe('editor-1');
+    expect(updated?.audit.createdAt).toBe('2026-04-05T06:07:08.000Z');
+    expect(updated?.audit.updatedAt).not.toBe('2026-04-05T06:07:08.000Z');
+  });
+
+  it('keeps the page the exercise is attached to, and where its files live', async () => {
+    // The destructive failure mode: `pageId` is `null` today, but attaching an
+    // exercise to a page is the first thing the admin exercise screen does,
+    // and a row rewritten from the save's own fields would detach it with
+    // nothing else going red.
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs);
+
+    const updated = await new H5pContentRepository(firestore).update(INPUT.id, PATCH, 'editor-2');
+
+    expect(updated?.pageId).toBe(PAGE_ID);
+    expect(updated?.storagePath).toBe(INPUT.storagePath);
+    expect(docs.get(`h5pContent/${INPUT.id}`)).toMatchObject({
+      pageId: PAGE_ID,
+      storagePath: INPUT.storagePath,
+    });
+  });
+
+  it('recomputes the stored size, which a save that copied files in has changed', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs);
+
+    await new H5pContentRepository(firestore).update(INPUT.id, PATCH, 'editor-2');
+
+    expect(docs.get(`h5pContent/${INPUT.id}`)).toMatchObject({ sizeBytes: 8 });
+  });
+
+  it('answers null for an id nothing was stored under, and writes nothing', async () => {
+    // `null` and not a created document: `set` where `create` was meant would
+    // mint an index row for content that does not exist.
+    const { firestore, docs } = createFirestoreDouble();
+
+    const updated = await new H5pContentRepository(firestore).update(INPUT.id, PATCH, 'editor-2');
+
+    expect(updated).toBeNull();
+    expect(docs.size).toBe(0);
+  });
+
+  it('keeps the id out of the document body', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs);
+
+    await new H5pContentRepository(firestore).update(INPUT.id, PATCH, 'editor-2');
+
+    expect(docs.get(`h5pContent/${INPUT.id}`)).not.toHaveProperty('id');
   });
 });
 

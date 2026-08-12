@@ -26,6 +26,22 @@ export const createH5pContentSchema = h5pContentSchema.omit({ audit: true });
 export type CreateH5pContentInput = z.infer<typeof createH5pContentSchema>;
 
 /**
+ * What a save may change about an existing index row.
+ *
+ * **`pageId` and `storagePath` are deliberately absent.** `storagePath` is
+ * derived from the content id, which a save never changes; `pageId` is `null`
+ * today and nothing sets it, but attaching an exercise to a page is the first
+ * thing the admin exercise screen does, and a save that rewrote the row from
+ * scratch would silently detach it.
+ */
+export const updateH5pContentSchema = h5pContentSchema.pick({
+  title: true,
+  mainLibrary: true,
+  sizeBytes: true,
+});
+export type UpdateH5pContentInput = z.infer<typeof updateH5pContentSchema>;
+
+/**
  * Query for `GET /api/h5p/content`. It carries no filters of its own yet; the
  * first one — `pageId`, or the main library — belongs here rather than as a
  * second query type on the route, so the route signature never has to change.
@@ -76,6 +92,49 @@ export function notAnH5pPackageMessage(filename: string): string {
 export function isH5pPackageFilename(filename: string): boolean {
   return filename.toLowerCase().endsWith(H5P_PACKAGE_EXTENSION);
 }
+
+/**
+ * What the authoring widget posts back to `POST /api/h5p/editor[/:contentId]`.
+ *
+ * **Where the line is drawn:** this validates exactly what would otherwise turn
+ * a request into a 500 or into a junk index row, and passes the library's own
+ * payload through. Re-declaring H5P's metadata format in Zod would be a second
+ * source of truth for someone else's schema, and it would break on their next
+ * release; the library validates the rest against its own `save-metadata.json`,
+ * and `h5p.errors.ts` maps that refusal to a 400.
+ */
+export const saveH5pContentSchema = z.object({
+  /**
+   * Ubername with whitespace: `H5P.MultiChoice 1.16`.
+   *
+   * Required, because `LibraryName.fromUberName(undefined)` is a plain `Error`
+   * — a 500 — before the library's own 400 for a malformed one.
+   */
+  library: z.string().min(1).max(255),
+  params: z.object({
+    /**
+     * `content.json`. Its shape is the library's semantics, not ours.
+     *
+     * A record and not `z.unknown()`: in Zod an `unknown` field is an optional
+     * key, so `z.unknown()` would admit a body with no parameters at all, and
+     * `scanForFiles(undefined, …)` is a `TypeError` and a 500. A JSON object at
+     * the root is what `content.json` always is — the weakest bound that is
+     * still a bound.
+     */
+    params: z.record(z.string(), z.unknown()),
+    /**
+     * `h5p.json`-shaped.
+     *
+     * Loose past `title` on purpose: `save-metadata.json` requires only
+     * `title` and sets no `additionalProperties: false`, so a `/params` → save
+     * round trip legitimately posts back `preloadedDependencies`, `embedTypes`,
+     * `language`, `mainLibrary` and the rest. `title` is required here because
+     * its absence is a plain `Error` and a 500.
+     */
+    metadata: z.looseObject({ title: z.string().min(1).max(255) }),
+  }),
+});
+export type SaveH5pContentInput = z.infer<typeof saveH5pContentSchema>;
 
 /** Result of uploading or saving H5P content through the admin panel. */
 export const h5pSaveResultSchema = z.object({
