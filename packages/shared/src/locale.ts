@@ -75,17 +75,5 @@ export const listLocalesQuerySchema = z.object({
 });
 export type ListLocalesQuery = z.infer<typeof listLocalesQuerySchema>;
 
-/**
- * A site has a handful of languages; the cap exists so no read of the locales
- * collection is unbounded.
- *
- * It is also the bound on every localized value: a `Record<LocaleCode, string>`
- * can only hold a translation for a locale that exists, so a value with more
- * entries than this carries translations for locales the site cannot have. A
- * field that enforces that takes the number from here rather than choosing one
- * of its own, which would drift from the policy the locales route applies.
- */
-export const MAX_LOCALES = 100;
-
 export const SEED_LOCALES = ['en', 'es', 'uk'] as const;
 export const DEFAULT_LOCALE = 'en';

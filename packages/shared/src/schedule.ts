@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { auditSchema, isoDateTimeSchema, localeCodeSchema } from './common.js';
-import { MAX_LOCALES } from './locale.js';
+import { MAX_LOCALES, auditSchema, isoDateTimeSchema, localeCodeSchema } from './common.js';
 
 export const slotStatusSchema = z.enum(['open', 'booked', 'cancelled', 'completed']);
 export type SlotStatus = z.infer<typeof slotStatusSchema>;
@@ -160,8 +159,9 @@ const TOO_MANY_LOCALES = `A note cannot carry more than ${MAX_LOCALES} locales â
  * no `RichTextSanitizer` as every other rich text field's write path does, and
  * `scheduleSlotSchema` carries no `audioAssets`/`imageAssets` for the orphan
  * sweep to read, so any embedded media would be untracked. Size is the third
- * reason and it is about bounds, not bytes â€” `richTextSchema` puts no bound on
- * an entry, so rich text would have meant a note with no length bound at all.
+ * reason and it is about bounds, not bytes: `richTextSchema` is bounded at
+ * `MAX_RICH_TEXT_LENGTH` since #40, but that number is sized for a lesson, so
+ * rich text would still have meant a note two hundred times longer than one.
  * A locale with no translation falls back per ADR-009, and a slot with no note
  * at all shows nothing.
  */

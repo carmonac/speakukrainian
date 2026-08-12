@@ -452,10 +452,59 @@ useful lenient reading of it, so failing loudly is the useful outcome. Structura
 cannot be useful without, like a section's `depth` matching its ancestor chain, stay for the same
 reason.
 
+**The second application is the localized bounds.** `localizedTextSchema` and `richTextSchema`
+carry a per-entry length (`MAX_LOCALIZED_TEXT_LENGTH`, `MAX_RICH_TEXT_LENGTH`) and an entry count
+(`MAX_LOCALES`); `storedLocalizedTextSchema` and `storedRichTextSchema` carry neither, and
+`storedAssetRefSchema`, `storedSeoSchema` and `storedPageBodySchema` exist so the stored side of a
+section and a page can reach them. The first reason is the one _Why_ gives below:
+`SectionsRepository` parses
+every document it reads, `GET /api/menu` reads every section, so one over-long stored title on the
+bounded schema would 500 the anonymous navigation, the admin tree and that section's own edit
+screen at once — and unlike a bad href, an admin facing that has no way to learn which of N
+sections is the offender. The second reason is specific to this rule and does not need a legacy
+document at all: **`RichTextSanitizer` runs after the pipe and can grow a value**, since DOMPurify
+re-serializes what it cleans (`&` becomes `&amp;`, `controls` becomes `controls=""`). A body that
+passes at exactly the bound is therefore stored over it, and a bounded stored schema would make the
+API refuse to read a document it had just written, with no attacker involved.
+
+_The split fixes the read half of that, and only the read half._ A page whose sanitized body ended
+up over the bound reads, renders and can be repaired — but it cannot be saved again with its body
+unchanged. The admin sends the whole `body` on every save, so a title-only edit on that page answers
+400 at `body.content.en`, and the toast the admin raises drops the issue path, so it does not name
+the field or the locale. The bound gets no slack in exchange, because the sanitizer's growth scales
+with how many constructs it rewrites rather than costing a fixed number of characters, so no fixed
+slack closes the window — it only relocates it — while the read-side leniency is the half worth
+having. The residual is accepted because the window is `sanitized > bound ≥ raw` and its width is
+exactly what the sanitizer adds to that body: **nothing** for HTML the editor serializes, since
+ProseMirror escapes `&` itself and `audio.extension.ts` already emits `controls="true"` — an
+editor-shaped body of 99 743 characters is stored at 99 743 and saves again unchanged — so through
+the admin the window is unreachable rather than merely narrow. It opens only for a client sending
+constructs the editor never emits: 1 000 bare `&` in a 99 000-character body is stored at 103 000
+and refuses the next save, 5 000 of them at 119 000, which is thousands of characters wide, not a
+few. Reaching it at all takes a body near a bound that already clears the heaviest page anyone could
+plausibly author by 1.7× and a deliberately heavy one by ~4.5× (`common.ts` carries the
+measurement), and nothing in the window is lost, unreadable or unrepairable. It is also the one case
+where the admin's "a length refusal is unreachable in real authoring, so a toast is enough and
+nothing is bound to a field" decision fails on its own terms — this refusal arrives on a page the
+author saved successfully and did not lengthen. Closing it means re-parsing the sanitized body
+against the input schema at the write boundary and refusing there, so the API never writes a body it
+would not accept back; that is a follow-up issue, and it would leave this ADR's split resting on
+legacy documents alone, which is reason enough on its own.
+
 _Obligation:_ reading leniently is not permission to publish. A projection that hands a stored
 value to a client re-checks it against the input schema and drops what fails — `buildMenu` leaves
 a section whose stored href the write path would refuse out of the menu. Otherwise the leniency
 that keeps a bad document repairable also serves `javascript:alert(1)` to every anonymous reader.
+
+_The obligation has a limit, and the localized bounds are where it shows._ `buildMenu` is **not**
+asked to drop a section whose stored title is longer than the input bound, because the two rules
+protect different things: the href rule protects the _reader_ — a `javascript:` URL reaching a
+browser — while a length rule protects the _store_. Dropping a navigation entry over a long label
+would trade a real harm for none. So the rule is "re-check what a bad value would harm a client
+with", not "re-check everything". What these bounds do not do either is make a multi-document read
+small: `GET /api/pages` still returns up to 100 documents, each of which may hold rich text in many
+locales, and what bounds that today is Firestore's per-document ceiling. The honest fix is a list
+projection that omits page bodies — an unfiled follow-up, not something a schema bound achieves.
 
 _Why:_ a repository parses on read so a malformed document fails loudly instead of flowing into a
 response. But when a rule is _tightened_, documents that predate it already exist, and refusing to
@@ -655,9 +704,11 @@ route runs no `RichTextSanitizer` as every other rich text field's does, and `sc
 carries no `audioAssets`/`imageAssets` for the orphan sweep to read, so any embedded media would be
 untracked. Size is the third reason and the weakest of them — a note filled to its bounds is ~51 KB
 on the wire, so a `MAX_LIST_SLOTS` range read has a ~51 MB ceiling either way and sheer volume does
-not separate rich from plain. What it separates them on is whether a bound can be written down at
-all: `richTextSchema` is `z.record(localeCodeSchema, z.string())` with **no** per-entry bound, so
-choosing it would have meant a note with no length limit whatsoever, plus markup overhead on top.
+not separate rich from plain. What it separates them on is the bound that could be written down
+at all: when this was decided `richTextSchema` was `z.record(localeCodeSchema, z.string())` with
+**no** per-entry bound, so choosing it would have meant a note with no length limit whatsoever.
+#40 has since bounded it, but at `MAX_RICH_TEXT_LENGTH` — a number sized for a lesson, which is two
+hundred times a note — so the answer is unchanged, plus markup overhead on top.
 Rule 3 still holds: the admin authors it in `LocalizedRichTextEditor` with `[inlineOnly]="true"`
 through `toPlainLocalized`/`fromPlainLocalized`, the same way `section.title` and `page.title` are
 authored.
@@ -672,7 +723,13 @@ is reused rather than a number chosen for this field: a note can only usefully h
 for a locale that exists, and the locales route refuses to create more than that, so nothing this
 refuses could have been authored. It is the cap and not the live locale count, which would cost a
 locales read on every write and would fail a stored note the day a locale is deleted. The same
-reasoning applies to every other localized field, and none of them enforces it yet.
+reasoning applies to every other localized field, and **#40 applied it to all of them**:
+`localizedTextSchema` and `richTextSchema` now carry the same entry-count bound plus a per-entry
+length of their own. The note keeps `MAX_SLOT_NOTE_LENGTH` — two policies that happen to agree on
+500, and collapsing them would tie the schedule note's bound to every title on the site — and it
+keeps its bounds on the _stored_ schema, where #40 deliberately puts none: this route's note is one
+optional field, so an abusive one is unreadable rather than merely unwritable, which is the
+narrower version of the outage ADR-012 describes.
 
 **A calendar drawing those slots keeps geometry on one clock and labels on the slot's clock.** The
 admin's week view places a slot in the day column its `startsAt` falls on **in the view zone** — the
@@ -727,9 +784,12 @@ at the cost of the house `formatMax…Size` convention; and an env var, since a 
 user-facing message cannot vary per deployment without the message going stale.
 
 The residual band — a body just under 1 MiB that parses and then produces a document marginally over
-Firestore's ceiling — is left as it is: a 500 from the write. Closing it needs per-field bounds —
-**#40** — not a body limit, because the body cannot see the `id`, `path`, `publishedAt` and `audit`
-fields the server adds.
+Firestore's ceiling — is left as it is: a 500 from the write. It is **not** closed by the localized
+bounds #40 added: `MAX_LOCALES × MAX_RICH_TEXT_LENGTH` is 10 M characters, far more than a document
+can hold, exactly as the paragraph below anticipated. Closing the band would need per-field bounds
+tight enough to add up to under a document, which no field has a reason to carry; what keeps a
+single request small remains this ADR's own body limit, which cannot see the `id`, `path`,
+`publishedAt` and `audit` fields the server adds.
 
 **One limit, and a route that needs more gets its own parser.** Not a raise of this one: the body is
 buffered in middleware, ahead of `FirebaseAuthGuard`, so every byte of it is reachable by an
@@ -776,10 +836,10 @@ Written down because the alternative is someone rediscovering it as a leak, and 
 own 4xx branch makes the opposite promise for the errors it does map.
 
 **#40 and this limit are different layers, and both are load-bearing.** The body limit runs in
-middleware, before Zod; #40's per-entry bounds run in the pipe, after. Once #40 lands an over-long
-single field gets a 400 naming the locale, which is a better error — but only for bodies that fit.
-`MAX_LOCALES` × any plausible per-entry bound is several MB, so #40 must not treat the body limit as
-its bound.
+middleware, before Zod; #40's per-entry bounds run in the pipe, after. An over-long single field now
+gets a 400 naming the locale, which is a better error — but only for bodies that fit.
+`MAX_LOCALES × MAX_RICH_TEXT_LENGTH` is 10 M characters, so #40 does not treat the body limit as its
+bound and this limit is still what refuses a body no field bound would.
 
 _Cost:_ an unauthenticated caller can make the API buffer 1 MiB per connection instead of 100 KB.
 Accepted: parsing after authentication is not available in this architecture, Cloud Run caps requests

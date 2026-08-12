@@ -1,12 +1,60 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_LOCALES, MAX_LOCALIZED_TEXT_LENGTH, MAX_RICH_TEXT_LENGTH } from './common.js';
 import {
   contentPageSchema,
   createContentPageSchema,
   editableContentPageFields,
   listPagesQuerySchema,
   pageBodySchema,
+  richTextPageBodySchema,
   updateContentPageSchema,
 } from './page.js';
+
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+
+/** Distinct codes `localeCodeSchema` accepts (`zaa`, `zab`, …), one character each. */
+const oneCharInLocales = (count: number): Record<string, string> =>
+  Object.fromEntries(
+    Array.from({ length: count }, (_unused, index) => [
+      `z${LETTERS[Math.floor(index / LETTERS.length)]}${LETTERS[index % LETTERS.length]}`,
+      'x',
+    ]),
+  );
+
+const tooLongRichText = 'a'.repeat(MAX_RICH_TEXT_LENGTH + 1);
+
+/** The absolute storage URLs a body actually carries — media is never inlined. */
+const storageUrl = (path: string): string =>
+  `http://localhost:4443/storage/v1/b/speakukrainian-media/o/${encodeURIComponent(path)}?alt=media`;
+
+/** An `<audio>` node in the form `audio.extension.ts` renders. */
+const audioNode = (index: number): string =>
+  `<audio src="${storageUrl(`audio/2026/08/motion-${index}.mp3`)}" title="Verbs of motion ${index}" data-asset-path="audio/2026/08/motion-${index}.mp3" controls="true" preload="metadata"></audio>`;
+
+const imageNode = (index: number): string =>
+  `<img src="${storageUrl(`images/2026/08/motion-${index}.png`)}" alt="Verbs of motion ${index}">`;
+
+/**
+ * A lesson of the size this product really publishes: prose, headings, a dozen
+ * images and half a dozen clips, all media referenced by URL. The AC asks for a
+ * body of representative size rather than a token string, so the test that uses
+ * it asserts its length too.
+ */
+const lesson = (locale: string): string => {
+  const parts = [`<h2>${locale} — verbs of motion</h2>`];
+  for (let index = 0; index < 160; index += 1) {
+    parts.push(
+      `<p>${locale} ${index}: a prefix on a verb of motion carries both the direction of travel and the aspect of the action.</p>`,
+    );
+    if (index % 12 === 0) {
+      parts.push(imageNode(index));
+    }
+    if (index % 24 === 0) {
+      parts.push(audioNode(index));
+    }
+  }
+  return parts.join('');
+};
 
 const audit = {
   createdAt: '2026-01-01T00:00:00Z',
@@ -203,6 +251,192 @@ describe('createContentPageSchema', () => {
         body: { type: 'subsection_list', sourceSectionId: 'sec-2' },
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('localized bounds on a page request', () => {
+  const page = (body: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    sectionId: 'sec-1',
+    slug: 'intro',
+    title: { en: 'Introduction' },
+    body,
+    ...extra,
+  });
+
+  it('refuses an over-long rich text body, pathed to the locale', () => {
+    const result = createContentPageSchema.safeParse(
+      page({ type: 'rich_text', content: { en: '<p>ok</p>', uk: tooLongRichText } }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['body', 'content', 'uk']);
+  });
+
+  it('refuses an over-long subsection list intro', () => {
+    // One case per variant: a variant the derivation missed would accept this.
+    const result = createContentPageSchema.safeParse(
+      page({ type: 'subsection_list', intro: { uk: tooLongRichText } }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['body', 'intro', 'uk']);
+  });
+
+  it('refuses an over-long H5P explanation', () => {
+    const result = createContentPageSchema.safeParse(
+      page({ type: 'h5p_exercise', explanation: { uk: tooLongRichText } }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['body', 'explanation', 'uk']);
+  });
+
+  it.each(['imageAssets', 'audioAssets'])(
+    'refuses an over-long alt on a body %s entry, pathed through the array',
+    (field) => {
+      // The one bound the derivation re-applies by hand: `.extend()` replaces
+      // both asset arrays wholesale, so a later simplification of that extend
+      // would drop it without changing anything else.
+      const result = createContentPageSchema.safeParse(
+        page({
+          type: 'rich_text',
+          content: { en: '<p>ok</p>' },
+          [field]: [
+            {
+              path: 'images/2026/08/motion-0.png',
+              url: storageUrl('images/2026/08/motion-0.png'),
+              contentType: 'image/png',
+              sizeBytes: 2048,
+              alt: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+            },
+          ],
+        }),
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['body', field, 0, 'alt', 'en']);
+    },
+  );
+
+  it('refuses an over-long meta description, pathed to the locale', () => {
+    const result = createContentPageSchema.safeParse(
+      page(
+        { type: 'subsection_list' },
+        {
+          seo: {
+            metaDescription: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) },
+          },
+        },
+      ),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['seo', 'metaDescription', 'en']);
+  });
+
+  it(`refuses a title carrying more than ${MAX_LOCALES} translations`, () => {
+    // Every value is one character, so the count is the only thing refusing it.
+    const result = createContentPageSchema.safeParse({
+      ...page({ type: 'subsection_list' }),
+      title: oneCharInLocales(MAX_LOCALES + 1),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['title']);
+    expect(result.error?.issues[0]?.message).toContain(String(MAX_LOCALES));
+  });
+
+  it('refuses an over-long rich text body on a patch too', () => {
+    // `.partial()` keeps what is inside a field, so an edit cannot store what a
+    // create refused.
+    const result = updateContentPageSchema.safeParse({
+      body: { type: 'rich_text', content: { uk: tooLongRichText } },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['body', 'content', 'uk']);
+  });
+
+  it('still reports an unknown key and applies the asset defaults after .extend()', () => {
+    // The bounded variants are derived from the stored ones, and `.extend()`
+    // silently dropping the strict catchall would reopen "a save reporting
+    // success for a write that did not happen".
+    const result = richTextPageBodySchema.safeParse({
+      type: 'rich_text',
+      content: { en: '<p>x</p>' },
+      nope: 1,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.code).toBe('unrecognized_keys');
+    expect(result.error?.issues[0]).toMatchObject({ keys: ['nope'] });
+
+    expect(
+      richTextPageBodySchema.parse({ type: 'rich_text', content: { en: '<p>x</p>' } }),
+    ).toEqual({ type: 'rich_text', content: { en: '<p>x</p>' }, audioAssets: [], imageAssets: [] });
+  });
+
+  it('saves a real lesson: ~20 000 characters of rich text in three locales', () => {
+    const content = {
+      en: lesson('en'),
+      es: lesson('es'),
+      uk: lesson('uk'),
+    };
+    // Asserted here so a later shrink of the fixture cannot quietly turn this
+    // into a token string that proves nothing about the bound.
+    expect(content.uk.length).toBeGreaterThan(20_000);
+    expect(content.uk).toContain('<audio');
+    expect(content.uk).toContain('<img');
+
+    const parsed = createContentPageSchema.parse(
+      page(
+        { type: 'rich_text', content },
+        {
+          title: { en: 'Verbs of motion', es: 'Verbos de movimiento', uk: 'Дієслова руху' },
+          seo: { metaDescription: { uk: 'Дієслова руху в українській мові' } },
+        },
+      ),
+    );
+
+    expect(parsed.body.type).toBe('rich_text');
+    const stored = parsed.body.type === 'rich_text' ? parsed.body.content : {};
+    for (const locale of ['en', 'es', 'uk'] as const) {
+      expect(stored[locale]).toBe(content[locale]);
+    }
+  });
+});
+
+describe('contentPageSchema reads a stored page leniently (ADR-012)', () => {
+  it('parses a document whose body and title are over the input bounds', () => {
+    // `PagesRepository.fromDocument` parses every page it reads through this
+    // schema. A bound here would make one over-long document unreadable — and
+    // `RichTextSanitizer` runs *after* validation and re-serializes what it
+    // cleans, so a body that passed at exactly the bound can be stored over it
+    // with no attacker involved.
+    const stored = {
+      ...basePage,
+      title: oneCharInLocales(MAX_LOCALES + 1),
+      body: { type: 'rich_text', content: { uk: tooLongRichText } },
+      seo: { metaTitle: { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) } },
+    };
+
+    const result = contentPageSchema.safeParse(stored);
+
+    expect(result.success).toBe(true);
+    expect(Object.keys(result.data?.title ?? {})).toHaveLength(MAX_LOCALES + 1);
+    const body = result.data?.body;
+    expect(body?.type === 'rich_text' ? body.content['uk'] : '').toBe(tooLongRichText);
+
+    // Refused on the way in, which is what makes the read above a decision.
+    expect(
+      createContentPageSchema.safeParse({
+        sectionId: 'sec-1',
+        slug: stored.slug,
+        title: stored.title,
+        body: stored.body,
+        seo: stored.seo,
+      }).success,
+    ).toBe(false);
   });
 });
 

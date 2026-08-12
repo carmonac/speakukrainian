@@ -52,11 +52,15 @@ const STORED_AUDIO = AUDIO.replace('controls ', 'controls="" ');
 /** Express's default body limit, which this API deliberately no longer runs at. */
 const EXPRESS_DEFAULT_BODY_BYTES = 100 * 1024;
 
+/** An image node with a storage-shaped URL — media is referenced, never inlined. */
+const image = (index: number): string =>
+  `<img src="https://cdn.test/images/2026/01/motion-${index}.png" alt="Verbs of motion ${index}">`;
+
 /**
- * ~45 KB of a lesson this product could really publish: prose, headings and a
- * clip in the exact form `audio.extension.ts` emits. Sized per locale so three
- * of them clear the old 100 KB default while staying well inside any per-entry
- * bound #40 might choose.
+ * ~45 KB of a lesson this product could really publish: prose, headings, a
+ * dozen images and a clip in the exact form `audio.extension.ts` emits. Sized
+ * per locale so three of them clear the old 100 KB default while staying well
+ * inside `MAX_RICH_TEXT_LENGTH`.
  */
 const richLesson = (locale: string): string => {
   const parts = [`<h2>${locale} — verbs of motion</h2>`];
@@ -64,6 +68,9 @@ const richLesson = (locale: string): string => {
     parts.push(
       `<p>${locale} ${index}: a prefix on a verb of motion carries the direction and the aspect.</p>`,
     );
+    if (index % 40 === 0) {
+      parts.push(image(index));
+    }
   }
   parts.push(AUDIO);
   return parts.join('');
