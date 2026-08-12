@@ -82,7 +82,9 @@ function exposedClientError(exception: unknown): { status: number; message: stri
 /**
  * Turns every thrown error into a consistent JSON envelope. Unexpected errors
  * are logged with their stack but reported to the client as a generic 500 so we
- * never leak internals.
+ * never leak internals. Once the response has started nothing is written at
+ * all and the socket is severed.
+ * ADR-017 records the whole contract and the reasoning behind each part.
  */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -92,6 +94,32 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+
+    // Once the headers are out there is nothing left to answer with, and the
+    // write below would throw from inside a filter, where a throw has nowhere
+    // left to go.
+    //
+    // `destroy` and not `end`: `end` on a chunked response writes the
+    // terminating zero-length chunk, which is the wire saying *that was all of
+    // it*, so a truncated clip is reported to the client as a complete one —
+    // worse than the failure being handled. With a declared `Content-Length`
+    // the client can at least count the shortfall, but the connection then
+    // returns to the keep-alive pool having sent a body its own header
+    // contradicts. The reasoning differs by transfer encoding and the answer
+    // does not, so this deliberately does not branch on it; `h5p.responses.ts`
+    // answers the same moment the same way.
+    //
+    // `error` even when the exception is a 4xx: what is recorded is not the
+    // exception's status but that a response the client was told had succeeded
+    // is truncated, which is this server's fault whatever raised it.
+    if (response.headersSent) {
+      this.logger.error(
+        `${request.method} ${request.url} failed after the response had started with ${response.statusCode}, so its body is truncated`,
+        exception instanceof Error ? exception.stack : String(exception),
+      );
+      response.destroy();
+      return;
+    }
 
     const isHttp = exception instanceof HttpException;
     const clientError = isHttp ? null : exposedClientError(exception);
