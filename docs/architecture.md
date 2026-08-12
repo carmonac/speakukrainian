@@ -180,9 +180,17 @@ prefix no route can enumerate or delete. The sweep is therefore **opportunistic 
 scheduled**: Cloud Run scales to zero, so an interval only runs while an instance happens to be
 alive, which is precisely what nothing guarantees. `H5pEditorService.maybeSweep` runs
 `TemporaryFileManager.cleanUp()` at most once per instance per 15 minutes, fire-and-forget, from the
-routes that create the garbage — an instance serving an upload is an instance that is alive. It is
-computed after the response and its failure is caught and logged, because an upload that succeeded
-may not answer 500 because a listing failed.
+operations that create the garbage — an instance serving an upload is an instance that is alive. It
+is computed after the response and its failure is caught and logged, because an upload that
+succeeded may not answer 500 because a listing failed.
+
+**The trigger fires from `H5pEditorService`'s two mutating operations rather than from the
+controller**, so it travels with the operation that creates the garbage instead of with whichever
+route happens to call it. The save holds it because a **create** deliberately leaves the temp copies
+behind (`deleteTemporaryFiles = isUpdate`), and `POST /ajax?action=files` keeps it because it is the
+commonest source of all: a session abandoned before any save produces uploads and no save at all.
+Neither may lose it, and both are asserted against real objects — an expired one is gone after a
+successful operation and still there after one that threw.
 
 One pass looks at `TEMP_SWEEP_BATCH_SIZE` objects (`StorageService.listUpTo`, one listing page) and
 not at the whole prefix. `StorageService.list` refuses a prefix past its 10 000-object ceiling
@@ -247,12 +255,66 @@ setup: the admin runs on :4200 and a relative `/api/h5p/core/js/h5p.js` resolves
 overridden to `/editor-assets` because its default, `/editor`, is where the editor _model_ route
 goes — two different things one line apart in the URL space, and the collision would be silent.
 
-_Player language (amended by #36)._ `GET /api/h5p/play/:contentId` accepts `?lang`, and it now
-selects the language of the player's own chrome. One `H5P_TRANSLATE` provider builds a single
-`ITranslationFunction` at boot and both `H5PPlayer` and `H5PEditor` are constructed with it — the
-editor half changes nothing observable today, since its callback is only reached from
-`H5PEditor.render` and no route renders an editor model, and it is wired anyway so that route
-inherits the decision rather than making it again.
+_Saving from the editor._ `POST /api/h5p/content` means **install an uploaded `.h5p` package** and
+keeps meaning that, so the editor's save is `POST /api/h5p/editor` (201, the library assigns the id)
+and `POST /api/h5p/editor/:contentId` (200, the id is the caller's). Two handlers rather than one,
+because the statuses differ and 201 for a save over content the caller named is a lie; the noun is
+`editor` because `GET /api/h5p/editor/:contentId` already means "what the editor screen needs for
+this exercise". Nothing in the H5P client generates a save URL — `UrlGenerator` has no save member,
+and the host page supplies `saveContentCallback` — so the path is ours to choose.
+
+The `GET` side is one handler on **an array path**, `@Get(['editor', 'editor/:contentId'])`, and
+that spelling is load-bearing twice over. Express 5 (`path-to-regexp` v8) has no optional path
+parameter, so `:contentId?` throws at registration; and **two stacked `@Get` decorators register
+only one route** — `RequestMapping` writes `PATH_METADATA` with a single value, so the second
+overwrites the first, one path silently ceases to exist and nothing is thrown or logged. That is
+worth writing down because it is silent and it will be met again. A metadata assertion in
+`h5p-editor.controller.spec.ts` is what refuses the stacked form. `.optional()` on the parameter's
+`documentIdSchema` is load-bearing for the same class of reason: Nest runs a param pipe even when
+the parameter is absent, so a bare schema turns `GET /api/h5p/editor` into a 400.
+
+_The editor model carries no server configuration._ `H5PEditor.render` returns
+`{ integration, scripts, styles, urlGenerator }`, and `UrlGenerator`'s only serialisable own
+property is `config` — the whole `H5PConfig`, **41 keys and about 1.6 KB** on an otherwise empty
+model, carrying `maxFileSize`, `maxTotalSize`, `contentWhitelist`, `libraryWhitelist`,
+`hubRegistrationEndpoint`, `siteType`, `uuid` and `installLibraryLockMaxOccupationTime` among the
+rest. The route therefore **names its three fields** — never a spread and a delete — and its type is
+`Pick<IEditorModel, 'integration' | 'scripts' | 'styles'>` and **not** an `Omit` of `urlGenerator`:
+an `Omit` keeps admitting every field the library adds next, which is the same defect expressed in
+the type system. The test that carries this is a substring assertion over the serialised body for
+those config-only keys, in the service spec and again on the wire, because asserting the absence of
+`urlGenerator` alone would pass for any future field that also holds the config.
+
+_The failed index write, and why the rollback is asymmetric._ A save writes Cloud Storage and then
+Firestore — that order is forced, because the content id (on create) and the title and main library
+(always) come out of what the library returns. On **create**, a failed index write rolls the content
+objects back, exactly as `importPackage` does and for the same reason: without the row the objects
+sit under a `randomUUID()` prefix that nothing references, no route can enumerate and no route can
+delete. On **update** they are deliberately kept: the row already names them and they are the newer
+truth, so deleting them would destroy a good exercise because an audit field could not be written.
+The id is logged in both branches, since that is the only thing that tells an operator which
+exercise is affected. `H5pContentRepository.update` takes `{ title, mainLibrary, sizeBytes }` and
+merges over the stored row — `pageId` and `storagePath` are not in its input, because a row
+rewritten from a save's own fields would silently detach an exercise from its page the moment the
+admin screen sets one.
+
+_Player and editor language (amended by #36, corrected by #52)._ `GET /api/h5p/play/:contentId`
+accepts `?lang` and `GET /api/h5p/editor[/:contentId]` accepts `?language`, and both select the
+language of the chrome the **server** renders. One `H5P_TRANSLATE` provider builds a single
+`ITranslationFunction` at boot and both `H5PPlayer` and `H5PEditor` are constructed with it. The
+previous wording — that the editor half "changes nothing observable today, since no route renders an
+editor model" — stopped being true when the editor-model route shipped, and this is its correction.
+
+What the editor half reaches is `integration.l10n.H5P`, `metadataSemantics` and
+`copyrightSemantics`, and no more than that: **Joubel's own authoring UI is localized by an
+`editor-assets/language/<code>.js`**, one of the **26** locales upstream ships, and `uk` is not
+among them (`es` is). So `?language=uk` leaves `language/en.js` in the script list —
+`getLanguageReplacer` returns the identity function for a locale it does not have — and the
+authoring chrome stays English, the same outcome as the player's and for the same reason.
+`?language=es` swaps in `editor-assets/language/es.js`. Both are asserted, so shipping `uk`
+upstream makes the claim fail rather than rot. The route validates `?language` itself with the same
+pattern `/ajax` uses, because `H5PEditor.render` calls `validateLanguageCode`, which refuses a bad
+code with a plain `Error` — a 500 for a query parameter the caller typed.
 
 **Ukrainian is ours because upstream ships none.** `@lumieducation/h5p-server` carries client
 translations for 29 locales and `uk` is not among them (nor among the 28 server-side ones), so
@@ -315,8 +377,11 @@ would cost a Firestore read per _content file_ request — per image and per aud
 needs a cache and is not something to add casually.
 
 `GET /api/h5p/temp-files/*` is on the other side of that line and is `@Roles('editor')`, along with
-`GET` and `POST /api/h5p/ajax`: `h5p-editor.controller.ts` is a file boundary the way
-`h5p-public.controller.ts` is, and the guards are pinned per route by its metadata block. It
+`GET` and `POST /api/h5p/ajax` and the four routes that load and save an exercise —
+`GET /api/h5p/editor[/:contentId]`, `GET /api/h5p/params/:contentId`, `POST /api/h5p/editor` and
+`POST /api/h5p/editor/:contentId`: `h5p-editor.controller.ts` is a file boundary the way
+`h5p-public.controller.ts` is, and the guards are pinned per route by its metadata block, so the
+enumeration invariant above is unaffected by any of them. `temp-files` in particular
 **cannot** be made public, because the URL carries no owner id and a temporary filename is unique
 only within an owner — an unauthenticated request has no way to say which object it means.
 

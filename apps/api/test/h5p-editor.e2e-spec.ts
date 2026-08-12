@@ -143,6 +143,19 @@ interface ContentParametersBody {
   params: { metadata: { title: string }; params: Record<string, unknown> };
 }
 
+/** The body a save posts: what `/params` returned, plus the library it names. */
+type SaveBody = { library: string; params: ContentParametersBody['params'] };
+
+/** The stored index row, read through the admin SDK rather than through the API. */
+interface IndexRow {
+  title: string;
+  mainLibrary: string;
+  storagePath: string;
+  pageId: string | null;
+  sizeBytes: number;
+  audit: { createdAt: string; createdBy: string; updatedAt: string; updatedBy: string };
+}
+
 /** The three fields `GET editor` answers with, read the way a client reads them. */
 interface EditorModelBody {
   integration: {
@@ -179,6 +192,12 @@ describe('h5p editor ajax (e2e)', () => {
       .get(`/api/h5p/editor${contentId ? `/${contentId}` : ''}`)
       .query(language === undefined ? {} : { language })
       .set('Authorization', `Bearer ${token}`);
+
+  const saveContent = (body: SaveBody, contentId?: string, token = editor.idToken) =>
+    request(server())
+      .post(`/api/h5p/editor${contentId ? `/${contentId}` : ''}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
 
   const contentParameters = (contentId: string, token = editor.idToken) =>
     request(server()).get(`/api/h5p/params/${contentId}`).set('Authorization', `Bearer ${token}`);
@@ -774,6 +793,214 @@ describe('h5p editor ajax (e2e)', () => {
     });
   });
 
+  /**
+   * The save cases work on an exercise of their own.
+   *
+   * The `beforeAll` fixture is read by every other describe in this file, and a
+   * save rewrites its `content.json` and its index row — so mutating it would
+   * make those assertions depend on the order this file happens to run in.
+   */
+  describe('POST editor', () => {
+    let target: H5pSaveResult;
+
+    const rowOf = async (contentId: string): Promise<IndexRow> => {
+      const snapshot = await firestore.collection(COLLECTIONS.h5pContent).doc(contentId).get();
+      expect(snapshot.exists).toBe(true);
+      return snapshot.data() as IndexRow;
+    };
+
+    beforeAll(async () => {
+      const response = await request(server())
+        .post('/api/h5p/content')
+        .set('Authorization', `Bearer ${editor.idToken}`)
+        .attach('file', await buildH5pPackage({ title: 'The exercise the save cases edit' }), {
+          filename: 'drill.h5p',
+          contentType: 'application/octet-stream',
+        })
+        .expect(201);
+
+      target = h5pSaveResultSchema.parse(response.body);
+      createdContentIds.push(target.contentId);
+    });
+
+    it('round-trips what /params returned, keeping the content id', async () => {
+      // Posting back exactly what `/params` handed over is the assertion that
+      // the two schemas agree: a 400 or a 500 here means `saveH5pContentSchema`
+      // is wrong, not that the test is.
+      const read = await contentParameters(target.contentId).expect(200);
+      const { library, params } = read.body as ContentParametersBody;
+
+      const saved = await saveContent(
+        {
+          library,
+          params: {
+            metadata: { ...params.metadata, title: 'Edited in the widget' },
+            params: { ...params.params, question: 'Чи були ви коли-небудь у Києві?' },
+          },
+        },
+        target.contentId,
+        // The second editor, so `updatedBy` changing is observable.
+        otherEditor.idToken,
+      ).expect(200);
+
+      expect((saved.body as H5pSaveResult).contentId).toBe(target.contentId);
+      expect((saved.body as H5pSaveResult).title).toBe('Edited in the widget');
+
+      const reread = (await contentParameters(target.contentId).expect(200))
+        .body as ContentParametersBody;
+      expect(reread.params.params['question']).toBe('Чи були ви коли-небудь у Києві?');
+      expect(reread.h5p.title).toBe('Edited in the widget');
+    });
+
+    it('bumps the index row’s audit without touching how it was created', async () => {
+      const before = await rowOf(target.contentId);
+      const read = (await contentParameters(target.contentId).expect(200))
+        .body as ContentParametersBody;
+
+      await saveContent(
+        {
+          library: read.library,
+          params: {
+            metadata: { ...read.params.metadata, title: 'Saved again' },
+            params: read.params.params,
+          },
+        },
+        target.contentId,
+        otherEditor.idToken,
+      ).expect(200);
+
+      const after = await rowOf(target.contentId);
+      // Parsed epoch milliseconds, not string inequality: `touchAudit` has
+      // millisecond resolution, and a save round trip through fake-gcs takes
+      // tens of them.
+      expect(Date.parse(after.audit.updatedAt)).toBeGreaterThan(Date.parse(before.audit.updatedAt));
+      expect(after.audit.createdAt).toBe(before.audit.createdAt);
+      expect(after.audit.createdBy).toBe(before.audit.createdBy);
+      expect(after.audit.updatedBy).toBe(otherEditor.uid);
+      expect(after.storagePath).toBe(before.storagePath);
+      expect(after.pageId).toBe(before.pageId);
+      expect(after.title).toBe('Saved again');
+    });
+
+    it('creates a new exercise when no content id is given, leaving the old one alone', async () => {
+      const read = (await contentParameters(target.contentId).expect(200))
+        .body as ContentParametersBody;
+      const before = await rowOf(target.contentId);
+      const beforeObjects = await storage.list(`${CONTENT_PREFIX}${target.contentId}/`);
+
+      const created = await saveContent({
+        library: read.library,
+        params: {
+          metadata: { ...read.params.metadata, title: 'A second exercise' },
+          params: read.params.params,
+        },
+      }).expect(201);
+
+      const saved = h5pSaveResultSchema.parse(created.body);
+      createdContentIds.push(saved.contentId);
+      expect(saved.contentId).not.toBe(target.contentId);
+
+      const row = await rowOf(saved.contentId);
+      expect(row.audit.createdAt).toBe(row.audit.updatedAt);
+      expect(row.audit.createdBy).toBe(editor.uid);
+      expect(row.storagePath).toBe(`${CONTENT_PREFIX}${saved.contentId}`);
+      expect(row.pageId).toBeNull();
+
+      // The exercise that was already there is untouched, objects and row.
+      const after = await rowOf(target.contentId);
+      expect(after.audit.updatedAt).toBe(before.audit.updatedAt);
+      expect(
+        (await storage.list(`${CONTENT_PREFIX}${target.contentId}/`)).map((o) => o.path),
+      ).toEqual(beforeObjects.map((o) => o.path));
+    });
+
+    it('makes a temporary file uploaded from inside the editor part of the exercise', async () => {
+      const uploaded = await uploadClip();
+      expect(uploaded.status).toBe(200);
+      const temporaryPath = (uploaded.body as SavedFileBody).path;
+      expect(temporaryPath).toMatch(/#tmp$/);
+
+      const read = (await contentParameters(target.contentId).expect(200))
+        .body as ContentParametersBody;
+      await saveContent(
+        {
+          library: read.library,
+          params: {
+            metadata: read.params.metadata,
+            params: {
+              ...read.params.params,
+              // The fixture's `semantics.json` declares `clip` as `type: file`,
+              // which is what `ContentFileScanner` walks.
+              clip: { path: temporaryPath, mime: 'audio/mpeg', copyright: { license: 'U' } },
+            },
+          },
+        },
+        target.contentId,
+      ).expect(200);
+
+      const stored = (await contentParameters(target.contentId).expect(200))
+        .body as ContentParametersBody;
+      const clip = stored.params.params['clip'] as { path: string };
+      // The `#tmp` marker is gone: the file belongs to the exercise now.
+      expect(clip.path).toBe(temporaryPath.replace(/#tmp$/, ''));
+
+      await expect(
+        storage.exists(`${CONTENT_PREFIX}${target.contentId}/${clip.path}`),
+      ).resolves.toBe(true);
+
+      // Byte equality, not existence: an empty object would pass a listing
+      // check and play back as silence.
+      const served = await request(server())
+        .get(`/api/h5p/content/${target.contentId}/${clip.path}`)
+        .expect(200);
+      expect(Buffer.from(served.body as Buffer)).toEqual(CLIP_BYTES);
+    });
+
+    it('answers 404 for a content id with no index row, and creates nothing', async () => {
+      const orphan = 'ffffffffffffffffffffffffffffffff';
+      const read = (await contentParameters(target.contentId).expect(200))
+        .body as ContentParametersBody;
+
+      const response = await saveContent(
+        { library: read.library, params: read.params },
+        orphan,
+      ).expect(404);
+
+      expect((response.body as ErrorBody).message).toBe('That exercise does not exist.');
+      await expect(storage.exists(`${CONTENT_PREFIX}${orphan}/h5p.json`)).resolves.toBe(false);
+    });
+
+    it.each([
+      ['no library', { params: { metadata: { title: 'x' }, params: {} } }],
+      [
+        'no metadata title',
+        { library: 'SpeakTest.Main 1.0', params: { metadata: {}, params: {} } },
+      ],
+      [
+        'no parameters at all',
+        { library: 'SpeakTest.Main 1.0', params: { metadata: { title: 'x' } } },
+      ],
+    ])('answers 400 for a body with %s', async (_shape, body) => {
+      // Each of these reaches a plain `Error` inside the library — a 500 for a
+      // body the client sent.
+      await saveContent(body as unknown as SaveBody, target.contentId).expect(400);
+    });
+
+    it('answers 404 for a library nobody installed, rather than 500', async () => {
+      const read = (await contentParameters(target.contentId).expect(200))
+        .body as ContentParametersBody;
+
+      const response = await saveContent(
+        { library: 'H5P.NotHere 1.0', params: read.params },
+        target.contentId,
+      ).expect(404);
+
+      expect((response.body as ErrorBody).message).toBe(
+        'That library is not installed on this server.',
+      );
+    });
+  });
+
   describe('the expiry sweep', () => {
     /**
      * The sweep sees only what this suite wrote.
@@ -870,6 +1097,30 @@ describe('h5p editor ajax (e2e)', () => {
         call: (token) => editorModel(exercise.contentId, undefined, token),
       },
       { name: 'GET params', call: (token) => contentParameters(exercise.contentId, token) },
+      {
+        name: 'POST editor',
+        call: (token) =>
+          saveContent(
+            {
+              library: `${MAIN_LIBRARY.machineName} 1.0`,
+              params: { metadata: { title: 'x' }, params: {} },
+            },
+            undefined,
+            token,
+          ),
+      },
+      {
+        name: 'POST editor/:contentId',
+        call: (token) =>
+          saveContent(
+            {
+              library: `${MAIN_LIBRARY.machineName} 1.0`,
+              params: { metadata: { title: 'x' }, params: {} },
+            },
+            exercise.contentId,
+            token,
+          ),
+      },
       { name: 'GET temp-files', call: (token) => tempFile('audios/audio-anything.mp3', token) },
     ];
 
@@ -890,8 +1141,11 @@ describe('h5p editor ajax (e2e)', () => {
       await request(server()).get(path).expect(401);
     });
 
-    it('refuses an unauthenticated POST', async () => {
-      await request(server()).post('/api/h5p/ajax?action=libraries').send({}).expect(401);
+    it.each([
+      ['POST ajax', '/api/h5p/ajax?action=libraries'],
+      ['POST editor', '/api/h5p/editor'],
+    ])('refuses an unauthenticated %s', async (_name, path) => {
+      await request(server()).post(path).send({}).expect(401);
     });
   });
 });

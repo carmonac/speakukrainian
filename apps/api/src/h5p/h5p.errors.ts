@@ -132,6 +132,25 @@ const YAUZL_DATA_ERRORS = [
 ];
 
 /**
+ * How `contentMetadataValidator` refuses an exercise's `h5p.json` on save: a
+ * plain `Error` with this exact message, raised by
+ * `H5PEditor.saveOrUpdateContentReturnMetaData` before anything is written.
+ *
+ * `saveH5pContentSchema` already requires the one field whose absence would
+ * otherwise be a 500, and deliberately does **not** restate the rest of
+ * `save-metadata.json` — its `^.{1,255}$` for a title, its patterns for
+ * `language`, `license` and `changes[].date` — because that would be a second
+ * source of truth for someone else's schema. This is the backstop that keeps
+ * the residue a 400: a title carrying a newline passes Zod's `1..255` and
+ * fails ajv's pattern. What would remove it is a Zod schema that restated
+ * `save-metadata.json` in full, which is a trade this repo has decided against.
+ *
+ * The match is exact and not `includes`, so a storage error whose message
+ * happens to contain those words stays a 500.
+ */
+const METADATA_SCHEMA_ERROR = 'Metadata does not conform to schema.';
+
+/**
  * Ids the library raises with its own default status of 500 although they say
  * nothing about this server.
  *
@@ -160,7 +179,7 @@ const CLIENT_FAULT_IDS = new Set(['not-in-whitelist']);
  */
 export function toHttpException(error: unknown): HttpException | null {
   if (!(error instanceof H5pError)) {
-    return unreadableArchiveException(error);
+    return plainErrorException(error);
   }
 
   const status = CLIENT_FAULT_IDS.has(error.errorId)
@@ -222,10 +241,18 @@ export async function mapH5pErrors<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The backstop for the two families of plain `Error` the zip reader raises. */
-function unreadableArchiveException(error: unknown): HttpException | null {
+/** The backstop for the plain `Error`s this API can still attribute to the request. */
+function plainErrorException(error: unknown): HttpException | null {
   if (!(error instanceof Error)) {
     return null;
+  }
+
+  if (error.message === METADATA_SCHEMA_ERROR) {
+    // The message names no field, so there is nothing here to forward.
+    logger.warn('An exercise was refused because its metadata does not satisfy H5P schema.');
+    return badRequest(
+      'That exercise could not be saved because its details are not in a form H5P accepts.',
+    );
   }
 
   // Both messages name the offending entry, which came from the uploaded file

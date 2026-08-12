@@ -18,7 +18,12 @@ import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import type { IUser } from '@lumieducation/h5p-server';
 import type { Request, Response } from 'express';
-import { documentIdSchema } from '@speakukrainian/shared';
+import {
+  documentIdSchema,
+  saveH5pContentSchema,
+  type H5pSaveResult,
+  type SaveH5pContentInput,
+} from '@speakukrainian/shared';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import type { AuthenticatedUser } from '../auth/firebase-auth.guard.js';
 import { Roles } from '../auth/roles.decorator.js';
@@ -49,16 +54,18 @@ import { h5pUserFor } from './h5p.user.js';
 const TEMP_FILE_CACHE_CONTROL = 'private, no-store';
 
 /**
- * The H5P editor's ajax surface: the content-type and library data its
- * JavaScript asks for, the files an author uploads from inside it, and reading
- * those files back.
+ * The H5P authoring surface: the content-type and library data the editor's
+ * JavaScript asks for, the files an author uploads from inside it, reading
+ * those files back, and loading an exercise into the widget and saving it
+ * again.
  *
  * **Every route here is `@Roles('editor')`, and that is a file boundary rather
  * than a decorator habit** — the mirror of `h5p-public.controller.ts`, where
  * every route is `@Public()`. Nothing here may be relaxed: ADR-007 makes the
  * absence of any public enumeration what lets the play and content-file routes
- * be public, and `POST /ajax?action=files` writes into this server's bucket.
- * The guards are pinned per route by the metadata block at the bottom of
+ * be public, `POST /ajax?action=files` writes into this server's bucket, and
+ * the two save routes write content and its index document. The guards are
+ * pinned per route by the metadata block at the bottom of
  * `h5p-editor.controller.spec.ts`.
  *
  * **A known limitation of `temp-files`, for whoever writes #13.** After
@@ -167,14 +174,10 @@ export class H5pEditorController {
     const packageUpload = uploadOf(files, 'h5p');
 
     try {
-      const result = await this.editor.postAjax(
+      return await this.editor.postAjax(
         { action, body, language: editorLanguage(language), upload, packageUpload },
         user,
       );
-
-      // After the answer is computed, never before it, and never awaited.
-      void this.editor.maybeSweep();
-      return result;
     } finally {
       await this.removeUploads([upload, packageUpload]);
     }
@@ -222,6 +225,49 @@ export class H5pEditorController {
     @CurrentUser() caller?: AuthenticatedUser,
   ): Promise<ContentParametersResult> {
     return this.editor.contentParameters(contentId, callerOf(caller));
+  }
+
+  /**
+   * Saves an exercise the widget has just created.
+   *
+   * **Why `editor` and not `content`.** `POST /api/h5p/content` already means
+   * "install an uploaded package" and #12 left a comment saying it must keep
+   * meaning that; a second meaning on the same method and path, discriminated
+   * by content type and resolved by controller declaration order, is genuinely
+   * ambiguous. Nothing in the H5P client generates a save URL — `UrlGenerator`
+   * has no save member, and the host page supplies `saveContentCallback` — so
+   * the path is ours to choose. `editor` is the noun because
+   * `GET /api/h5p/editor/:contentId` already means "what the editor screen
+   * needs for this exercise", and this is the same screen's other direction.
+   *
+   * **Two handlers rather than one with an array path.** The rule, so it is not
+   * re-litigated: split when the outcomes differ, share when they do not. These
+   * two differ in what they mean and therefore in their status — 201 for
+   * content that did not exist, matching `POST /api/h5p/content`, the other
+   * route that creates one, and 200 for content that did. One handler could
+   * only pick one code, and 201 for an update is a lie.
+   */
+  @Post('editor')
+  @Roles('editor')
+  async createContent(
+    @Body(new ZodValidationPipe(saveH5pContentSchema)) input: SaveH5pContentInput,
+    @CurrentUser() caller?: AuthenticatedUser,
+  ): Promise<H5pSaveResult> {
+    return this.editor.save(undefined, input, requireCaller(caller));
+  }
+
+  /** Saves an exercise that already exists, keeping its content id. */
+  @Post('editor/:contentId')
+  @Roles('editor')
+  // Nest answers a POST 201 by default. Nothing was created here: the content
+  // id in the path is the one that comes back.
+  @HttpCode(HttpStatus.OK)
+  async updateContent(
+    @Param('contentId', new ZodValidationPipe(documentIdSchema)) contentId: string,
+    @Body(new ZodValidationPipe(saveH5pContentSchema)) input: SaveH5pContentInput,
+    @CurrentUser() caller?: AuthenticatedUser,
+  ): Promise<H5pSaveResult> {
+    return this.editor.save(contentId, input, requireCaller(caller));
   }
 
   /**
@@ -276,6 +322,18 @@ export class H5pEditorController {
       );
     }
   }
+}
+
+/**
+ * The verified caller, for the routes that record *who* saved rather than only
+ * acting on their behalf: `save` stamps the audit and builds the `IUser`
+ * itself, so it needs the uid and not an `IUser`.
+ */
+function requireCaller(caller: AuthenticatedUser | undefined): AuthenticatedUser {
+  if (!caller) {
+    throw new UnauthorizedException();
+  }
+  return caller;
 }
 
 /**

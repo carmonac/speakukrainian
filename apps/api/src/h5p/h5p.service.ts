@@ -180,8 +180,12 @@ function messageOf(error: unknown): string {
  * A package whose `preloadedDependencies` omits its own main library is
  * malformed but reachable, and the machine name alone is more useful to an
  * admin than a thrown error at the end of a successful install.
+ *
+ * Exported for the editor's save path, which indexes the same field for the
+ * same rows: a second copy would be a second answer to "what is the ubername
+ * of this content", and the two would drift.
  */
-function mainLibraryUberName(metadata: IContentMetadata): string {
+export function mainLibraryUberName(metadata: IContentMetadata): string {
   const dependency = metadata.preloadedDependencies?.find(
     (library) => library.machineName === metadata.mainLibrary,
   );
