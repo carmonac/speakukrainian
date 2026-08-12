@@ -1042,10 +1042,13 @@ evidence is that the suite passes unchanged.
 **Keep the guard anyway.** Unreachable is a fact about the five `@Res()` routes that exist today, not
 about the filter: four in `h5p-public.controller.ts` and one — `GET /api/h5p/temp-files/*path` —
 added later, by a different issue, to a different controller. What saves them is a `res.headersSent`
-check living in a third file that neither route declaration mentions, so route six inherits the
-hazard without inheriting the check. Deleting the guard as dead code removes the only place the
-invariant does not have to be re-derived per route, and what it prevents shows up as a client that
-hangs rather than as a stack trace pointing back here.
+check no route declaration mentions: the three streaming routes — content files, library files and
+temp files — reach it in a third file, `h5p.responses.ts`, while the two asset routes, `core/*path`
+and `editor-assets/*path`, hit it inline in the private `sendAsset` helper their one-line bodies
+delegate to, in the controller's own file. Two checks, two mechanisms, neither visible at the route,
+so route six inherits the hazard without inheriting the check. Deleting the guard as dead code
+removes the only place the invariant does not have to be re-derived per route, and what it prevents
+shows up as a client that hangs rather than as a stack trace pointing back here.
 
 ## Data model
 
