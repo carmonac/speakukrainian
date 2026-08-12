@@ -348,6 +348,10 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
     // A 409 leaves the time fields touched, which is what shows an error under
     // `showOnceEdited`. A different slot has earned none of that.
     this.form.markAsUntouched();
+    // No assertion can fail on this line today: the `setValue` above emits
+    // `form.valueChanges` whether or not the controls are enabled, and that
+    // subscription calls the same method. It stays because arriving at a slot
+    // must not owe part of its reset to another subscription's `emitEvent`.
     this.clearOverlapConflict();
   }
 
@@ -362,10 +366,12 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
    * here selects the list's own spelling while the control keeps the stored one,
    * which is what keeps an untouched save out of `buildSlotPatch`'s `timeZone`
    * branch.
+   *
+   * An arrow property rather than a method: `mat-select` calls it unbound, so a
+   * method reaching for anything on `this` would fail at runtime with no type
+   * error to warn whoever added it.
    */
-  protected compareZones(a: string, b: string): boolean {
-    return sameZone(a, b);
-  }
+  protected readonly compareZones = (a: string, b: string): boolean => sameZone(a, b);
 
   protected weekdayLabelFor(day: number): string {
     return WEEKDAY_LABELS[day] ?? '';
