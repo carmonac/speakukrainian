@@ -121,6 +121,16 @@ _Why:_ an authoring tool where a refresh loses your place, or where a link to a 
 section cannot be shared with a colleague, is a tool people work around. Angular's
 `RedirectCommand` carries state from a guard, which `createUrlTree` cannot.
 
+_A form on a route that can navigate to a sibling of itself populates in an `effect()`, never in
+`ngOnInit`._ `/schedule/:id` → `/schedule/:id` — which "open the conflicting slot" offers — reuses
+the component under the default `RouteReuseStrategy`, so the resolved input rebinds while
+`ngOnInit` does not run again: everything the arrival of a document decides belongs in an `effect()`
+on that input, meaning the field values, enable/disable, dependent group state, pristine and
+touched, and any refusal bound to the previous save. `valueChanges` subscriptions are the deliberate
+exception and stay in `ngOnInit`, because re-running them stacks a second handler on the same
+control — which is why the population must be self-sufficient rather than leaning on one of them to
+finish its job.
+
 ### ADR-006 — Public site is server-rendered per request
 
 `RenderMode.Server`, not prerendering.
@@ -719,7 +729,11 @@ stores the spelling it was given. A `<mat-select>` over the raw list therefore o
 one of them with no matching option, renders blank, and writes whatever the admin picks next over a
 zone they never touched. So the selected zone is added to the list when the list does not already
 carry it under `sameZone`, the select compares options case-insensitively, and an unedited save omits
-`timeZone`, `startsAt` and `endsAt` from the patch entirely rather than round-tripping them.
+`timeZone`, `startsAt` and `endsAt` from the patch rather than round-tripping them. That omission is
+exact **to the minute**, which is all the fields carry: a slot whose stored instants have non-zero
+seconds is re-timed to `:00` by an otherwise untouched save. Nothing this admin can author has them
+— every instant it sends is composed from a civil date, an `HH:mm` and a zone — so the guarantee
+holds for everything the form creates, and the exception sits beside the transition residual below.
 
 _Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
 document hand-written with a duration over 24 h is invisible to the overlap check; and overlap
