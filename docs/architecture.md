@@ -945,6 +945,111 @@ would have to reimplement `memoryStorage`'s buffering and error propagation, and
 buffering up to `limits.fileSize` of a file that is refused a moment later — a bound every upload
 already has. Worth revisiting if media limits grow to video sizes.
 
+### ADR-017 — What `HttpExceptionFilter` guarantees
+
+The filter is the last thing in the request path, so everything below is a promise nothing above it
+has to repeat. It had two gaps, and both had the same shape: **the carefulness lived in the caller.**
+
+**What reaches the client.** One JSON envelope, always: `{ statusCode, message, path, timestamp }`,
+plus `errors` when the payload carried one — the Zod pipe's issue list is the only producer today. An
+unrecognised throw is a generic 500 whose `message` is the constant `Internal server error`, so a
+storage outage or a Node built-in never puts its own wording, let alone its stack, on the wire. An
+`HttpException`'s payload is forwarded as it stands, **5xx included**: a `ServiceUnavailableException`
+telling a developer to run `pnpm h5p:fetch` is only useful if the sentence arrives. That is unchanged
+by the logging below, and pinned by a case that asserts the body of a 500 is byte-for-byte what it
+was. ADR-015 records why a non-`HttpException` becomes a 4xx only when `expose === true`, and why
+that predicate is not keyed on the status alone.
+
+**What is logged, and at what level.** Three rules, and the asymmetry between them is deliberate:
+
+| what was thrown                    | log                       |
+| ---------------------------------- | ------------------------- |
+| middleware 4xx (`expose === true`) | one `warn` line, no stack |
+| `HttpException`, 4xx               | nothing                   |
+| anything 5xx                       | `error`, with the stack   |
+
+A 4xx `HttpException` is the caller's mistake and the routine vocabulary of a working API — a line per
+rejected validation is noise that buries the lines that matter. A 5xx is this server's, and by the
+time it arrives here the filter is the last thing that can record it; `throw new
+InternalServerErrorException(…)` used to produce a 500 the client saw and no record at all on the
+server, which is the one case where the log is the only evidence the failure happened. The middleware
+4xx does get its `warn` because it was raised before any of our code ran, so nothing else has the
+chance to say it happened; a `BadRequestException` came from code that could log if it had anything
+to add. The threshold is `>= 500`, not `=== 500`: the only 5xx `HttpException` in the tree that did
+not already log by hand is a **503**, the one `GET /api/h5p/core/*` answers on a server whose client
+trees were never fetched — what an offline `pnpm install` leaves behind.
+
+**The two H5P sites keep their own lines, on purpose.** `h5p.errors.ts` and the `sendFile` path in
+`h5p-public.controller.ts` both log and then throw a _sanitized_ exception, so what the filter is
+handed no longer carries the cause: the `H5pError`'s `debugMessage`, and the requested path plus
+`send`'s own `EACCES`, are discarded to build the generic 500. The filter's line says _a 500 was
+answered for this request_; theirs says _why_. Two lines at the same level, correlated by the URL —
+deleting the hand-written one to avoid the duplicate would delete the only record of the cause.
+
+**Once the headers are sent, nothing is written.** The filter ended with an unconditional
+`response.status(status).json(body)`, which on a flushed response throws from inside a filter, where
+a throw has nowhere left to go. It now logs one `error` line — the method, the URL, the status the
+client was _already_ given, and that the body is truncated, with the exception's stack — and calls
+`response.destroy()`.
+
+`destroy()` and not `end()`, because `end()` on a **chunked** response writes the terminating
+zero-length chunk, which is the wire's way of saying _that was all of it_: a truncated audio file
+reported to the learner's player as a complete one, which is worse than the failure being handled. On
+a response with a declared `Content-Length` the client can at least count the shortfall, but Node
+does not enforce that by default and the connection would return to the keep-alive pool having sent a
+body its own header contradicts. The reasoning differs by transfer encoding and the answer does not,
+so the filter must not branch on it — it cannot reliably tell what has already gone out.
+`h5p.responses.ts` answers the same moment the same way, and the e2e that pins that behaviour asserts
+the client sees an aborted connection. The level is `error` even when the exception is a 4xx: the
+fact recorded is not the exception's status but that a response reported as succeeding is a lie. The
+one truncation that is _not_ this server's fault is a client that navigates away mid-download, and it
+stays out of this line only because both write paths swallow it on purpose — `h5p-public.controller.ts`'s
+`sendFile` callback resolves rather than rejects once `res.headersSent`, and `h5p.responses.ts`'s
+reporter returns early once the response is closed. A streaming route that lets an abandoned transfer
+reject instead will earn an `error` line per abandoned seek; keeping that habit is what this rule
+costs its callers.
+
+The guard runs **first** and returns, before any classification, so a 5xx raised after the first byte
+produces exactly one line — the truncation one, which strictly dominates "the answer was a 500" when
+no 500 was ever sent.
+
+_Cost:_ `destroy()` kills that TCP connection, so a pipelined request behind the broken one dies with
+it. Accepted; identical to the sibling path that has already shipped. The guard also keys on
+`headersSent` rather than on whether the response is still open, so a failure arriving after a
+response had already **completed** normally would sever a healthy socket. No `@Res()` route throws
+after `end()` today, and the behaviour this replaced — the write throwing out of the filter, leaving
+the client to time out — is worse in every case, but a route that grows a post-`end()` `finally`
+should be read against this paragraph. A half-installed dev machine now writes an `error` line per
+request for its missing client tree, which is the point. Two `error` lines for one failure is the
+ceiling, not three: `h5p.service.ts`'s rollback line and the hand-written cause lines fire on
+disjoint failures — a failed index write is not an `H5pError`, so it reaches the filter through the
+unrecognised-error branch rather than through the sanitizer — so a save that fails leaves the
+rollback line and the filter's, and an H5P fault leaves the cause line and the filter's.
+
+_Rejected:_ a `try`/`catch` around the write, which converts the symptom into a swallowed error and
+still leaves the socket in whatever state the partial write put it. _Rejected:_ branching on the
+transfer encoding. _Rejected:_ classifying first and guarding only the write, which logs the status
+the filter _would_ have chosen — worth nothing, since nothing is sent — and produces two lines for
+one failure. The status-only 4xx predicate is rejected in ADR-015.
+
+_No e2e covers either._ Both write paths that flush headers check `res.headersSent` themselves, so
+reaching the filter's guard through HTTP would need a fault injected between the flush and the throw
+— a hook existing only to make the test possible. And the 5xx logging changes nothing an HTTP client
+can see; asserting it through supertest means spying on `Logger.prototype` inside the running app,
+which passes just as well against an implementation logging from the wrong place. The honest e2e
+evidence is that the suite passes unchanged.
+
+**Keep the guard anyway.** Unreachable is a fact about the five `@Res()` routes that exist today, not
+about the filter: four in `h5p-public.controller.ts` and one — `GET /api/h5p/temp-files/*path` —
+added later, by a different issue, to a different controller. What saves them is a `res.headersSent`
+check no route declaration mentions: the three streaming routes — content files, library files and
+temp files — reach it in a third file, `h5p.responses.ts`, while the two asset routes, `core/*path`
+and `editor-assets/*path`, hit it inline in the private `sendAsset` helper their one-line bodies
+delegate to, in the controller's own file. Two checks, two mechanisms, neither visible at the route,
+so route six inherits the hazard without inheriting the check. Deleting the guard as dead code
+removes the only place the invariant does not have to be re-derived per route, and what it prevents
+shows up as a client that hangs rather than as a stack trace pointing back here.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |

@@ -2,8 +2,10 @@ import {
   type ArgumentsHost,
   BadRequestException,
   HttpException,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { MAX_JSON_BODY_BYTES, jsonBodyTooLargeMessage } from '@speakukrainian/shared';
@@ -16,8 +18,12 @@ interface Answer {
 
 const URL = '/api/pages';
 
-/** Runs the filter over a fake host and returns what the client would receive. */
-function run(exception: unknown, url = URL): Answer {
+/**
+ * Runs the filter over a fake host and returns what the client would receive. A
+ * `POST` by default, because the routine way to reach the filter is a write the
+ * API refused.
+ */
+function run(exception: unknown, url = URL, method = 'POST'): Answer {
   const answer: Answer = { status: 0, body: {} };
   const response = {
     status(code: number) {
@@ -32,12 +38,66 @@ function run(exception: unknown, url = URL): Answer {
   const host = {
     switchToHttp: () => ({
       getResponse: () => response,
-      getRequest: () => ({ method: 'POST', url }),
+      getRequest: () => ({ method, url }),
     }),
   } as unknown as ArgumentsHost;
 
   new HttpExceptionFilter().catch(exception, host);
   return answer;
+}
+
+/** What the socket was left holding once the filter had run. */
+interface Interrupted {
+  statuses: number[];
+  bodies: unknown[];
+  destroyed: number;
+  ended: number;
+}
+
+/**
+ * Runs the filter over a response whose headers have already gone out. A GET by
+ * default, because every route that can flush before it throws is one that reads
+ * a file.
+ *
+ * The counters are the outcome for the socket — severed rather than completed —
+ * in the same shape `h5p.responses.spec.ts` records it.
+ */
+function runAfterHeadersSent(
+  exception: unknown,
+  sentStatus = 206,
+  url = URL,
+  method = 'GET',
+): Interrupted {
+  const record: Interrupted = { statuses: [], bodies: [], destroyed: 0, ended: 0 };
+  const response = {
+    headersSent: true,
+    statusCode: sentStatus,
+    status(code: number) {
+      record.statuses.push(code);
+      return this;
+    },
+    json(payload: unknown) {
+      record.bodies.push(payload);
+      return this;
+    },
+    destroy() {
+      record.destroyed += 1;
+      return this;
+    },
+    end() {
+      record.ended += 1;
+      return this;
+    },
+  };
+  const host = {
+    switchToHttp: () => ({
+      getResponse: () => response,
+      getRequest: () => ({ method, url }),
+    }),
+  } as unknown as ArgumentsHost;
+
+  new HttpExceptionFilter().catch(exception, host);
+  return record;
 }
 
 /**
@@ -306,6 +366,165 @@ describe('HttpExceptionFilter', () => {
 
       expect(warn).not.toHaveBeenCalled();
       expect(error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a 5xx HttpException', () => {
+    it('is answered 500 and logged at error with its stack', () => {
+      const thrown = new InternalServerErrorException('the bucket is gone');
+
+      const answer = run(thrown);
+
+      expect(answer.status).toBe(500);
+      expect(error).toHaveBeenCalledTimes(1);
+      // The logged value must *be* the stack, the way the unrecognised-error
+      // branch already logs it: a message alone loses every frame.
+      expect(error.mock.calls[0]?.[1]).toBe(thrown.stack);
+      expect(String(error.mock.calls[0]?.[1])).toMatch(/\n\s+at /);
+      expect(String(error.mock.calls[0]?.[0])).toContain('500');
+      expect(String(error.mock.calls[0]?.[0])).toContain('POST');
+      expect(String(error.mock.calls[0]?.[0])).toContain(URL);
+      expect(warn).not.toHaveBeenCalled();
+
+      // A second run differing in both the method and the URL, so that a line
+      // spelling either as a literal is not mistaken for one that reads the
+      // request — the bar the truncation line's own case sets. Varying only the
+      // URL would leave `POST` spelled out and passing, since every other run
+      // here sends one.
+      run(thrown, '/api/h5p/content/abc', 'DELETE');
+
+      const second = String(error.mock.calls[1]?.[0]);
+      expect(second).toContain('DELETE');
+      expect(second).toContain('/api/h5p/content/abc');
+      expect(second).not.toContain('POST');
+      expect(second).not.toContain(URL);
+    });
+
+    it('logs a 503 as well, not only a 500', () => {
+      // The live case, and the reason the condition is `>= 500`: this is the
+      // only 5xx `HttpException` in the tree that does not log by hand
+      // (`h5p-public.controller.ts`, for a client library tree an offline
+      // `pnpm install` never fetched), so a `=== 500` filter leaves the one
+      // reachable instance of this defect exactly as silent as it was.
+      const thrown = new ServiceUnavailableException(
+        'The H5P core client library was never fetched.',
+      );
+
+      const answer = run(thrown);
+
+      expect(answer.status).toBe(503);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0]?.[1]).toBe(thrown.stack);
+      expect(String(error.mock.calls[0]?.[0])).toContain('503');
+    });
+
+    it('does not log a 4xx, and 500 is the boundary', () => {
+      run(new HttpException('gone sideways', 499));
+
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+
+      run(new HttpException('x', 500));
+
+      expect(error).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers the same body it did before', () => {
+      // #44 changes only what is written to the log. A 5xx `HttpException`'s own
+      // message already reaches the client, and must neither start being
+      // suppressed nor start being joined by the stack.
+      const thrown = new InternalServerErrorException('the bucket is gone');
+
+      const answer = run(thrown);
+
+      expect(answer.body['statusCode']).toBe(500);
+      expect(answer.body['message']).toBe('the bucket is gone');
+      expect(answer.body['path']).toBe(URL);
+      expect(Object.keys(answer.body)).toEqual(['statusCode', 'message', 'path', 'timestamp']);
+
+      const serialized = JSON.stringify(answer.body);
+      expect(serialized).not.toContain(' at ');
+      expect(serialized).not.toContain('http-exception.filter');
+    });
+  });
+
+  describe('once the response has started', () => {
+    it('writes neither a status nor a body', () => {
+      const interrupted = runAfterHeadersSent(realTypeError());
+
+      expect(interrupted.statuses).toEqual([]);
+      expect(interrupted.bodies).toEqual([]);
+    });
+
+    it('destroys the response rather than ending it', () => {
+      // `end` would write the terminating zero-length chunk, telling the client
+      // the truncated body was all of it.
+      const interrupted = runAfterHeadersSent(realTypeError());
+
+      expect(interrupted.destroyed).toBe(1);
+      expect(interrupted.ended).toBe(0);
+    });
+
+    it("logs at error with the exception's real stack", () => {
+      const thrown = realTypeError();
+
+      runAfterHeadersSent(thrown);
+
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      expect(error.mock.calls[0]?.[1]).toBe(thrown.stack);
+      expect(String(error.mock.calls[0]?.[1])).toMatch(/\n\s+at /);
+    });
+
+    it('logs a line naming the request and the status the client was already given', () => {
+      runAfterHeadersSent(realTypeError(), 206);
+
+      const line = String(error.mock.calls[0]?.[0]);
+      expect(line).toContain('GET');
+      expect(line).toContain(URL);
+      expect(line).toContain('206');
+      expect(line).toContain('truncated');
+
+      // A second run differing in all three, so that a line spelling any of them
+      // as a literal is not mistaken for one that reads the request. HEAD rather
+      // than an invented method: Express routes a HEAD with no handler of its own
+      // to the GET one, so the asset routes answer it and can truncate on it.
+      runAfterHeadersSent(realTypeError(), 200, '/api/h5p/content/abc/media/clip.mp3', 'HEAD');
+
+      const second = String(error.mock.calls[1]?.[0]);
+      expect(second).toContain('HEAD');
+      expect(second).toContain('/api/h5p/content/abc/media/clip.mp3');
+      expect(second).toContain('200');
+      expect(second).not.toContain('GET');
+      expect(second).not.toContain('206');
+      expect(second).not.toContain(URL);
+    });
+
+    it('logs a 5xx raised after the first byte exactly once', () => {
+      // The guard runs before the classification, so one failure is one line —
+      // and it is the more informative of the two, since no 500 was ever sent.
+      const interrupted = runAfterHeadersSent(new InternalServerErrorException('the bucket left'));
+
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(interrupted.statuses).toEqual([]);
+      expect(interrupted.bodies).toEqual([]);
+      expect(interrupted.destroyed).toBe(1);
+    });
+
+    it('logs a 4xx raised after the first byte too', () => {
+      // A truncated response is a server fault whatever the exception said.
+      const interrupted = runAfterHeadersSent(new BadRequestException('nope'));
+
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(interrupted.destroyed).toBe(1);
+    });
+
+    it('handles a thrown non-error after headers were sent', () => {
+      const interrupted = runAfterHeadersSent('something threw a string');
+
+      expect(error.mock.calls[0]?.[1]).toBe('something threw a string');
+      expect(interrupted.statuses).toEqual([]);
+      expect(interrupted.destroyed).toBe(1);
     });
   });
 });

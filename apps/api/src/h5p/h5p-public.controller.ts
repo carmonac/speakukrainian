@@ -224,6 +224,10 @@ export class H5pPublicController {
       );
     }).catch((error: unknown) => {
       if (sendFailureStatus(error) >= 500) {
+        // Kept alongside `HttpExceptionFilter`'s own 5xx line: the filter is
+        // handed the sanitized exception below, so the path and `send`'s own
+        // failure — the `EACCES` that explains it — are recorded here or
+        // nowhere.
         this.logger.error(
           `Serving "${path}" from the H5P ${kind} client tree failed: ${String(error)}`,
         );
