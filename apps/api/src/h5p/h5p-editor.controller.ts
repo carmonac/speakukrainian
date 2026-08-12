@@ -328,6 +328,11 @@ export class H5pEditorController {
  * The verified caller, for the routes that record *who* saved rather than only
  * acting on their behalf: `save` stamps the audit and builds the `IUser`
  * itself, so it needs the uid and not an `IUser`.
+ *
+ * The global `FirebaseAuthGuard` makes the `undefined` branch unreachable; it
+ * narrows a type `CurrentUser` cannot guarantee on its own, exactly as
+ * `H5pController.upload` does. One place decides what an absent caller means,
+ * because two would be two answers to it.
  */
 function requireCaller(caller: AuthenticatedUser | undefined): AuthenticatedUser {
   if (!caller) {
@@ -336,18 +341,10 @@ function requireCaller(caller: AuthenticatedUser | undefined): AuthenticatedUser
   return caller;
 }
 
-/**
- * The H5P `IUser` for the verified caller.
- *
- * The global `FirebaseAuthGuard` makes the `undefined` branch unreachable; it
- * narrows a type `CurrentUser` cannot guarantee on its own, exactly as
- * `H5pController.upload` does.
- */
+/** The H5P `IUser` for the verified caller. */
 function callerOf(caller: AuthenticatedUser | undefined): IUser {
-  if (!caller) {
-    throw new UnauthorizedException();
-  }
-  return h5pUserFor(caller.uid, caller.email);
+  const { uid, email } = requireCaller(caller);
+  return h5pUserFor(uid, email);
 }
 
 /** The one file multer wrote for a field, in the shape the endpoint asks for. */

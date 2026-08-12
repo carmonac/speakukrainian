@@ -12,6 +12,7 @@ import {
   PATH_METADATA,
   ROUTE_ARGS_METADATA,
 } from '@nestjs/common/constants.js';
+import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum.js';
 import type { ConfigService } from '@nestjs/config';
 import type { IUser } from '@lumieducation/h5p-server';
 import express from 'express';
@@ -688,11 +689,10 @@ function accepts(instance: MulterInstance, originalname: string): boolean {
  * carries no name, and its key is `RouteParamtypes.BODY`.
  */
 function paramPipesOf(handler: string, name?: string): PipeTransform<unknown, unknown>[] {
-  const BODY = '3';
   const metadata = (Reflect.getMetadata(ROUTE_ARGS_METADATA, H5pEditorController, handler) ??
     {}) as Record<string, { data?: unknown; pipes?: unknown[] }>;
   const parameter = Object.entries(metadata).find(([key, entry]) =>
-    name === undefined ? key.startsWith(`${BODY}:`) : entry.data === name,
+    name === undefined ? key.startsWith(`${RouteParamtypes.BODY}:`) : entry.data === name,
   )?.[1];
 
   if (!parameter) {
