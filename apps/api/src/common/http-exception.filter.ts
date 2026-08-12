@@ -82,8 +82,9 @@ function exposedClientError(exception: unknown): { status: number; message: stri
 /**
  * Turns every thrown error into a consistent JSON envelope. Unexpected errors
  * are logged with their stack but reported to the client as a generic 500 so we
- * never leak internals. Once the response has started nothing is written at
- * all and the socket is severed.
+ * never leak internals; a 5xx `HttpException` is logged too, since by the time
+ * it arrives here the filter is the last thing that can record it. Once the
+ * response has started nothing is written at all and the socket is severed.
  * ADR-017 records the whole contract and the reasoning behind each part.
  */
 @Catch()
@@ -137,6 +138,24 @@ export class HttpExceptionFilter implements ExceptionFilter {
         const record = payload as Record<string, unknown>;
         message = typeof record['message'] === 'string' ? record['message'] : exception.message;
         errors = record['errors'];
+      }
+
+      // A 4xx is the caller's mistake and the routine vocabulary of a working
+      // API: a line per rejected validation is noise that buries the lines that
+      // matter. A 5xx is this server's, and nothing above the filter is
+      // guaranteed to have said so. That is not the rule the `exposedClientError`
+      // branch follows, which does `warn` its 4xx — those are raised by
+      // middleware before any of our code runs, so nothing else has the chance
+      // to record them, whereas a `BadRequestException` came from code that
+      // could log if it had anything to add.
+      //
+      // `>= 500` and not `=== 500`: the one 5xx `HttpException` in the tree that
+      // does not log by hand is the 503 `h5p-public.controller.ts` answers for a
+      // client tree that was never fetched, which an offline install leaves
+      // behind. The message is not repeated into the first argument — V8 renders
+      // a stack as `Name: message\n    at …`, so it is already in the second.
+      if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+        this.logger.error(`${status} ${request.method} ${request.url}`, exception.stack);
       }
     } else if (clientError) {
       status = clientError.status;

@@ -5,6 +5,7 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { MAX_JSON_BODY_BYTES, jsonBodyTooLargeMessage } from '@speakukrainian/shared';
@@ -361,6 +362,71 @@ describe('HttpExceptionFilter', () => {
 
       expect(warn).not.toHaveBeenCalled();
       expect(error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a 5xx HttpException', () => {
+    it('is answered 500 and logged at error with its stack', () => {
+      const thrown = new InternalServerErrorException('the bucket is gone');
+
+      const answer = run(thrown);
+
+      expect(answer.status).toBe(500);
+      expect(error).toHaveBeenCalledTimes(1);
+      // The logged value must *be* the stack, the way the unrecognised-error
+      // branch already logs it: a message alone loses every frame.
+      expect(error.mock.calls[0]?.[1]).toBe(thrown.stack);
+      expect(String(error.mock.calls[0]?.[1])).toMatch(/\n\s+at /);
+      expect(String(error.mock.calls[0]?.[0])).toContain('500');
+      expect(String(error.mock.calls[0]?.[0])).toContain(URL);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('logs a 503 as well, not only a 500', () => {
+      // The live case, and the reason the condition is `>= 500`: this is the
+      // only 5xx `HttpException` in the tree that does not log by hand
+      // (`h5p-public.controller.ts`, for a client library tree an offline
+      // `pnpm install` never fetched), so a `=== 500` filter leaves the one
+      // reachable instance of this defect exactly as silent as it was.
+      const thrown = new ServiceUnavailableException(
+        'The H5P core client library was never fetched.',
+      );
+
+      const answer = run(thrown);
+
+      expect(answer.status).toBe(503);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0]?.[1]).toBe(thrown.stack);
+      expect(String(error.mock.calls[0]?.[0])).toContain('503');
+    });
+
+    it('does not log a 4xx, and 500 is the boundary', () => {
+      run(new HttpException('gone sideways', 499));
+
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+
+      run(new HttpException('x', 500));
+
+      expect(error).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers the same body it did before', () => {
+      // #44 changes only what is written to the log. A 5xx `HttpException`'s own
+      // message already reaches the client, and must neither start being
+      // suppressed nor start being joined by the stack.
+      const thrown = new InternalServerErrorException('the bucket is gone');
+
+      const answer = run(thrown);
+
+      expect(answer.body['statusCode']).toBe(500);
+      expect(answer.body['message']).toBe('the bucket is gone');
+      expect(answer.body['path']).toBe(URL);
+      expect(Object.keys(answer.body)).toEqual(['statusCode', 'message', 'path', 'timestamp']);
+
+      const serialized = JSON.stringify(answer.body);
+      expect(serialized).not.toContain(' at ');
+      expect(serialized).not.toContain('http-exception.filter');
     });
   });
 

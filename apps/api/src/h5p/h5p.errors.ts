@@ -169,6 +169,12 @@ export function toHttpException(error: unknown): HttpException | null {
   if (status < HttpStatus.BAD_REQUEST || status >= HttpStatus.INTERNAL_SERVER_ERROR) {
     // `error.message` carries `debugMessage` and can name a server path, so it
     // is logged and never returned.
+    //
+    // Kept even though `HttpExceptionFilter` now logs every 5xx `HttpException`
+    // as well: what it is handed is the sanitized exception built below, whose
+    // message is the generic sentence and whose stack starts here, so this is
+    // the only line that names the cause. Two lines at the same level,
+    // correlated by the URL.
     logger.error(`An H5P request failed: ${error.message}`);
     return new InternalServerErrorException(
       'The H5P request could not be completed because of a server error.',
