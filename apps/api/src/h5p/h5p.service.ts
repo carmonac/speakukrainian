@@ -55,29 +55,15 @@ export class H5pService {
       const contentId = String(id);
       const mainLibrary = mainLibraryUberName(metadata);
 
-      // One listing rather than a `stat` per file: sizes come back with it.
-      const objects = await this.storage.list(contentPrefix(contentId));
-      const sizeBytes = objects.reduce((total, object) => total + object.sizeBytes, 0);
-
-      try {
-        await this.repository.create(
-          {
-            id: contentId,
-            title: metadata.title,
-            mainLibrary,
-            storagePath: contentStoragePath(contentId),
-            sizeBytes,
-            pageId: null,
-          },
-          actorId,
-        );
-      } catch (error) {
-        // A failed index write would otherwise leave content objects that
-        // nothing references and no route can ever delete.
-        this.logger.error(`Rolling back H5P content ${contentId} after a failed index write`);
-        await this.contentStorage.deleteContent(contentId).catch(() => undefined);
-        throw error;
-      }
+      await this.indexNewContent(
+        contentId,
+        {
+          title: metadata.title,
+          mainLibrary,
+          sizeBytes: await this.storedSizeOf(contentId),
+        },
+        actorId,
+      );
 
       return h5pSaveResultSchema.parse({ contentId, title: metadata.title, mainLibrary });
     } catch (error) {
@@ -99,6 +85,62 @@ export class H5pService {
         ),
       );
     }
+  }
+
+  /**
+   * The index row that makes content already written to storage findable, or
+   * nothing at all.
+   *
+   * **A failed index write rolls the objects back**, because content nobody
+   * indexed is under an id nothing references, no route can enumerate and no
+   * route can delete — it would be garbage in the bucket forever. That is one
+   * answer to one question, so it lives here rather than once per writer: the
+   * package import and the editor's save both write objects first and index
+   * them second, and `remove`'s docblock already records a reason someone will
+   * want to change *how* the rollback deletes (`deleteContent` refuses a
+   * half-swept prefix where `deleteByPrefix` does not). One copy is what makes
+   * that a single edit.
+   *
+   * Only for content that is *new*. Overwriting an existing exercise must not
+   * roll its objects back — see `H5pEditorService.index`, where the asymmetry is
+   * argued.
+   */
+  async indexNewContent(
+    contentId: string,
+    row: { title: string; mainLibrary: string; sizeBytes: number },
+    actorId: string,
+  ): Promise<void> {
+    try {
+      await this.repository.create(
+        {
+          id: contentId,
+          title: row.title,
+          mainLibrary: row.mainLibrary,
+          storagePath: contentStoragePath(contentId),
+          sizeBytes: row.sizeBytes,
+          pageId: null,
+        },
+        actorId,
+      );
+    } catch (error) {
+      this.logger.error(`Rolling back H5P content ${contentId} after a failed index write`);
+      await this.contentStorage.deleteContent(contentId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * What an exercise's objects currently occupy, from one listing rather than a
+   * `stat` per file: sizes come back with the listing.
+   *
+   * Always recomputed and never adjusted, because both writers change the file
+   * set in ways that are not a delta: an import replaces everything, and a save
+   * copies temporary files in and deletes the ones the parameters no longer
+   * reference.
+   */
+  async storedSizeOf(contentId: string): Promise<number> {
+    const objects = await this.storage.list(contentPrefix(contentId));
+    return objects.reduce((total, object) => total + object.sizeBytes, 0);
   }
 
   list(query: ListH5pContentQuery): Promise<Page<H5pContent>> {

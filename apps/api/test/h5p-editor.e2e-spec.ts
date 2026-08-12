@@ -754,6 +754,16 @@ describe('h5p editor ajax (e2e)', () => {
       },
     );
 
+    it('answers 404 for an exercise nobody stored', async () => {
+      // `render` reads no storage, so the index row is the only thing that can
+      // tell this route the exercise is not there. Without the check the widget
+      // boots against an id nothing was stored under and only the save refuses
+      // it — by which point the author has done the work.
+      const response = await editorModel('ffffffffffffffffffffffffffffffff').expect(404);
+
+      expect((response.body as ErrorBody).message).toBe('That exercise does not exist.');
+    });
+
     it('answers 400 for a content id no document id could be', async () => {
       const response = await request(server())
         .get('/api/h5p/editor/not.a.document.id')
@@ -777,15 +787,14 @@ describe('h5p editor ajax (e2e)', () => {
     });
 
     it('answers 404 for an exercise nobody stored', async () => {
-      // The sentence is the storage adapter's, not `CONTENT_MISSING_MESSAGE`:
-      // `getContent` reads `h5p.json`, which is absent, so `H5pContentStorage`
-      // raises `content-file-missing`. Recorded as it is rather than reworded
-      // by adding an index read to a route that needs none — the save route is
-      // where the index is the authority, because there a wrong answer creates
-      // content under a caller-supplied id.
+      // The same sentence `GET /editor/:contentId` and the save give, because
+      // it is the same fact. Without the index check the storage adapter
+      // answers first — `getContent` reads an absent `h5p.json` and raises
+      // `content-file-missing`, whose sentence names a file the caller never
+      // named and implies the exercise itself is fine.
       const response = await contentParameters('ffffffffffffffffffffffffffffffff').expect(404);
 
-      expect((response.body as ErrorBody).message).toBe('That file is not part of this exercise.');
+      expect((response.body as ErrorBody).message).toBe('That exercise does not exist.');
     });
 
     it('answers 400 for a content id no document id could be', async () => {

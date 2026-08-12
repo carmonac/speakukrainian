@@ -22,6 +22,7 @@ import { H5pEditorService, TEMP_SWEEP_INTERVAL_MS } from './h5p-editor.service.j
 import { H5pLibraryStorage } from './h5p-library.storage.js';
 import { H5pTemporaryStorage } from './h5p-temporary.storage.js';
 import { createH5pConfig } from './h5p.config.js';
+import { H5pService } from './h5p.service.js';
 import { InMemoryStorage } from './h5p.storage-fake.js';
 
 const EDITOR: IUser = {
@@ -144,8 +145,10 @@ async function createHarness(): Promise<Harness> {
       endpoint,
       editor,
       rows.asRepository(),
-      new H5pContentStorage(storage),
-      storage,
+      // The real `H5pService`, not a stub: the create branch's rollback lives
+      // there now, and the two cases that prove it must still be running the
+      // code the package import runs.
+      new H5pService(editor, new H5pContentStorage(storage), rows.asRepository(), storage),
     ),
     objects,
     editor,
@@ -155,9 +158,24 @@ async function createHarness(): Promise<Harness> {
   };
 }
 
-/** Lets a fire-and-forget `void this.maybeSweep()` run before a negative assertion. */
-async function flushMicrotasks(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 20));
+/**
+ * Lets a fire-and-forget `void this.maybeSweep()` finish, if one was started.
+ *
+ * The negative cases assert that no sweep happened, and a sweep that was
+ * wrongly started but has not yet reached its first delete would pass them
+ * vacuously — so the pending work has to be drained rather than merely yielded
+ * to once. There is no handle to await: the caller `void`s the promise on
+ * purpose, because the sweep must not be able to affect the response.
+ *
+ * Turns of the event loop rather than a wall-clock sleep, which is what this
+ * used to be: the storage double resolves without real I/O, so every await in
+ * `cleanUp()` is a microtask and ten `setImmediate` turns drain far more than
+ * it needs — and unlike a 20 ms sleep, a loaded CI box cannot make that false.
+ */
+async function letFireAndForgetRun(): Promise<void> {
+  for (let turn = 0; turn < 10; turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 }
 
 /** The status of the `HttpException` a call rejected with. */
@@ -189,6 +207,27 @@ async function messageOf(call: Promise<unknown>): Promise<string> {
 
 describe('H5pEditorService', () => {
   let harness: Harness;
+
+  /**
+   * The `h5pContent` row that makes an exercise exist, for the read routes that
+   * treat it as the authority. Storage alone is not enough for them: content
+   * objects with no row are what a rolled-back create or a half-swept delete
+   * leaves behind, and neither is an exercise.
+   */
+  const indexRow = async (id: string): Promise<string> => {
+    await harness.rows.create(
+      {
+        id,
+        title: 'Present perfect drill',
+        mainLibrary: 'SpeakTest.Main 1.0',
+        storagePath: `h5p/content/${id}`,
+        sizeBytes: 0,
+        pageId: null,
+      },
+      EDITOR.id,
+    );
+    return id;
+  };
 
   beforeEach(async () => {
     harness = await createHarness();
@@ -334,7 +373,7 @@ describe('H5pEditorService', () => {
       const cleanUp = vi.spyOn(harness.editor.temporaryFileManager, 'cleanUp');
 
       await expect(harness.service.postAjax({ action: 'nonsense' }, EDITOR)).rejects.toThrow();
-      await flushMicrotasks();
+      await letFireAndForgetRun();
 
       expect(cleanUp).not.toHaveBeenCalled();
       expect(harness.objects.paths()).toContain(stale);
@@ -403,10 +442,12 @@ describe('H5pEditorService', () => {
     });
 
     it('names the exercise being edited, and nothing when there is not one yet', async () => {
-      const existing = await harness.service.editorModel('some-content-id', undefined, EDITOR);
+      const contentId = await indexRow('some-content-id');
+
+      const existing = await harness.service.editorModel(contentId, undefined, EDITOR);
       const fresh = await harness.service.editorModel(undefined, undefined, EDITOR);
 
-      expect(existing.integration.editor?.nodeVersionId).toBe('some-content-id');
+      expect(existing.integration.editor?.nodeVersionId).toBe(contentId);
       expect(fresh.integration.editor?.nodeVersionId).toBeUndefined();
     });
 
@@ -444,11 +485,34 @@ describe('H5pEditorService', () => {
       expect(await statusOf(harness.service.editorModel('../../etc', undefined, EDITOR))).toBe(400);
       expect(render).not.toHaveBeenCalled();
     });
+
+    it('answers 404 for an exercise nobody stored, rather than a widget bound to nothing', async () => {
+      // `render` reads no storage at all, so without the index check this is a
+      // 200 whose `nodeVersionId` names an exercise that does not exist — the
+      // author would fill the form in and only the save would refuse it.
+      const render = vi.spyOn(harness.editor, 'render');
+      const call = (): Promise<unknown> =>
+        harness.service.editorModel('not-here', undefined, EDITOR);
+
+      expect(await statusOf(call())).toBe(404);
+      expect(await messageOf(call())).toBe('That exercise does not exist.');
+      expect(render).not.toHaveBeenCalled();
+    });
+
+    it('boots a blank editor without paying for an index read', async () => {
+      // The read is the price of an id, not of the route: a new exercise has no
+      // row to look for.
+      const exists = vi.spyOn(harness.rows, 'exists');
+
+      await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      expect(exists).not.toHaveBeenCalled();
+    });
   });
 
   describe('content parameters', () => {
-    /** Content written straight through the storage adapter, as an import would leave it. */
-    const seedContent = async (): Promise<string> =>
+    /** Content objects only, with no index row — a rolled-back create leaves exactly this. */
+    const storeContent = async (): Promise<string> =>
       new H5pContentStorage(harness.objects.asStorageService()).addContent(
         {
           title: 'Present perfect drill',
@@ -465,6 +529,9 @@ describe('H5pEditorService', () => {
         EDITOR,
       );
 
+    /** Content as a complete exercise: the objects an import writes and the row that names them. */
+    const seedContent = async (): Promise<string> => indexRow(await storeContent());
+
     it('answers with the metadata and the parameters, in the shape a save posts back', async () => {
       const contentId = await seedContent();
 
@@ -476,8 +543,22 @@ describe('H5pEditorService', () => {
       expect(answer.params.params).toEqual({ question: 'Have you ever been to Kyiv?' });
     });
 
-    it('answers 404 for an exercise nobody stored', async () => {
-      expect(await statusOf(harness.service.contentParameters('not-here', EDITOR))).toBe(404);
+    it('answers 404 for an exercise nobody stored, naming the exercise and not a file', async () => {
+      const call = (): Promise<unknown> => harness.service.contentParameters('not-here', EDITOR);
+
+      expect(await statusOf(call())).toBe(404);
+      // Without the index check the storage adapter answers first, with
+      // `content-file-missing` — the right status about the wrong thing.
+      expect(await messageOf(call())).toBe('That exercise does not exist.');
+    });
+
+    it('answers 404 for objects that no index row names', async () => {
+      // The state a rolled-back create or a half-completed delete leaves: the
+      // parameters are readable, and the exercise still does not exist. Storage
+      // alone would answer 200 here.
+      const contentId = await storeContent();
+
+      expect(await statusOf(harness.service.contentParameters(contentId, EDITOR))).toBe(404);
     });
 
     it('refuses an unsafe content id with a 400', async () => {
@@ -738,7 +819,7 @@ describe('H5pEditorService', () => {
       await expect(
         harness.service.save('made-up-id', body('Kyiv?'), { uid: 'editor-1' }),
       ).rejects.toThrow();
-      await flushMicrotasks();
+      await letFireAndForgetRun();
 
       expect(cleanUp).not.toHaveBeenCalled();
       expect(harness.objects.paths()).toContain(stale);

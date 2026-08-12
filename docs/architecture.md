@@ -285,12 +285,27 @@ the type system. The test that carries this is a substring assertion over the se
 those config-only keys, in the service spec and again on the wire, because asserting the absence of
 `urlGenerator` alone would pass for any future field that also holds the config.
 
+_One fact, one sentence: the `h5pContent` document decides whether an exercise exists._ All four
+authoring routes consult it and answer `That exercise does not exist.` — the save, because
+`H5pContentStorage.addContent` would otherwise let a caller mint content under an id of their
+choosing; `GET /api/h5p/params/:contentId`, because the storage adapter reaching an absent `h5p.json`
+raises `content-file-missing`, whose sentence names a file the caller never named and implies the
+exercise is fine; and `GET /api/h5p/editor/:contentId`, because `H5PEditor.render` reads no storage
+at all and would answer **200** for an id nothing was ever stored under, handing the admin screen an
+authoring widget bound to an exercise that does not exist — the author fills it in, the save 404s,
+and the work is recoverable only as a new exercise. Each pays one Firestore read, and only when the
+caller named an id: `GET /api/h5p/editor` with no id still pays nothing.
+`MESSAGES['content-file-missing']` keeps its wording, because it is the right sentence for
+`GET /api/h5p/content/:id/:file`, where a file really can be missing from an exercise that exists.
+
 _The failed index write, and why the rollback is asymmetric._ A save writes Cloud Storage and then
 Firestore — that order is forced, because the content id (on create) and the title and main library
 (always) come out of what the library returns. On **create**, a failed index write rolls the content
 objects back, exactly as `importPackage` does and for the same reason: without the row the objects
 sit under a `randomUUID()` prefix that nothing references, no route can enumerate and no route can
-delete. On **update** they are deliberately kept: the row already names them and they are the newer
+delete. That is one answer to one question, so both writers call one
+`H5pService.indexNewContent` rather than carrying a copy each. On **update** they are deliberately
+kept: the row already names them and they are the newer
 truth, so deleting them would destroy a good exercise because an audit field could not be written.
 The id is logged in both branches, since that is the only thing that tells an operator which
 exercise is affected. `H5pContentRepository.update` takes `{ title, mainLibrary, sizeBytes }` and

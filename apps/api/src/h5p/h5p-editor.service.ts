@@ -8,13 +8,11 @@ import {
   type H5pSaveResult,
   type SaveH5pContentInput,
 } from '@speakukrainian/shared';
-import { StorageService } from '../infra/storage/storage.service.js';
 import { H5pContentRepository } from './h5p-content.repository.js';
-import { H5pContentStorage } from './h5p-content.storage.js';
 import { CONTENT_MISSING_MESSAGE, mapH5pErrors } from './h5p.errors.js';
-import { assertSafeContentId, contentPrefix, contentStoragePath } from './h5p.paths.js';
+import { assertSafeContentId } from './h5p.paths.js';
 import type { RangeCallback } from './h5p.responses.js';
-import { mainLibraryUberName } from './h5p.service.js';
+import { H5pService, mainLibraryUberName } from './h5p.service.js';
 import { H5P_AJAX_ENDPOINT, H5P_EDITOR } from './h5p.tokens.js';
 import { h5pUserFor } from './h5p.user.js';
 
@@ -177,9 +175,12 @@ export class H5pEditorService {
     @Inject(H5P_AJAX_ENDPOINT) private readonly ajax: H5PAjaxEndpoint,
     @Inject(H5P_EDITOR) private readonly editor: H5PEditor,
     private readonly repository: H5pContentRepository,
-    /** Only for rolling a failed create back; every read goes through the library. */
-    private readonly contentStorage: H5pContentStorage,
-    private readonly storage: StorageService,
+    /**
+     * The index lifecycle of content that has just been written to storage,
+     * which this service shares with the package import: creating a row with
+     * the rollback that belongs to it, and measuring what was stored.
+     */
+    private readonly content: H5pService,
   ) {}
 
   async getAjax(request: GetAjaxRequest, user: IUser): Promise<GetAjaxResult> {
@@ -246,6 +247,15 @@ export class H5pEditorService {
    * `integration.editor.nodeVersionId`, where `undefined` is exactly right —
    * the widget reads it as "this is new".
    *
+   * **The index document is the authority for the 404 here too**, as it is for
+   * `save`, `contentParameters`, `H5pService.findById` and `H5pService.remove`.
+   * `render` asks storage for nothing, so without the read this route answers
+   * 200 for an id nothing was ever stored under and hands the admin screen an
+   * authoring widget bound to an exercise that does not exist: the author fills
+   * it in and the save then 404s, with the work recoverable only as a new
+   * exercise. The read is paid only when the caller named an id — booting a
+   * blank editor still costs nothing.
+   *
    * The response is built by naming three fields; see `EditorModelResponse` for
    * what the fourth one carries and why it may never be spread in.
    */
@@ -259,6 +269,9 @@ export class H5pEditorService {
         // The id becomes a storage prefix inside `generateIntegration`'s URLs
         // and inside every read the widget makes afterwards.
         assertSafeContentId(contentId);
+        if (!(await this.repository.exists(contentId))) {
+          throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+        }
       }
 
       // `h5p.module.ts` sets a renderer that returns the model itself; the
@@ -288,10 +301,23 @@ export class H5pEditorService {
    *
    * The path matches `config.paramsUrl` (`/params`) under our `baseUrl`
    * anyway, which keeps a future `setRenderer` change honest.
+   *
+   * **The index document is the authority for the 404**, as it is for every
+   * other id-bearing route in this area. Without the read the request still
+   * answers 404 — `getContent` reads an absent `h5p.json` and
+   * `H5pContentStorage` raises `content-file-missing` — but with a sentence
+   * about a file the caller never named, which implies the exercise itself is
+   * fine. `MESSAGES['content-file-missing']` stays as it is: it is the right
+   * sentence for `GET /api/h5p/content/:id/:file`, where a file really can be
+   * absent from an exercise that exists, and this guard is what stops `/params`
+   * reaching it for the wrong reason.
    */
   async contentParameters(contentId: string, user: IUser): Promise<ContentParametersResult> {
     return mapH5pErrors(async () => {
       assertSafeContentId(contentId);
+      if (!(await this.repository.exists(contentId))) {
+        throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+      }
 
       return this.ajax.getContentParameters(contentId, user);
     });
@@ -359,8 +385,7 @@ export class H5pEditorService {
         user,
       );
 
-      const objects = await this.storage.list(contentPrefix(id));
-      const sizeBytes = objects.reduce((total, object) => total + object.sizeBytes, 0);
+      const sizeBytes = await this.content.storedSizeOf(id);
       const mainLibrary = mainLibraryUberName(metadata);
 
       await this.index(
@@ -385,10 +410,11 @@ export class H5pEditorService {
    * an exercise.** On a *create* the objects sit under an id nothing
    * references, no route can enumerate and no route can delete, so a failed
    * index write leaves garbage forever — the same case `H5pService.importPackage`
-   * rolls back, for the same reason. On an *update* the row already names those
-   * objects and the objects are the newer truth, so deleting them would throw
-   * away a good exercise because an audit field could not be written; the
-   * failure is logged with the id and rethrown instead.
+   * has, which is why the create branch is that service's `indexNewContent` and
+   * not a second copy of it. On an *update* the row already names those objects
+   * and the objects are the newer truth, so deleting them would throw away a
+   * good exercise because an audit field could not be written; the failure is
+   * logged with the id and rethrown instead.
    */
   private async index(
     contentId: string | undefined,
@@ -396,23 +422,11 @@ export class H5pEditorService {
     actorId: string,
   ): Promise<void> {
     if (contentId === undefined) {
-      try {
-        await this.repository.create(
-          {
-            id: row.id,
-            title: row.title,
-            mainLibrary: row.mainLibrary,
-            storagePath: contentStoragePath(row.id),
-            sizeBytes: row.sizeBytes,
-            pageId: null,
-          },
-          actorId,
-        );
-      } catch (error) {
-        this.logger.error(`Rolling back H5P content ${row.id} after a failed index write`);
-        await this.contentStorage.deleteContent(row.id).catch(() => undefined);
-        throw error;
-      }
+      await this.content.indexNewContent(
+        row.id,
+        { title: row.title, mainLibrary: row.mainLibrary, sizeBytes: row.sizeBytes },
+        actorId,
+      );
       return;
     }
 
