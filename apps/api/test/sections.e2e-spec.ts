@@ -10,6 +10,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   COLLECTIONS,
+  MAX_LOCALES,
   MAX_SECTION_DEPTH,
   sectionSchema,
   type Page,
@@ -41,6 +42,19 @@ interface IssueBody {
   message: string;
   errors?: { path: string; message: string }[];
 }
+
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+
+/**
+ * Distinct codes `localeCodeSchema` accepts (`zaa`, `zab`, …), three letters so
+ * none of them collides with a real locale the site seeds.
+ */
+const spareLocaleCodes = (count: number): string[] =>
+  Array.from(
+    { length: count },
+    (_unused, index) =>
+      `z${LETTERS[Math.floor(index / LETTERS.length)]}${LETTERS[index % LETTERS.length]}`,
+  );
 
 /** The nesting shape both `GET /tree` and a hand walk of `parentId` reduce to. */
 interface Nesting {
@@ -409,6 +423,26 @@ describe('sections (e2e)', () => {
     expect(stripped).toContain('data-asset-path="audio/2026/01/a.mp3"');
     expect(stripped).toContain('controls');
     expect(stripped).toContain('preload="metadata"');
+  });
+
+  it('refuses a title carrying more translations than the site can have', async () => {
+    // The reported exploit, closed at the route rather than only in a schema:
+    // every key is a valid locale code and every value is one character, so
+    // this is refused for the *number* of translations. Without that bound a
+    // caller invents codes faster than the site can have locales, and every
+    // list read carries what they wrote.
+    const title: Record<string, string> = { en: 'Too many' };
+    for (const code of spareLocaleCodes(MAX_LOCALES)) {
+      title[code] = 'x';
+    }
+
+    const response = await post({ slug: 'e2e-too-many-locales', title }).expect(400);
+
+    expect((response.body as IssueBody).errors?.[0]?.path).toBe('title');
+    expect((response.body as IssueBody).errors?.[0]?.message).toContain(String(MAX_LOCALES));
+    expect((await listAll()).some((section) => section.slug === 'e2e-too-many-locales')).toBe(
+      false,
+    );
   });
 
   it('refuses a link section with no target, pathed at the link field', async () => {
