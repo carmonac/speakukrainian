@@ -18,8 +18,12 @@ interface Answer {
 
 const URL = '/api/pages';
 
-/** Runs the filter over a fake host and returns what the client would receive. */
-function run(exception: unknown, url = URL): Answer {
+/**
+ * Runs the filter over a fake host and returns what the client would receive. A
+ * `POST` by default, because the routine way to reach the filter is a write the
+ * API refused.
+ */
+function run(exception: unknown, url = URL, method = 'POST'): Answer {
   const answer: Answer = { status: 0, body: {} };
   const response = {
     status(code: number) {
@@ -34,7 +38,7 @@ function run(exception: unknown, url = URL): Answer {
   const host = {
     switchToHttp: () => ({
       getResponse: () => response,
-      getRequest: () => ({ method: 'POST', url }),
+      getRequest: () => ({ method, url }),
     }),
   } as unknown as ArgumentsHost;
 
@@ -378,8 +382,22 @@ describe('HttpExceptionFilter', () => {
       expect(error.mock.calls[0]?.[1]).toBe(thrown.stack);
       expect(String(error.mock.calls[0]?.[1])).toMatch(/\n\s+at /);
       expect(String(error.mock.calls[0]?.[0])).toContain('500');
+      expect(String(error.mock.calls[0]?.[0])).toContain('POST');
       expect(String(error.mock.calls[0]?.[0])).toContain(URL);
       expect(warn).not.toHaveBeenCalled();
+
+      // A second run differing in both the method and the URL, so that a line
+      // spelling either as a literal is not mistaken for one that reads the
+      // request — the bar the truncation line's own case sets. Varying only the
+      // URL would leave `POST` spelled out and passing, since every other run
+      // here sends one.
+      run(thrown, '/api/h5p/content/abc', 'DELETE');
+
+      const second = String(error.mock.calls[1]?.[0]);
+      expect(second).toContain('DELETE');
+      expect(second).toContain('/api/h5p/content/abc');
+      expect(second).not.toContain('POST');
+      expect(second).not.toContain(URL);
     });
 
     it('logs a 503 as well, not only a 500', () => {
