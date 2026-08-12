@@ -470,6 +470,26 @@ describe('ScheduleFormPage', () => {
     expect(options).toContain(KIEV);
   });
 
+  it('selects the list’s own spelling for a zone stored in another case', async () => {
+    // ADR-014 stores a zone as the admin spelled it, and `mat-select` compares
+    // option values with `===`. `timeZoneOptions` folds `europe/madrid` into the
+    // list's `Europe/Madrid` rather than adding a second entry, so without
+    // `[compareWith]` the select opens **blank** on a slot that has a zone, and
+    // the next pick re-zones a slot nobody touched. Both halves are asserted
+    // here: the fold (no duplicate option) and the match (not blank).
+    const recorded = setup({ slots: [slot('lower-1', { timeZone: 'europe/madrid' })] });
+    const harness = await open('/schedule/lower-1');
+
+    expect(zoneText(harness)).toBe(MADRID);
+    expect(await openZones(harness)).toHaveLength(SUPPORTED.length);
+
+    await click(harness, '.slot-form__save');
+
+    // The control still holds the stored spelling, so an untouched save leaves
+    // `timeZone` out of the patch entirely.
+    expect(recorded.updated).toEqual([{ id: 'lower-1', input: {} }]);
+  });
+
   it('saves an untouched slot without moving it', async () => {
     const recorded = setup({ slots: [slot('kyiv-1', { timeZone: KYIV })], viewZone: MADRID });
     const harness = await open('/schedule/kyiv-1');
