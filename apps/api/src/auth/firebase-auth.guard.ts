@@ -35,6 +35,11 @@ export interface RequestWithUser extends Request {
  * caller from a signed token plus a live Firebase Auth read. A middleware that
  * ever set `request.user` from a header or a body would be an authentication
  * bypass.
+ *
+ * That early return is also the precedence when a request carries **both**
+ * credentials: the caller `H5pUrlTokenGuard` established stands and the header
+ * below is never verified, even if it names someone else. `H5pUrlTokenGuard`'s
+ * docblock says why that is the right way round.
  */
 @Injectable()
 export class FirebaseAuthGuard implements CanActivate {

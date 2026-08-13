@@ -35,7 +35,13 @@ import {
  * using the other credential, so the bearer path takes over. A token that is
  * *present and bad* is refused here and never falls through, because falling
  * through would answer an expired editing session with a sentence about a
- * header the caller was never going to send.
+ * header the caller was never going to send. A token that is *present and
+ * valid* wins over an `Authorization` header on the same request, and that
+ * header is never verified: the caller demonstrably holds a credential naming
+ * the token's user, so honouring the header instead would reach nothing a
+ * token-only request could not already reach, and this way a tokenised URL
+ * means the same thing wherever it is loaded from rather than depending on
+ * whatever credential the surrounding page happens to attach to it.
  *
  * **What it costs, and why that is paid.** One Firebase Auth read per
  * token-authenticated request, to resolve the caller's *current* role. That is
@@ -86,6 +92,16 @@ export class H5pUrlTokenGuard implements CanActivate {
     return true;
   }
 
+  /**
+   * The caller's current record, or a refusal.
+   *
+   * **The diagnosis here is coarser than it reads.** Every `getUser` failure
+   * becomes "unknown user" and none is logged, so an Auth outage or a socket
+   * error tells an author whose account is perfectly fine that it can no longer
+   * sign in. `FirebaseAuthGuard` collapses the same failures the same way;
+   * narrowing to `auth/user-not-found` and letting the rest surface is worth
+   * doing in both places at once, not in one.
+   */
   private async recordOf(uid: string): Promise<UserRecord> {
     const record = await this.auth.getUser(uid).catch(() => {
       throw new UnauthorizedException(H5P_URL_TOKEN_UNKNOWN_USER_MESSAGE);

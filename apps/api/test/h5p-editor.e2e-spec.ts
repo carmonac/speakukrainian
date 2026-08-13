@@ -840,6 +840,30 @@ describe('h5p editor ajax (e2e)', () => {
       );
     });
 
+    it('runs as the token’s user when a bearer header names a different one', async () => {
+      // The precedence, as an effective identity rather than as a status: the
+      // upload carries editor A's token in the URL *and* editor B's header, and
+      // the bytes land in A's prefix. Not an escalation — holding A's token
+      // already grants A's identity — but the order is load-bearing, so it is
+      // pinned here rather than left to the guard registration.
+      const mine = await widgetUrls();
+      const theirs = await widgetUrls(otherEditor.idToken);
+
+      const uploaded = await request(server())
+        .post(`${requestPathOf(mine.editorAjaxPath)}files`)
+        .set('Authorization', `Bearer ${otherEditor.idToken}`)
+        .field('field', JSON.stringify({ type: 'audio', name: 'file' }))
+        .attach('file', CLIP_BYTES, { filename: 'clip.mp3', contentType: 'audio/mpeg' })
+        .expect(200);
+
+      await request(server())
+        .get(`${requestPathOf(mine.filesPath)}/${storedName(uploaded)}`)
+        .expect(200);
+      await request(server())
+        .get(`${requestPathOf(theirs.filesPath)}/${storedName(uploaded)}`)
+        .expect(404);
+    });
+
     it('refuses a request carrying neither credential', async () => {
       const refusedToken = await request(server())
         .get('/api/h5p/temp/not-a-token/audios/audio-anything.mp3')
