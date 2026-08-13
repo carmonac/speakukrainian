@@ -212,6 +212,30 @@ describe('toHttpException', () => {
     );
   });
 
+  it('turns metadata the library refuses on save into a 400', () => {
+    // `contentMetadataValidator` raises a plain `Error` with exactly this
+    // message, so without the backstop a title carrying a newline — which
+    // passes `saveH5pContentSchema`'s `1..255` and fails ajv's `^.{1,255}$` —
+    // is a 500 for a form the author filled in.
+    const exception = toHttpException(new Error('Metadata does not conform to schema.'));
+
+    expect(exception?.getStatus()).toBe(400);
+    expect(bodyOf(exception!)['message']).toBe(
+      'That exercise could not be saved because its details are not in a form H5P accepts.',
+    );
+  });
+
+  it.each([
+    ['Metadata does not conform to schema'],
+    ['Metadata does not conform to schema. Retrying the storage read'],
+    ['Reading metadata failed: Metadata does not conform to schema.'],
+  ])('leaves %j a 500, because the match is exact', (message) => {
+    // A storage error whose message happens to carry those words is this
+    // server's fault. _Fails if_ the match is loosened to `startsWith` or
+    // `includes`.
+    expect(toHttpException(new Error(message))).toBeNull();
+  });
+
   it('keeps the rejected entry name out of the response body', () => {
     const exception = toHttpException(new Error('Relative path: content/../../pwned.txt'));
 

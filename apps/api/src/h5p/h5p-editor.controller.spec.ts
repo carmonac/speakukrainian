@@ -5,7 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { BadRequestException, HttpException, UnauthorizedException } from '@nestjs/common';
-import { HTTP_CODE_METADATA, INTERCEPTORS_METADATA } from '@nestjs/common/constants.js';
+import type { PipeTransform } from '@nestjs/common';
+import {
+  HTTP_CODE_METADATA,
+  INTERCEPTORS_METADATA,
+  PATH_METADATA,
+  ROUTE_ARGS_METADATA,
+} from '@nestjs/common/constants.js';
+import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum.js';
 import type { ConfigService } from '@nestjs/config';
 import type { IUser } from '@lumieducation/h5p-server';
 import express from 'express';
@@ -15,6 +22,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import {
   MAX_H5P_UPLOAD_BYTES,
   h5pEditorUploadTooLargeMessage,
+  type H5pSaveResult,
+  type SaveH5pContentInput,
   type UserRole,
 } from '@speakukrainian/shared';
 import type { AuthenticatedUser } from '../auth/firebase-auth.guard.js';
@@ -24,6 +33,8 @@ import { UploadLimitInterceptor } from '../common/upload-limit.interceptor.js';
 import type { Env } from '../config/configuration.js';
 import { H5pEditorController } from './h5p-editor.controller.js';
 import type {
+  ContentParametersResult,
+  EditorModelResponse,
   GetAjaxRequest,
   H5pEditorService,
   PostAjaxRequest,
@@ -34,15 +45,57 @@ import type { RangeCallback } from './h5p.responses.js';
 
 const CALLER: AuthenticatedUser = { uid: 'editor000001', email: 'e@x.local', role: 'editor' };
 
+/**
+ * The `IUser` the caller above becomes. Spelled out rather than taken from
+ * `h5pUserFor`, so the assertion is about the value and not about the function
+ * agreeing with itself: this id is the prefix every temporary file this caller
+ * writes is stored under.
+ */
+const CALLER_USER: IUser = { id: CALLER.uid, email: 'e@x.local', name: '', type: 'local' };
+
 /** A clip whose every window differs from every other, so a range assertion means something. */
 const CLIP = Buffer.from(Uint8Array.from({ length: 4096 }, (_value, index) => (index * 37) % 251));
 
 interface Recorded {
   gets: { request: GetAjaxRequest; user: IUser }[];
   posts: { request: PostAjaxRequest; user: IUser }[];
+  models: { contentId?: string; language?: string; user: IUser }[];
+  parameters: { contentId: string; user: IUser }[];
+  saves: { contentId?: string; input: SaveH5pContentInput; caller: { uid: string } }[];
   temporaryFiles: string[];
-  sweeps: number;
 }
+
+/** Enough of an editor model to tell one call's answer from another's. */
+const MODEL: EditorModelResponse = {
+  integration: {
+    editor: { nodeVersionId: 'from-the-service' },
+  } as EditorModelResponse['integration'],
+  scripts: ['/api/h5p/core/js/h5p.js'],
+  styles: ['/api/h5p/core/styles/h5p.css'],
+};
+
+/** The one result shape both ways of creating an exercise answer with. */
+const SAVED: H5pSaveResult = {
+  contentId: 'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77',
+  title: 'Present perfect drill',
+  mainLibrary: 'SpeakTest.Main 1.0',
+};
+
+/** A body in the shape `GET params` hands back, which is what the widget posts. */
+const SAVE_BODY: SaveH5pContentInput = {
+  library: 'SpeakTest.Main 1.0',
+  params: {
+    metadata: { title: 'Present perfect drill', language: 'en' },
+    params: { question: 'Have you ever been to Kyiv?' },
+  },
+};
+
+/** What `getContentParameters` answers with, trimmed to the fields the route passes on. */
+const PARAMETERS = {
+  h5p: { title: 'Present perfect drill' },
+  library: 'SpeakTest.Main 1.0',
+  params: { metadata: { title: 'Present perfect drill' }, params: { question: 'Kyiv?' } },
+} as unknown as ContentParametersResult;
 
 interface Stub {
   service: H5pEditorService;
@@ -52,7 +105,14 @@ interface Stub {
 }
 
 function createStub(): Stub {
-  const recorded: Recorded = { gets: [], posts: [], temporaryFiles: [], sweeps: 0 };
+  const recorded: Recorded = {
+    gets: [],
+    posts: [],
+    models: [],
+    parameters: [],
+    saves: [],
+    temporaryFiles: [],
+  };
   let postFailure: Error | null = null;
 
   const service = {
@@ -68,6 +128,18 @@ function createStub(): Stub {
         return Promise.reject(failure);
       }
       return Promise.resolve({ answered: ajaxRequest.action });
+    },
+    editorModel: (
+      contentId: string | undefined,
+      language: string | undefined,
+      user: IUser,
+    ): Promise<EditorModelResponse> => {
+      recorded.models.push({ contentId, language, user });
+      return Promise.resolve(MODEL);
+    },
+    contentParameters: (contentId: string, user: IUser): Promise<ContentParametersResult> => {
+      recorded.parameters.push({ contentId, user });
+      return Promise.resolve(PARAMETERS);
     },
     temporaryFile: (
       filename: string,
@@ -93,10 +165,18 @@ function createStub(): Stub {
         return Promise.reject(toHttpException(error) ?? error);
       }
     },
-    maybeSweep: (): Promise<void> => {
-      recorded.sweeps += 1;
-      return Promise.resolve();
+    save: (
+      contentId: string | undefined,
+      input: SaveH5pContentInput,
+      caller: { uid: string },
+    ): Promise<H5pSaveResult> => {
+      recorded.saves.push({ contentId, input, caller });
+      return Promise.resolve({ ...SAVED, contentId: contentId ?? SAVED.contentId });
     },
+    // The sweep moved onto the service's own mutating operations, so nothing
+    // in this file calls it; `h5p-editor.service.spec.ts` is where it is now
+    // asserted, against real objects rather than a counter.
+    maybeSweep: (): Promise<void> => Promise.resolve(),
   } as unknown as H5pEditorService;
 
   return {
@@ -348,22 +428,6 @@ describe('H5pEditorController', () => {
       ).resolves.toEqual({ answered: 'files' });
     });
 
-    it('sweeps expired temporary files after answering, not before', async () => {
-      // `ContentStorer.addOrUpdateContent` leaves temp copies behind on create,
-      // and Cloud Run scales to zero, so this route is one of the two places
-      // where an instance is both alive and standing next to the garbage.
-      await controller.ajaxPost('files', {}, 'en', {}, CALLER);
-
-      expect(stub.recorded.sweeps).toBe(1);
-    });
-
-    it('does not sweep when the request failed', async () => {
-      stub.failNextPost(new BadRequestException('nope'));
-
-      await expect(controller.ajaxPost('files', {}, 'en', {}, CALLER)).rejects.toThrow();
-      expect(stub.recorded.sweeps).toBe(0);
-    });
-
     it('refuses an invalid language before the upload is handed on', async () => {
       const file = await multerFile('file', 'clip.mp3', 'audio/mpeg');
 
@@ -381,6 +445,96 @@ describe('H5pEditorController', () => {
       );
       expect(stub.recorded.posts).toEqual([]);
     });
+  });
+});
+
+describe('H5pEditorController editor model', () => {
+  let stub: Stub;
+  let controller: H5pEditorController;
+
+  beforeEach(() => {
+    stub = createStub();
+    controller = createController(stub);
+  });
+
+  it('asks for a new exercise when the path carries no content id', async () => {
+    const model = await controller.editorModel(undefined, undefined, CALLER);
+
+    expect(stub.recorded.models).toEqual([
+      { contentId: undefined, language: undefined, user: CALLER_USER },
+    ]);
+    expect(model).toEqual(MODEL);
+  });
+
+  it('asks for the exercise the path named, as the authenticated caller', async () => {
+    await controller.editorModel('ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77', 'es', CALLER);
+
+    expect(stub.recorded.models).toEqual([
+      {
+        contentId: 'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77',
+        language: 'es',
+        user: CALLER_USER,
+      },
+    ]);
+  });
+
+  it.each([['not a code'], ['english'], ['uk-'], ['../etc']])(
+    'refuses the language %j with a 400 and never reaches the service',
+    async (language) => {
+      // `H5PEditor.render` calls `validateLanguageCode`, which refuses these
+      // with a plain `Error` — a 500 for a query parameter the caller typed.
+      await expect(controller.editorModel(undefined, language, CALLER)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(stub.recorded.models).toEqual([]);
+    },
+  );
+
+  it('refuses a request the guard somehow let through without a caller', async () => {
+    await expect(controller.editorModel(undefined, undefined, undefined)).rejects.toThrow(
+      UnauthorizedException,
+    );
+    expect(stub.recorded.models).toEqual([]);
+  });
+
+  it('reads the parameters of the exercise the path named, as the caller', async () => {
+    const answer = await controller.contentParameters('ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77', CALLER);
+
+    expect(stub.recorded.parameters).toEqual([
+      { contentId: 'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77', user: CALLER_USER },
+    ]);
+    expect(answer).toEqual(PARAMETERS);
+  });
+
+  it('refuses a parameters request the guard somehow let through without a caller', async () => {
+    await expect(controller.contentParameters('ff6c4a3a', undefined)).rejects.toThrow(
+      UnauthorizedException,
+    );
+    expect(stub.recorded.parameters).toEqual([]);
+  });
+
+  it('creates without a content id, so the library assigns one', async () => {
+    const saved = await controller.createContent(SAVE_BODY, CALLER);
+
+    expect(stub.recorded.saves).toEqual([
+      { contentId: undefined, input: SAVE_BODY, caller: CALLER },
+    ]);
+    expect(saved).toEqual(SAVED);
+  });
+
+  it('saves over the exercise the path named, keeping its id', async () => {
+    const saved = await controller.updateContent('an-existing-content-id', SAVE_BODY, CALLER);
+
+    expect(stub.recorded.saves[0]?.contentId).toBe('an-existing-content-id');
+    expect(saved.contentId).toBe('an-existing-content-id');
+  });
+
+  it.each([
+    ['create', (c: H5pEditorController) => c.createContent(SAVE_BODY, undefined)],
+    ['update', (c: H5pEditorController) => c.updateContent('an-id', SAVE_BODY, undefined)],
+  ])('refuses a %s the guard somehow let through without a caller', async (_name, call) => {
+    await expect(call(controller)).rejects.toThrow(UnauthorizedException);
+    expect(stub.recorded.saves).toEqual([]);
   });
 });
 
@@ -527,10 +681,48 @@ function accepts(instance: MulterInstance, originalname: string): boolean {
   return outcome;
 }
 
+/**
+ * The pipes Nest will run on one argument of a handler, read off the metadata
+ * the decorators wrote rather than restated here.
+ *
+ * A named `@Param`, or the `@Body` when `name` is omitted — the body's entry
+ * carries no name, and its key is `RouteParamtypes.BODY`.
+ */
+function paramPipesOf(handler: string, name?: string): PipeTransform<unknown, unknown>[] {
+  const metadata = (Reflect.getMetadata(ROUTE_ARGS_METADATA, H5pEditorController, handler) ??
+    {}) as Record<string, { data?: unknown; pipes?: unknown[] }>;
+  const parameter = Object.entries(metadata).find(([key, entry]) =>
+    name === undefined ? key.startsWith(`${RouteParamtypes.BODY}:`) : entry.data === name,
+  )?.[1];
+
+  if (!parameter) {
+    throw new Error(`${handler} has no ${name === undefined ? 'body' : `parameter named ${name}`}`);
+  }
+  return (parameter.pipes ?? []) as PipeTransform<unknown, unknown>[];
+}
+
+/** Runs an argument's pipes in order, as Nest does before calling the handler. */
+function throughPipes(handler: string, name: string | undefined, value: unknown): unknown {
+  const pipes = paramPipesOf(handler, name);
+  if (pipes.length === 0) {
+    throw new Error(`${handler} validates no ${name ?? 'body'} at all`);
+  }
+
+  return pipes.reduce<unknown>(
+    (carried, pipe) =>
+      pipe.transform(carried, { type: name === undefined ? 'body' : 'param', data: name }),
+    value,
+  );
+}
+
 describe('H5pEditorController route metadata', () => {
   const routes = [
     ['ajaxGet', H5pEditorController.prototype.ajaxGet],
     ['ajaxPost', H5pEditorController.prototype.ajaxPost],
+    ['editorModel', H5pEditorController.prototype.editorModel],
+    ['contentParameters', H5pEditorController.prototype.contentParameters],
+    ['createContent', H5pEditorController.prototype.createContent],
+    ['updateContent', H5pEditorController.prototype.updateContent],
     ['temporaryFile', H5pEditorController.prototype.temporaryFile],
   ] as const;
 
@@ -586,12 +778,94 @@ describe('H5pEditorController route metadata', () => {
     );
   });
 
-  it('installs no upload interceptor on the two routes that take no file', () => {
+  it.each([
+    ['ajaxGet', H5pEditorController.prototype.ajaxGet],
+    ['editorModel', H5pEditorController.prototype.editorModel],
+    ['contentParameters', H5pEditorController.prototype.contentParameters],
+    ['createContent', H5pEditorController.prototype.createContent],
+    ['updateContent', H5pEditorController.prototype.updateContent],
+    ['temporaryFile', H5pEditorController.prototype.temporaryFile],
+  ] as const)('installs no upload interceptor on %s, which takes no file', (_name, route) => {
+    expect(Reflect.getMetadata(INTERCEPTORS_METADATA, route)).toBeUndefined();
+  });
+
+  it('registers the editor model on both paths, as one array and not two decorators', () => {
+    // **The whole reason this assertion exists.** Express 5 has no
+    // `:contentId?`, and two stacked `@Get`s do not register two routes:
+    // `RequestMapping` writes `PATH_METADATA` with a single value, so the
+    // second overwrites the first and one path silently ceases to exist —
+    // nothing throws, and every unit test that calls the handler directly
+    // still passes.
+    expect(Reflect.getMetadata(PATH_METADATA, H5pEditorController.prototype.editorModel)).toEqual([
+      'editor',
+      'editor/:contentId',
+    ]);
+  });
+
+  it('validates the content id in the path, and tolerates its absence', () => {
+    // `.optional()` is load-bearing: Nest runs a param pipe even when the
+    // parameter is absent, so a bare `documentIdSchema` would turn
+    // `GET /api/h5p/editor` — the route for an exercise that does not exist
+    // yet — into a 400.
+    expect(throughPipes('editorModel', 'contentId', undefined)).toBeUndefined();
+    expect(throughPipes('editorModel', 'contentId', 'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77')).toBe(
+      'ff6c4a3a4d1f4f0f9a4b9d3b2f5a1c77',
+    );
+  });
+
+  it.each([['../etc'], ['a/b'], ['has.dots'], ['']])(
+    'refuses the content id %j in the path',
+    (contentId) => {
+      expect(() => throughPipes('editorModel', 'contentId', contentId)).toThrow(
+        BadRequestException,
+      );
+    },
+  );
+
+  it('answers a create 201 and a save over existing content 200', () => {
+    // Nest's default is 201, which is why `createContent` carries no metadata
+    // of its own: it really did create one. 201 for a save that changed
+    // content the caller already named would be a lie, so `updateContent`
+    // overrides it.
     expect(
-      Reflect.getMetadata(INTERCEPTORS_METADATA, H5pEditorController.prototype.ajaxGet),
+      Reflect.getMetadata(HTTP_CODE_METADATA, H5pEditorController.prototype.createContent),
     ).toBeUndefined();
     expect(
-      Reflect.getMetadata(INTERCEPTORS_METADATA, H5pEditorController.prototype.temporaryFile),
-    ).toBeUndefined();
+      Reflect.getMetadata(HTTP_CODE_METADATA, H5pEditorController.prototype.updateContent),
+    ).toBe(200);
+  });
+
+  it('registers the two save routes on their own paths', () => {
+    expect(Reflect.getMetadata(PATH_METADATA, H5pEditorController.prototype.createContent)).toBe(
+      'editor',
+    );
+    expect(Reflect.getMetadata(PATH_METADATA, H5pEditorController.prototype.updateContent)).toBe(
+      'editor/:contentId',
+    );
+  });
+
+  it.each([['createContent'], ['updateContent']])('validates the body of %s', (handler) => {
+    // A body the schema refuses never reaches the library, where a missing
+    // title is a plain `Error` and a 500.
+    expect(() =>
+      throughPipes(handler, undefined, { library: 'SpeakTest.Main 1.0', params: { params: {} } }),
+    ).toThrow(BadRequestException);
+    expect(throughPipes(handler, undefined, SAVE_BODY)).toEqual(SAVE_BODY);
+  });
+
+  it('requires a content id on the save route that names one', () => {
+    expect(() => throughPipes('updateContent', 'contentId', 'not.a.document.id')).toThrow(
+      BadRequestException,
+    );
+    expect(throughPipes('updateContent', 'contentId', 'ff6c4a3a4d1f4f0f')).toBe('ff6c4a3a4d1f4f0f');
+  });
+
+  it('requires a content id on the parameters route, where there is nothing to create', () => {
+    expect(() => throughPipes('contentParameters', 'contentId', undefined)).toThrow(
+      BadRequestException,
+    );
+    expect(throughPipes('contentParameters', 'contentId', 'ff6c4a3a4d1f4f0f')).toBe(
+      'ff6c4a3a4d1f4f0f',
+    );
   });
 });

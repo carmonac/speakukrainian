@@ -9,6 +9,7 @@ import {
   fsImplementations,
 } from '@lumieducation/h5p-server';
 import type {
+  IEditorModel,
   IPlayerModel,
   ITemporaryFileStorage,
   ITranslationFunction,
@@ -152,14 +153,22 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
         // the route, per CLAUDE.md rule 8, and the library never sees a request
         // that has not already passed it. No `contentUserDataStorage` either —
         // `trackResults` is off.
-        // **`translate` changes nothing observable today, and that is why it
-        // is here.** The editor's callback is reached only from
-        // `generateEditorIntegration`, which only `H5PEditor.render` calls, and
-        // no route renders an editor model yet; `getLibraryData`, which the
-        // `libraries` ajax action does expose, never goes through it. It is
-        // wired now so the editor-model route inherits the decision instead of
-        // making it a second time — and because the default it replaces is
-        // English-only for all three namespaces.
+        // **`translate` is what `?language` on the editor-model route
+        // selects.** The editor's callback is reached from
+        // `generateEditorIntegration`, which only `H5PEditor.render` calls, so
+        // it decides `integration.l10n.H5P`, `metadataSemantics` and
+        // `copyrightSemantics` — the strings this *server* localizes.
+        // Joubel's own authoring UI is localized by an
+        // `editor-assets/language/<code>.js` instead, and upstream ships 26 of
+        // those with no `uk` among them, so the authoring chrome stays English
+        // whatever is passed. ADR-007 records both halves.
+        //
+        // The renderer is the same decision `H5P_PLAYER` makes below: the stock
+        // one returns an HTML page and the editor-model route wants the model,
+        // which is why `render` is declared `Promise<string | any>`. It belongs
+        // here rather than in a route because it is shared state on a
+        // singleton — a route that set it per request is a route the next route
+        // can forget.
         return new H5PEditor(
           keyValueStorage,
           config,
@@ -167,7 +176,7 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
           contentStorage,
           temporaryStorage,
           translate,
-        );
+        ).setRenderer((model: IEditorModel) => model);
       },
     },
     {

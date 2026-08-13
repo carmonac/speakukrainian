@@ -7,6 +7,7 @@ import {
   type H5pContent,
   type ListH5pContentQuery,
   type Page,
+  type UpdateH5pContentInput,
 } from '@speakukrainian/shared';
 import { BaseRepository, deepConvertTimestamps } from '../infra/firestore/base.repository.js';
 import { FIRESTORE } from '../infra/firestore/firestore.tokens.js';
@@ -45,6 +46,48 @@ export class H5pContentRepository extends BaseRepository<H5pContent> {
 
     await this.collection.doc(content.id).create(toDocumentData(content));
     return content;
+  }
+
+  /**
+   * Brings the index row into line with what a save just wrote to storage.
+   *
+   * **A transaction because the audit is read and written**: `touchAudit` keeps
+   * `createdAt`/`createdBy` from the stored row and replaces only the updated
+   * half, so a plain read-then-write could lose a concurrent save's stamp.
+   *
+   * **The input is `{ title, mainLibrary, sizeBytes }` and nothing else.**
+   * `storagePath` is derived from the id and cannot change; `pageId` is `null`
+   * today and nothing sets it, but attaching an exercise to a page is the first
+   * thing the admin exercise screen does, and a row rewritten from the save's
+   * own fields would silently detach it. Merging over the *stored* row is what
+   * keeps both.
+   *
+   * **`null` rather than a thrown 404**, mirroring `findById`: the service owns
+   * the wording an editor sees, and `null` is also the honest answer to a row
+   * deleted between an existence check and this commit.
+   */
+  async update(
+    id: string,
+    input: UpdateH5pContentInput,
+    actorId: string,
+  ): Promise<H5pContent | null> {
+    return this.firestore.runTransaction(async (tx) => {
+      const ref = this.collection.doc(id);
+      const doc = await tx.get(ref);
+      if (!doc.exists) {
+        return null;
+      }
+
+      const existing = this.fromDocument(doc.id, doc.data()!);
+      const updated = h5pContentSchema.parse({
+        ...existing,
+        ...input,
+        audit: this.touchAudit(existing.audit, actorId),
+      });
+
+      tx.set(ref, toDocumentData(updated));
+      return updated;
+    });
   }
 
   /**

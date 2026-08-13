@@ -1,10 +1,20 @@
 import type { Readable } from 'node:stream';
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { H5PAjaxEndpoint, H5PEditor, H5pError } from '@lumieducation/h5p-server';
-import type { IUser } from '@lumieducation/h5p-server';
-import { mapH5pErrors } from './h5p.errors.js';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { H5PAjaxEndpoint, H5PEditor, H5pError, LibraryName } from '@lumieducation/h5p-server';
+import type { ContentId, IContentMetadata, IEditorModel, IUser } from '@lumieducation/h5p-server';
+import {
+  h5pSaveResultSchema,
+  type H5pContent,
+  type H5pSaveResult,
+  type SaveH5pContentInput,
+} from '@speakukrainian/shared';
+import { H5pContentRepository } from './h5p-content.repository.js';
+import { CONTENT_MISSING_MESSAGE, mapH5pErrors } from './h5p.errors.js';
+import { assertSafeContentId } from './h5p.paths.js';
 import type { RangeCallback } from './h5p.responses.js';
+import { H5pService, mainLibraryUberName } from './h5p.service.js';
 import { H5P_AJAX_ENDPOINT, H5P_EDITOR } from './h5p.tokens.js';
+import { h5pUserFor } from './h5p.user.js';
 
 /**
  * How often one instance may sweep expired temporary files.
@@ -15,13 +25,18 @@ import { H5P_AJAX_ENDPOINT, H5P_EDITOR } from './h5p.tokens.js';
 export const TEMP_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 
 /**
- * The language `POST /ajax` falls back to.
+ * The language `POST /ajax` and the editor model fall back to.
  *
  * `H5PEditor.listLibraryLanguageFiles` — the `translations` action — declares
  * `language` as required and hands it straight to `validateLanguageCode`, which
  * refuses `undefined` with a plain `Error` and therefore a 500. `getLibraryData`
  * on the GET side already defaults to `en` for itself, so defaulting here is the
  * same answer said one layer earlier rather than a new behaviour.
+ *
+ * `H5PEditor.render` defaults to `en` too, in its own signature; passing it
+ * explicitly keeps one answer to "what language is this API's fallback" rather
+ * than two that can drift, and it is the same default `H5pServeService` gives
+ * the player.
  */
 const DEFAULT_LANGUAGE = 'en';
 
@@ -80,6 +95,21 @@ export interface PostAjaxRequest {
   packageUpload?: AjaxUpload;
 }
 
+/**
+ * What `GET /editor` and `GET /editor/:contentId` answer with.
+ *
+ * **`Pick`, never `Omit<IEditorModel, 'urlGenerator'>`.** `H5PEditor.render`
+ * returns a live `UrlGenerator` alongside the three fields below, and its only
+ * serialisable own property is `config` — the whole `H5PConfig`, 41 keys and
+ * 1.6 KB of this server's setup, including `maxFileSize`, `contentWhitelist`,
+ * `libraryWhitelist`, `hubRegistrationEndpoint`, `siteType`, `uuid` and
+ * `installLibraryLockMaxOccupationTime`. An `Omit` would keep admitting every
+ * field a future version of the library adds, which is the same defect written
+ * in the type system instead of in the response. A field is added here only by
+ * naming it.
+ */
+export type EditorModelResponse = Pick<IEditorModel, 'integration' | 'scripts' | 'styles'>;
+
 export interface TemporaryFileResult {
   mimetype: string;
   /** Present only when the request carried a satisfiable `Range`. */
@@ -105,6 +135,13 @@ type PostAjaxBody = Parameters<H5PAjaxEndpoint['postAjax']>[1];
  */
 type GetAjaxResult = Awaited<ReturnType<H5PAjaxEndpoint['getAjax']>>;
 type PostAjaxResult = Awaited<ReturnType<H5PAjaxEndpoint['postAjax']>>;
+
+/**
+ * `{ h5p, library, params: { metadata, params } }` — named through the endpoint
+ * for the same reason `GetAjaxResult` is, rather than re-declaring someone
+ * else's response shape.
+ */
+export type ContentParametersResult = Awaited<ReturnType<H5PAjaxEndpoint['getContentParameters']>>;
 
 /**
  * The range callback `getTemporaryFile` declares.
@@ -137,6 +174,13 @@ export class H5pEditorService {
   constructor(
     @Inject(H5P_AJAX_ENDPOINT) private readonly ajax: H5PAjaxEndpoint,
     @Inject(H5P_EDITOR) private readonly editor: H5PEditor,
+    private readonly repository: H5pContentRepository,
+    /**
+     * The index lifecycle of content that has just been written to storage,
+     * which this service shares with the package import: creating a row with
+     * the rollback that belongs to it, and measuring what was stored.
+     */
+    private readonly content: H5pService,
   ) {}
 
   async getAjax(request: GetAjaxRequest, user: IUser): Promise<GetAjaxResult> {
@@ -155,7 +199,7 @@ export class H5pEditorService {
   }
 
   async postAjax(request: PostAjaxRequest, user: IUser): Promise<PostAjaxResult> {
-    return mapH5pErrors(async () => {
+    const result = await mapH5pErrors(async () => {
       assertAllowedAction(request.action, POST_AJAX_ACTIONS);
 
       if (request.action === 'library-upload' && !request.packageUpload) {
@@ -186,6 +230,228 @@ export class H5pEditorService {
         request.packageUpload,
       );
     });
+
+    // After the answer is computed, never before it, and never awaited. This is
+    // the commonest source of the garbage: an editor session abandoned after an
+    // upload produces temp objects and no save at all.
+    void this.maybeSweep();
+    return result;
+  }
+
+  /**
+   * What the H5P authoring widget boots from: the integration object, the core
+   * scripts and the core styles, for an existing exercise or for a new one.
+   *
+   * `contentId` is `undefined` for content that has never been saved. The
+   * library declares it as a plain `ContentId` and carries it through to
+   * `integration.editor.nodeVersionId`, where `undefined` is exactly right —
+   * the widget reads it as "this is new".
+   *
+   * **The index document is the authority for the 404 here too**, as it is for
+   * `save`, `contentParameters`, `H5pService.findById` and `H5pService.remove`.
+   * `render` asks storage for nothing, so without the read this route answers
+   * 200 for an id nothing was ever stored under and hands the admin screen an
+   * authoring widget bound to an exercise that does not exist: the author fills
+   * it in and the save then 404s, with the work recoverable only as a new
+   * exercise. The read is paid only when the caller named an id — booting a
+   * blank editor still costs nothing.
+   *
+   * The response is built by naming three fields; see `EditorModelResponse` for
+   * what the fourth one carries and why it may never be spread in.
+   */
+  async editorModel(
+    contentId: string | undefined,
+    language: string | undefined,
+    user: IUser,
+  ): Promise<EditorModelResponse> {
+    return mapH5pErrors(async () => {
+      if (contentId !== undefined) {
+        // The id becomes a storage prefix inside `generateIntegration`'s URLs
+        // and inside every read the widget makes afterwards.
+        assertSafeContentId(contentId);
+        if (!(await this.repository.exists(contentId))) {
+          throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+        }
+      }
+
+      // `h5p.module.ts` sets a renderer that returns the model itself; the
+      // stock one returns an HTML page. `render` is typed `Promise<string |
+      // any>` for that reason, and the cast is what the renderer choice buys
+      // back — the same trade `H5pServeService.playerModel` makes.
+      const model = (await this.editor.render(
+        contentId as ContentId,
+        language ?? DEFAULT_LANGUAGE,
+        user,
+      )) as IEditorModel;
+
+      return { integration: model.integration, scripts: model.scripts, styles: model.styles };
+    });
+  }
+
+  /**
+   * The stored parameters of one exercise, in the shape a save posts back.
+   *
+   * **Who reads this, checked rather than assumed:** the *host page*. Joubel's
+   * `h5peditor-init.js` takes the parameters from a hidden form field
+   * (`new ns.Editor(library, $params.val(), …)`) and nothing under
+   * `apps/api/h5p/editor/` or `core/` contains this URL at all. The only
+   * reference to `UrlGenerator.parameters()` in the library is the default
+   * editor renderer's own page, which this API replaces — so the consumer is
+   * whatever renders the widget, which is #13's admin screen.
+   *
+   * The path matches `config.paramsUrl` (`/params`) under our `baseUrl`
+   * anyway, which keeps a future `setRenderer` change honest.
+   *
+   * **The index document is the authority for the 404**, as it is for every
+   * other id-bearing route in this area. Without the read the request still
+   * answers 404 — `getContent` reads an absent `h5p.json` and
+   * `H5pContentStorage` raises `content-file-missing` — but with a sentence
+   * about a file the caller never named, which implies the exercise itself is
+   * fine. `MESSAGES['content-file-missing']` stays as it is: it is the right
+   * sentence for `GET /api/h5p/content/:id/:file`, where a file really can be
+   * absent from an exercise that exists, and this guard is what stops `/params`
+   * reaching it for the wrong reason.
+   */
+  async contentParameters(contentId: string, user: IUser): Promise<ContentParametersResult> {
+    return mapH5pErrors(async () => {
+      assertSafeContentId(contentId);
+      if (!(await this.repository.exists(contentId))) {
+        throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+      }
+
+      return this.ajax.getContentParameters(contentId, user);
+    });
+  }
+
+  /**
+   * Stores what the widget edited, and brings the index row into line with it.
+   *
+   * `contentId` is `undefined` for an exercise that has never been saved; the
+   * library assigns one, and this is the second route that creates an
+   * `h5pContent` row (the first installs an uploaded package).
+   *
+   * **The index document is the authority for the 404**, exactly as
+   * `H5pService.remove` argues. Without the check the library still refuses an
+   * unknown id, but by accident of ordering and with a sentence about a missing
+   * file — and `H5pContentStorage.addContent` will happily create content under
+   * a caller-supplied id, so this is what stops a save from minting an exercise
+   * at an id of the caller's choosing if that ordering ever changes.
+   *
+   * The size is recomputed from a listing rather than adjusted: a save copies
+   * temporary files in and deletes the ones the parameters no longer reference,
+   * so the stored total is wrong in both directions.
+   */
+  async save(
+    contentId: string | undefined,
+    input: SaveH5pContentInput,
+    caller: { uid: string; email?: string },
+  ): Promise<H5pSaveResult> {
+    const user = h5pUserFor(caller.uid, caller.email);
+
+    const saved = await mapH5pErrors(async () => {
+      if (contentId !== undefined) {
+        assertSafeContentId(contentId);
+        if (!(await this.repository.exists(contentId))) {
+          throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+        }
+      }
+
+      // `generateContentMetadata` reads `getLibrary(mainLibrary).machineName`
+      // without checking that the library is there, so an ubername nobody
+      // installed is a `TypeError` and a 500 for a value the caller sent.
+      // `fromUberName` raises its own 400 for one that is merely malformed.
+      const library = LibraryName.fromUberName(input.library, { useWhitespace: true });
+      if (!(await this.editor.libraryManager.libraryExists(library))) {
+        // The same answer `GET /ajax?action=libraries` gives for the same
+        // condition, rather than a second sentence for one fact.
+        throw new H5pError('library-not-found', { name: input.library }, 404);
+      }
+
+      const { id, metadata } = await this.editor.saveOrUpdateContentReturnMetaData(
+        // Declared as a plain `ContentId`; the implementation documents
+        // `undefined` as "content that has not been saved before" and assigns
+        // an id for it.
+        contentId as ContentId,
+        input.params.params,
+        // `IContentMetadata` describes the `h5p.json` `generateContentMetadata`
+        // *produces* — `embedTypes`, `language`, `mainLibrary`,
+        // `preloadedDependencies`, `defaultLanguage` and `license` all
+        // required — not what a client may send: the library validates the
+        // inbound direction against `save-metadata.json`, which requires only
+        // `title`. One cast, here, for that difference; a second one anywhere
+        // else means one of them is wrong.
+        input.params.metadata as unknown as IContentMetadata,
+        input.library,
+        user,
+      );
+
+      const sizeBytes = await this.content.storedSizeOf(id);
+      const mainLibrary = mainLibraryUberName(metadata);
+
+      await this.index(
+        contentId,
+        { id, title: metadata.title, mainLibrary, sizeBytes },
+        caller.uid,
+      );
+
+      return h5pSaveResultSchema.parse({ contentId: id, title: metadata.title, mainLibrary });
+    });
+
+    // A create deliberately leaves the temporary copies behind:
+    // `ContentStorer.addOrUpdateContent` passes `deleteTemporaryFiles = isUpdate`.
+    void this.maybeSweep();
+    return saved;
+  }
+
+  /**
+   * The `h5pContent` row for a save that has already written its objects.
+   *
+   * **The rollback is asymmetric, and getting it the wrong way round destroys
+   * an exercise.** On a *create* the objects sit under an id nothing
+   * references, no route can enumerate and no route can delete, so a failed
+   * index write leaves garbage forever — the same case `H5pService.importPackage`
+   * has, which is why the create branch is that service's `indexNewContent` and
+   * not a second copy of it. On an *update* the row already names those objects
+   * and the objects are the newer truth, so deleting them would throw away a
+   * good exercise because an audit field could not be written; the failure is
+   * logged with the id and rethrown instead.
+   */
+  private async index(
+    contentId: string | undefined,
+    row: { id: string; title: string; mainLibrary: string; sizeBytes: number },
+    actorId: string,
+  ): Promise<void> {
+    if (contentId === undefined) {
+      await this.content.indexNewContent(
+        row.id,
+        { title: row.title, mainLibrary: row.mainLibrary, sizeBytes: row.sizeBytes },
+        actorId,
+      );
+      return;
+    }
+
+    let updated: H5pContent | null;
+    try {
+      updated = await this.repository.update(
+        row.id,
+        { title: row.title, mainLibrary: row.mainLibrary, sizeBytes: row.sizeBytes },
+        actorId,
+      );
+    } catch (error) {
+      // The only line that tells an operator which exercise now has newer files
+      // than its index row says.
+      this.logger.error(
+        `H5P content ${row.id} was saved but its index document was not updated: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+
+    if (!updated) {
+      // The row was removed between the existence check and this commit. The
+      // objects stay: they are what a re-created row would have to point at.
+      this.logger.error(`H5P content ${row.id} was saved but its index document no longer exists`);
+      throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+    }
   }
 
   async temporaryFile(
