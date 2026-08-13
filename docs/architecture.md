@@ -393,21 +393,124 @@ would cost a Firestore read per _content file_ request — per image and per aud
 needs a cache and is not something to add casually.
 
 `GET /api/h5p/temp-files/*` is on the other side of that line and is `@Roles('editor')`, along with
-`GET` and `POST /api/h5p/ajax` and the four routes that load and save an exercise —
-`GET /api/h5p/editor[/:contentId]`, `GET /api/h5p/params/:contentId`, `POST /api/h5p/editor` and
-`POST /api/h5p/editor/:contentId`: `h5p-editor.controller.ts` is a file boundary the way
-`h5p-public.controller.ts` is, and the guards are pinned per route by its metadata block, so the
-enumeration invariant above is unaffected by any of them. `temp-files` in particular
+`GET` and `POST /api/h5p/ajax`, `GET /api/h5p/temp/:token/*` and the four routes that load and save
+an exercise — `GET /api/h5p/editor[/:contentId]`, `GET /api/h5p/params/:contentId`,
+`POST /api/h5p/editor` and `POST /api/h5p/editor/:contentId`: `h5p-editor.controller.ts` is a file
+boundary the way `h5p-public.controller.ts` is, and the guards are pinned per route by its metadata
+block, so the enumeration invariant above is unaffected by any of them. `temp-files` in particular
 **cannot** be made public, because the URL carries no owner id and a temporary filename is unique
 only within an owner — an unauthenticated request has no way to say which object it means.
 
-The cost of that is worth stating rather than discovering: after `POST /ajax?action=files`, Joubel's
-editor client renders the preview as `<img src="${integration.editor.filesPath}/<filename>">`, and a
-browser subresource load sends no `Authorization` header — so the just-uploaded image or clip does
-**not** render inside the editor. The realistic fix is a custom `IUrlGenerator` whose
-`temporaryFiles()` emits a short-lived per-user token that the route verifies instead of the bearer
-header; it needs a new secret in configuration and belongs with the admin exercise screen, where
-there is a real widget to point at.
+_The credential Joubel's own client carries (#62)._ This section previously recorded an open gap:
+after `POST /ajax?action=files` the editor renders the preview as
+`<img src="${integration.editor.filesPath}/<filename>">`, and a browser subresource sends no
+`Authorization` header, so the just-uploaded clip did not render. The same is true of **every**
+request the widget makes — `GET /ajax?action=content-type-cache`, `?action=libraries`,
+`POST /ajax?action=files|translations|filter|library-upload` — because they all come from Joubel's
+code inside a **srcless iframe**, a fresh realm the admin's `HttpClient` interceptor cannot reach.
+That gap is closed, and the mechanism this document predicted for it was wrong in both directions.
+
+**A short-lived, per-user, signed token in the URL.**
+`base64url(payload) + '.' + base64url(HMAC-SHA256(secret, payload))` with
+`payload = { v, sub: <uid>, scope: 'h5p-editor', exp }`. `base64url` because the same string has to
+survive a query parameter _and_ a path segment. Signed rather than stored, and that is **forced**:
+`UrlGenerator`'s `csrfProtection.queryParamGenerator` is synchronous, so the mint site cannot do
+I/O.
+
+**It carries no role, deliberately.** The token says who is asking; `H5pUrlTokenGuard` then resolves
+that uid's _current_ Firebase custom claims and `@Roles('editor')` decides, exactly as for a bearer
+request. So a token minted before a demotion stops working the moment the demotion lands, rather
+than at the end of its lifetime. The price is one Firebase Auth read per token-authenticated
+request — tens per editing session, not thousands — and an Auth outage breaks previews. If that ever
+matters the answer is a short cache in the guard, **not** a role in the payload.
+
+**Where it goes, and why it takes two mint sites.** The ajax half is the library's own lever:
+`new UrlGenerator(config, { protectAjax: true, …, queryParamGenerator })` passed as `H5PEditor`'s
+**seventh** positional argument, which covers both `integration.ajaxPath` and
+`integration.editor.ajaxPath` without this code having to know there are two, and keeps the
+`?token=…&action=` format upstream's responsibility. **No subclass is needed, and a subclass could
+not have done the other half**: `IUrlGenerator.temporaryFiles()` takes **no user**
+(`H5PEditor.generateEditorIntegration` calls it with no arguments), so nothing inside a generator
+can bind a token to a caller. `integration.editor.filesPath` is therefore overridden in
+`H5pEditorService.editorModel`, the nearest place the caller is known. One response carries two
+independently minted tokens; they differ only in the millisecond they were made and nobody should
+thread state through the singleton generator to make them one.
+
+**A new route, not a segment on the old one.** `GET /api/h5p/temp/:token/*path` is a second
+temporary-file route beside `GET /api/h5p/temp-files/*path`, which is untouched.
+`temp-files/:token/*path` would have been wrong: it and `temp-files/*path` both match
+`/temp-files/images/x.png`, and only declaration order would decide which answered — the same silent
+class as the stacked `@Get` decorators above. `PATH_METADATA` for both is asserted.
+
+**`@H5pUrlToken()` is not a second `@Public()`.** It marks the three routes that accept a URL-borne
+credential _in addition to_ a bearer header. `H5pUrlTokenGuard` is registered as the **first** of
+three `APP_GUARD`s — that order is load-bearing, since `FirebaseAuthGuard` would otherwise already
+have refused a headerless request and a later guard cannot rescue one — and is a no-op on every
+route without the marker. `FirebaseAuthGuard` gained one branch, `if (request.user) return true`,
+under the rule that **`request.user` may be assigned only by an authentication guard and never from
+request input**. Every route in `h5p-editor.controller.ts` keeps its `@Roles('editor')`, so the
+file boundary above is unchanged; `@Public()` plus a route guard was rejected precisely because it
+would have deleted those assertions and left one new guard between an anonymous caller and
+`POST /ajax?action=files` writing into the bucket.
+
+**Lifetime is `H5PConfig.temporaryFileLifetime`** — 120 minutes — read per mint rather than copied
+into a setting of its own: the token exists to let the widget act for one editing session, and that
+is already the library's answer to how long an editing session's scratch state lives. The named cost
+of the coupling is that the same number drives the expiry sweep. **What a lapse looks like**: the
+widget reads `ajaxPath` and `filesPath` once, when it mounts, and cannot refresh them, so after two
+hours in one mount content-type switching, uploads and previews fail with Joubel's own error UI.
+**Saving is unaffected**, because `POST /api/h5p/editor[/:contentId]` is called by the admin's
+`HttpClient` with a bearer token — so the failure mode is "the widget stops fetching", never "the
+author loses work", and reloading the screen mints a fresh token. Three 401 messages keep expiry
+distinguishable from a bad link and from an account that can no longer sign in; **no** token at all
+is not an error but "this request is using the other credential", and falls through to
+`Missing bearer token`.
+
+**What a leaked token can do, stated rather than implied.** List installed libraries, read and write
+_that user's own_ temporary files, and — because `library-upload` is on the `POST /ajax` allowlist —
+**install an H5P library**. It cannot save or delete content, cannot list exercises and cannot reach
+any non-H5P route. The library-install capability is not removable: the widget's own Upload tab uses
+it. The token appears in this server's request logs and in Cloud Run's, and is **not redacted**: a
+redaction applied only to our own two log lines would imply a guarantee the platform log does not
+honour. What bounds the damage is the narrow scope and the short lifetime. It does not reach browser
+history (never a top-level navigation) or a third-party `Referer` (the URLs are requested only from
+this origin), and `temp-files` already answers `Cache-Control: private, no-store`.
+
+`H5P_URL_TOKEN_SECRET` is **required with no default**, at least 32 characters, and `.env.example`
+ships it **empty** — so copying the example refuses the boot rather than starting every developer
+and every deploy on one key published in this repository. It is a **deploy prerequisite**: the
+Cloud Run service will not start until the Secret Manager entry exists, and nothing in CI can catch
+that, because CI does not deploy. One secret and no key id in the payload, so rotation invalidates
+every live session at once; that costs an author a reload, and rotation-with-overlap is a deliberate
+future addition rather than something to discover.
+
+_Cross-origin resource policy (recorded by #62, decided in #12)._ `helmet` sets
+`Cross-Origin-Resource-Policy: same-origin` for the whole API, and the admin on `:4200` loading a
+subresource from the API on `:8080` is a cross-**origin** no-cors request, which a browser refuses
+against that value — 200 in supertest, blocked in Chrome. The override is **scoped to the routes
+that serve subresources**, not global: `CROSS_ORIGIN_HEADERS` in `h5p.responses.ts`, spread by both
+pipe helpers and set explicitly by `H5pPublicController.sendAsset`, covers content files, library
+files, the core and editor client trees and both temporary-file routes — six routes. That decision
+shipped in #12 and **is not reopened**: relaxing CORP globally would relax it for every JSON, media
+and schedule route for no gain, and the public site on `:4300` is served by the same asset routes.
+`play` and every JSON route keep `same-origin` on purpose.
+
+Two headers that look related and are not, named so a future reader does not "fix" them:
+`X-Frame-Options: SAMEORIGIN` governs a document loaded into a frame _by URL_, and the editor's
+iframe is created with **no `src`** and populated through `contentDocument.write`, so there is no
+HTTP response for it to apply to; `Cross-Origin-Opener-Policy` applies to top-level browsing
+contexts, and this API never serves the top-level document of either front end.
+`crossOriginEmbedderPolicy` stays **off**, because the public site embeds H5P iframes from this
+origin.
+
+What was actually missing was any test that would notice the override's removal.
+`createTestApp` now installs the same `securityHeaders()` middleware `main.ts` does — one definition,
+so the two bootstraps cannot drift — which is what turns "this route sets a header" into "this route
+beats the global default"; the e2e asserts `cross-origin` on every asset URL the editor model
+advertises and `same-origin` on the player model and the editor model beside it. **What that
+establishes and what it does not**: it establishes what a browser _will be told_. It does not
+establish that a browser loads the file — there is no browser harness in this repository, and no
+test here can create one.
 
 `GET /api/h5p/content` is that enumeration, and it satisfies the invariant by being role-guarded:
 it lives on `H5pController`, where every route is `@Roles('editor')`, and the guard is pinned per
