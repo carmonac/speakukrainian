@@ -42,6 +42,7 @@ import type {
 } from './h5p-editor.service.js';
 import { toHttpException } from './h5p.errors.js';
 import type { RangeCallback } from './h5p.responses.js';
+import { H5P_URL_TOKEN_KEY } from './h5p.url-token.decorator.js';
 
 const CALLER: AuthenticatedUser = { uid: 'editor000001', email: 'e@x.local', role: 'editor' };
 
@@ -637,6 +638,68 @@ describe('H5pEditorController temp-files', () => {
   });
 });
 
+/**
+ * The tokenised preview route, over the same real Express app.
+ *
+ * What this file can say about it is what the *path* means: the token is its
+ * own parameter, so the wildcard is the filename alone with nothing to strip,
+ * and the traversal guard still runs. Who the caller is, is the guard's
+ * business and is asserted in `h5p-url-token.guard.spec.ts`; that the two
+ * together authenticate a real request is the e2e's.
+ */
+describe('H5pEditorController temp/:token', () => {
+  let stub: Stub;
+  let app: express.Express;
+  let escaped: unknown;
+
+  beforeEach(() => {
+    stub = createStub();
+    const controller = createController(stub);
+    escaped = undefined;
+
+    app = express();
+    app.get('/h5p/temp/:token/*path', (req: Request, res: Response, next: NextFunction) => {
+      controller.temporaryFileByToken(req, res, CALLER).catch(next);
+    });
+    app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
+      escaped = error;
+      res.status(error instanceof HttpException ? error.getStatus() : 500).end();
+    });
+  });
+
+  it('reads the filename out of the wildcard with the token left out of it', async () => {
+    const response = await request(app)
+      .get('/h5p/temp/a-token-that-the-guard-consumed/images/image-aB34xQz9.png')
+      .expect(200);
+
+    expect(stub.recorded.temporaryFiles).toEqual(['images/image-aB34xQz9.png']);
+    expect(Buffer.from(response.body as Buffer)).toEqual(CLIP);
+  });
+
+  it('serves the same bytes and headers as the bearer route, ranges included', async () => {
+    const response = await request(app)
+      .get('/h5p/temp/a-token-that-the-guard-consumed/audios/audio.mp3')
+      .set('Range', 'bytes=100-199')
+      .expect(206);
+
+    expect(response.headers['content-range']).toBe(`bytes 100-199/${String(CLIP.length)}`);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(Buffer.from(response.body as Buffer)).toEqual(CLIP.subarray(100, 200));
+  });
+
+  it('refuses a traversal in the filename before it reaches the service', async () => {
+    const response = await request(app).get(
+      '/h5p/temp/a-token-that-the-guard-consumed/images/..%2f..%2fh5p.json',
+    );
+
+    expect(response.status).toBe(400);
+    expect(escaped instanceof HttpException ? escaped.message : escaped).toBe(
+      'The requested file path is not valid.',
+    );
+    expect(stub.recorded.temporaryFiles).toEqual([]);
+  });
+});
+
 interface MulterInstance {
   limits?: { fileSize?: number; files?: number };
   fileFilter?: (
@@ -724,19 +787,50 @@ describe('H5pEditorController route metadata', () => {
     ['createContent', H5pEditorController.prototype.createContent],
     ['updateContent', H5pEditorController.prototype.updateContent],
     ['temporaryFile', H5pEditorController.prototype.temporaryFile],
+    ['temporaryFileByToken', H5pEditorController.prototype.temporaryFileByToken],
   ] as const;
+
+  /** Exactly the routes Joubel's own client drives, which send no header. */
+  const urlTokenRoutes = new Set(['ajaxGet', 'ajaxPost', 'temporaryFileByToken']);
 
   // The file boundary, pinned. `temp-files` is the one a future contributor is
   // most likely to relax to `@Public()`, because that looks like a fix for the
   // editor's own `<img>` preview — and it is not: the URL carries no owner id,
   // so an unauthenticated request cannot resolve which object it means, and the
-  // filename is unique only within an owner. This is the test that refuses it.
+  // filename is unique only within an owner. `temporaryFileByToken` is what the
+  // right fix looks like: a *second* route whose URL does name an owner, still
+  // `@Roles('editor')`, still not public.
   it.each(routes)('restricts %s to editors and above', (_name, route) => {
     expect(Reflect.getMetadata(ROLES_KEY, route) as UserRole[] | undefined).toEqual(['editor']);
   });
 
   it.each(routes)('does not mark %s public', (_name, route) => {
     expect(Reflect.getMetadata(IS_PUBLIC_KEY, route)).toBeUndefined();
+  });
+
+  it.each(routes)('decides deliberately whether %s accepts a URL token', (name, route) => {
+    // Driven off the same list as the two cases above, so a route cannot be
+    // added to this file without a decision about the second credential.
+    // `@H5pUrlToken()` is not a relaxation — it never replaces `@Roles` and is
+    // never `@Public()` — but it is the only place a caller can be identified
+    // from something in a URL, so which routes carry it is worth pinning.
+    expect(Reflect.getMetadata(H5P_URL_TOKEN_KEY, route)).toBe(
+      urlTokenRoutes.has(name) ? true : undefined,
+    );
+  });
+
+  it('registers the tokenised preview on a path that cannot shadow temp-files', () => {
+    // `temp-files/:token/*path` and `temp-files/*path` would both match
+    // `/temp-files/images/x.png`, and only declaration order would decide which
+    // one answered — the same silent class as two stacked `@Get` decorators.
+    // A distinct literal first segment removes the question, and this is what
+    // refuses a "simplification" back to the overlapping pair.
+    expect(
+      Reflect.getMetadata(PATH_METADATA, H5pEditorController.prototype.temporaryFileByToken),
+    ).toBe('temp/:token/*path');
+    expect(Reflect.getMetadata(PATH_METADATA, H5pEditorController.prototype.temporaryFile)).toBe(
+      'temp-files/*path',
+    );
   });
 
   it('puts the limit interceptor ahead of multer with the editor wording', () => {
@@ -785,6 +879,7 @@ describe('H5pEditorController route metadata', () => {
     ['createContent', H5pEditorController.prototype.createContent],
     ['updateContent', H5pEditorController.prototype.updateContent],
     ['temporaryFile', H5pEditorController.prototype.temporaryFile],
+    ['temporaryFileByToken', H5pEditorController.prototype.temporaryFileByToken],
   ] as const)('installs no upload interceptor on %s, which takes no file', (_name, route) => {
     expect(Reflect.getMetadata(INTERCEPTORS_METADATA, route)).toBeUndefined();
   });

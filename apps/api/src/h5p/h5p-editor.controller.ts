@@ -43,6 +43,9 @@ import {
 } from './h5p.request.js';
 import { pipePartialStream, pipeWholeStream, rangeCallbackFor } from './h5p.responses.js';
 import { H5pAjaxUpload } from './h5p.upload.decorator.js';
+import { TEMP_FILES_TOKEN_PATH } from './h5p.url-generator.js';
+import { H5pUrlToken } from './h5p.url-token.decorator.js';
+import { H5P_URL_TOKEN_PARAM } from './h5p.url-token.js';
 import { h5pUserFor } from './h5p.user.js';
 
 /**
@@ -68,16 +71,24 @@ const TEMP_FILE_CACHE_CONTROL = 'private, no-store';
  * pinned per route by the metadata block at the bottom of
  * `h5p-editor.controller.spec.ts`.
  *
- * **A known limitation of `temp-files`, for whoever writes #13.** After
- * `POST /ajax?action=files`, Joubel's client renders the preview as
- * `<img src="${integration.editor.filesPath}/<filename>">`, and a browser
- * subresource sends no `Authorization` header — so the just-uploaded image or
- * clip does not render inside the editor. `@Public()` is **not** the fix: the
- * URL carries no owner id, and a filename is unique only within an owner, so an
- * unauthenticated request cannot resolve which object it means and would have
- * to guess. The realistic fix is a custom `IUrlGenerator` whose
- * `temporaryFiles()` emits a short-lived per-user token that this route
- * verifies instead of the bearer header. ADR-007 records it.
+ * **Two credentials, and the file boundary is unchanged by that.** Joubel's own
+ * editor client runs in a srcless iframe and sends no `Authorization` header, so
+ * `GET`/`POST /ajax` and the preview route also accept a signed per-user token
+ * in the URL, marked with `@H5pUrlToken()`. That decorator changes only *how the
+ * caller is identified*; it is not `@Public()`, every route here still carries
+ * `@Roles('editor')`, and a request with neither credential is still refused.
+ *
+ * **Two temporary-file routes, not one.** `temp-files/*path` is the bearer route
+ * and is untouched. `temp/:token/*path` is the one Joubel's client asks for,
+ * because it renders a just-uploaded file as
+ * `<img src="${integration.editor.filesPath}/<filename>">` and `H5P.getPath`
+ * composes `prefix + '/' + path` — so the credential has to be a **path
+ * segment**, and a query string in the prefix would be mangled. `@Public()` was
+ * never the fix: the URL would carry no owner id, and a filename is unique only
+ * within an owner, so an unauthenticated request could not resolve which object
+ * it means. A separate literal first segment rather than `temp-files/:token/*path`
+ * because that pattern and `temp-files/*path` both match
+ * `/temp-files/images/x.png` and only declaration order would decide.
  *
  * **Why `@Res()` on `temp-files`.** The same reason `h5p-public.controller.ts`
  * gives: a status and headers that depend on the request's `Range` cannot be
@@ -120,6 +131,7 @@ export class H5pEditorController {
    */
   @Get('ajax')
   @Roles('editor')
+  @H5pUrlToken()
   async ajaxGet(
     @Query('action') action?: string,
     @Query('machineName') machineName?: string,
@@ -156,6 +168,7 @@ export class H5pEditorController {
    */
   @Post('ajax')
   @Roles('editor')
+  @H5pUrlToken()
   // Nest answers a POST 201 by default, and four of the five actions here
   // create nothing at all — they are reads the H5P client happens to send as
   // POSTs because that is how its own client works. The library's endpoint
@@ -271,10 +284,13 @@ export class H5pEditorController {
   }
 
   /**
-   * One file out of the caller's own temporary storage.
+   * One file out of the caller's own temporary storage, for a caller holding a
+   * bearer token.
    *
    * The owner is the authenticated caller and nothing in the URL, which is what
    * makes the same filename mean a different object for a different editor.
+   * `temporaryFileByToken` below is the same file for the browser subresource
+   * that cannot send a header.
    */
   @Get('temp-files/*path')
   @Roles('editor')
@@ -282,6 +298,44 @@ export class H5pEditorController {
     @Req() req: Request,
     @Res() res: Response,
     @CurrentUser() caller?: AuthenticatedUser,
+  ): Promise<void> {
+    return this.streamTemporaryFile(req, res, caller);
+  }
+
+  /**
+   * The same file, for the `<img>` and `<audio>` previews Joubel's editor
+   * client renders from `integration.editor.filesPath`.
+   *
+   * `:token` is consumed by `H5pUrlTokenGuard`, which is why this handler never
+   * reads it: by the time it runs, `@CurrentUser()` is the editor the token was
+   * minted for, resolved through a live Firebase Auth read, and `@Roles`
+   * has already decided. `wildcardPath(req)` then yields
+   * `images/image-aB34xQz9.png` with nothing to strip, because the token is its
+   * own path parameter. The `#tmp` suffix the client appends is a fragment and
+   * never reaches this server.
+   */
+  @Get(`${TEMP_FILES_TOKEN_PATH}/:${H5P_URL_TOKEN_PARAM}/*path`)
+  @Roles('editor')
+  @H5pUrlToken()
+  async temporaryFileByToken(
+    @Req() req: Request,
+    @Res() res: Response,
+    @CurrentUser() caller?: AuthenticatedUser,
+  ): Promise<void> {
+    return this.streamTemporaryFile(req, res, caller);
+  }
+
+  /**
+   * One streaming path for both temporary-file routes.
+   *
+   * They differ only in how the caller was identified, and a second copy of the
+   * range handling is how the two would come to answer the same bytes with
+   * different headers.
+   */
+  private async streamTemporaryFile(
+    req: Request,
+    res: Response,
+    caller: AuthenticatedUser | undefined,
   ): Promise<void> {
     const user = callerOf(caller);
     const file = await this.editor.temporaryFile(

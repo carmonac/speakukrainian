@@ -1,7 +1,13 @@
 import type { Readable } from 'node:stream';
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { H5PAjaxEndpoint, H5PEditor, H5pError, LibraryName } from '@lumieducation/h5p-server';
-import type { ContentId, IContentMetadata, IEditorModel, IUser } from '@lumieducation/h5p-server';
+import type {
+  ContentId,
+  H5PConfig,
+  IContentMetadata,
+  IEditorModel,
+  IUser,
+} from '@lumieducation/h5p-server';
 import {
   h5pSaveResultSchema,
   type H5pContent,
@@ -9,11 +15,13 @@ import {
   type SaveH5pContentInput,
 } from '@speakukrainian/shared';
 import { H5pContentRepository } from './h5p-content.repository.js';
+import { H5pUrlTokenService } from './h5p-url-token.service.js';
 import { CONTENT_MISSING_MESSAGE, mapH5pErrors } from './h5p.errors.js';
 import { assertSafeContentId } from './h5p.paths.js';
 import type { RangeCallback } from './h5p.responses.js';
 import { H5pService, mainLibraryUberName } from './h5p.service.js';
-import { H5P_AJAX_ENDPOINT, H5P_EDITOR } from './h5p.tokens.js';
+import { H5P_AJAX_ENDPOINT, H5P_CONFIG, H5P_EDITOR } from './h5p.tokens.js';
+import { temporaryFilesUrlFor } from './h5p.url-generator.js';
 import { h5pUserFor } from './h5p.user.js';
 
 /**
@@ -181,6 +189,8 @@ export class H5pEditorService {
      * the rollback that belongs to it, and measuring what was stored.
      */
     private readonly content: H5pService,
+    private readonly tokens: H5pUrlTokenService,
+    @Inject(H5P_CONFIG) private readonly config: H5PConfig,
   ) {}
 
   async getAjax(request: GetAjaxRequest, user: IUser): Promise<GetAjaxResult> {
@@ -258,6 +268,23 @@ export class H5pEditorService {
    *
    * The response is built by naming three fields; see `EditorModelResponse` for
    * what the fourth one carries and why it may never be spread in.
+   *
+   * **`integration.editor.filesPath` is overridden here, and it has to be.**
+   * Joubel's client renders a just-uploaded file's preview as
+   * `<img src="${filesPath}/<filename>">`, a browser subresource that carries no
+   * `Authorization` header — so the prefix has to name the caller. The library
+   * builds it from `IUrlGenerator.temporaryFiles()`, which takes **no user**
+   * (`H5PEditor.generateEditorIntegration` calls it with no arguments), so this
+   * is a field the generator *could not* produce rather than one it produced
+   * wrongly. `user.id` **is** the caller's Firebase uid — `h5pUserFor` puts it
+   * there — which is what makes the token bind to the right person and the
+   * temporary-file prefix resolve to the right owner.
+   *
+   * The ajax half is minted independently, by the generator
+   * `h5p.module.ts` hands `H5PEditor`. So one response carries **two** tokens.
+   * They are equally valid, differ only in the millisecond they were minted at,
+   * and the difference is immaterial — nobody should thread state through the
+   * singleton generator to make them one.
    */
   async editorModel(
     contentId: string | undefined,
@@ -284,7 +311,26 @@ export class H5pEditorService {
         user,
       )) as IEditorModel;
 
-      return { integration: model.integration, scripts: model.scripts, styles: model.styles };
+      const editorIntegration = model.integration.editor;
+
+      return {
+        integration: {
+          ...model.integration,
+          // Guarded because `IIntegration` is shared with the player, where
+          // there is no editor half — and no editor half means there is no
+          // `filesPath` to put an owner into.
+          ...(editorIntegration
+            ? {
+                editor: {
+                  ...editorIntegration,
+                  filesPath: temporaryFilesUrlFor(this.config.baseUrl, this.tokens.mint(user.id)),
+                },
+              }
+            : {}),
+        },
+        scripts: model.scripts,
+        styles: model.styles,
+      };
     });
   }
 

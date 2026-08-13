@@ -16,14 +16,19 @@ import {
   type SaveH5pContentInput,
   type UpdateH5pContentInput,
 } from '@speakukrainian/shared';
+import type { ConfigService } from '@nestjs/config';
 import type { H5pContentRepository } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
 import { H5pEditorService, TEMP_SWEEP_INTERVAL_MS } from './h5p-editor.service.js';
 import { H5pLibraryStorage } from './h5p-library.storage.js';
 import { H5pTemporaryStorage } from './h5p-temporary.storage.js';
+import { H5pUrlTokenService } from './h5p-url-token.service.js';
 import { createH5pConfig } from './h5p.config.js';
 import { H5pService } from './h5p.service.js';
 import { InMemoryStorage } from './h5p.storage-fake.js';
+import { createH5pUrlGenerator } from './h5p.url-generator.js';
+import { verifyH5pUrlToken } from './h5p.url-token.js';
+import type { Env } from '../config/configuration.js';
 
 const EDITOR: IUser = {
   id: 'editor000000000000000000001',
@@ -36,6 +41,12 @@ const NOW = new Date('2026-05-01T12:00:00.000Z');
 const LIFETIME_MS = new H5PConfig(undefined).temporaryFileLifetime;
 /** Written long enough before `NOW` that `createdAt + temporaryFileLifetime` is in the past. */
 const EXPIRED_AT = new Date(NOW.getTime() - LIFETIME_MS - 60_000);
+
+/** The signing key the harness gives the token service, so the spec can verify. */
+const TOKEN_SECRET = 'a-signing-key-long-enough-to-be-one-0123456789';
+
+/** The `baseUrl` the harness builds every URL from, so `filesPath` has a known shape. */
+const BASE_URL = '/api/h5p';
 
 interface Harness {
   service: H5pEditorService;
@@ -115,7 +126,11 @@ class FakeIndex {
 async function createHarness(): Promise<Harness> {
   const objects = new InMemoryStorage();
   const storage = objects.asStorageService();
-  const config = createH5pConfig('/api/h5p');
+  const config = createH5pConfig(BASE_URL);
+  const tokens = new H5pUrlTokenService(
+    { get: () => TOKEN_SECRET } as unknown as ConfigService<Env, true>,
+    config,
+  );
 
   const keyValueStorage = new fsImplementations.InMemoryStorage();
   // Seeded exactly as `h5p.module.ts` seeds it. Without this,
@@ -130,12 +145,21 @@ async function createHarness(): Promise<Harness> {
   // would be asserting over a string. Mirroring the module here means the
   // module's own call is *not* what these cases pin — `h5p-editor.e2e-spec.ts`
   // is, over the real provider graph, the same way the player's renderer is.
+  //
+  // **The argument list mirrors the module exactly, including the `undefined`
+  // in sixth place.** `translationCallback` is a default parameter, so
+  // `undefined` restores the library's own English translator, and the URL
+  // generator has to sit **seventh**. Building this with five arguments would
+  // leave the unit suite asserting untokenised URLs while the module was right,
+  // or the reverse — and neither would be visible outside a browser.
   const editor = new H5PEditor(
     keyValueStorage,
     config,
     new H5pLibraryStorage(storage),
     new H5pContentStorage(storage),
     new H5pTemporaryStorage(storage, config),
+    undefined,
+    createH5pUrlGenerator(config, (uid) => tokens.mint(uid)),
   ).setRenderer((model: IEditorModel) => model);
   const endpoint = new H5PAjaxEndpoint(editor);
   const rows = new FakeIndex();
@@ -149,6 +173,8 @@ async function createHarness(): Promise<Harness> {
       // there now, and the two cases that prove it must still be running the
       // code the package import runs.
       new H5pService(editor, new H5pContentStorage(storage), rows.asRepository(), storage),
+      tokens,
+      config,
     ),
     objects,
     editor,
@@ -497,6 +523,76 @@ describe('H5pEditorService', () => {
       expect(await statusOf(call())).toBe(404);
       expect(await messageOf(call())).toBe('That exercise does not exist.');
       expect(render).not.toHaveBeenCalled();
+    });
+
+    /** The `?token=` in a URL, or the last path segment of a `filesPath`. */
+    const uidNamedBy = (token: string): string => {
+      const result = verifyH5pUrlToken(TOKEN_SECRET, token, Date.now());
+      return result.ok ? result.uid : `refused: ${result.reason}`;
+    };
+
+    const queryToken = (url: string): string => {
+      const match = /[?&]token=([^&]*)/.exec(url);
+      if (!match?.[1]) {
+        throw new Error(`no token query parameter in ${url}`);
+      }
+      return match[1];
+    };
+
+    it('carries a token for the caller in each of the three URLs the widget builds requests from', async () => {
+      // These three are the whole of B2: `integration.ajaxPath` and
+      // `integration.editor.ajaxPath` are what `H5PEditor.getAjaxUrl`
+      // concatenates an action onto, and `editor.filesPath` is what
+      // `H5P.getPath` prefixes an uploaded filename with. Every one of those
+      // requests is made by Joubel's own code from a srcless iframe, with no
+      // `Authorization` header.
+      const model = await harness.service.editorModel(undefined, undefined, EDITOR);
+      const editorIntegration = model.integration.editor;
+
+      expect(uidNamedBy(queryToken(model.integration.ajaxPath))).toBe(EDITOR.id);
+      expect(uidNamedBy(queryToken(editorIntegration?.ajaxPath ?? ''))).toBe(EDITOR.id);
+      expect(
+        uidNamedBy((editorIntegration?.filesPath ?? '').replace(`${BASE_URL}/temp/`, '')),
+      ).toBe(EDITOR.id);
+    });
+
+    it('does the same for an exercise that already exists', async () => {
+      const contentId = await indexRow('some-content-id');
+
+      const model = await harness.service.editorModel(contentId, undefined, EDITOR);
+
+      expect(uidNamedBy(queryToken(model.integration.ajaxPath))).toBe(EDITOR.id);
+      expect(
+        uidNamedBy((model.integration.editor?.filesPath ?? '').replace(`${BASE_URL}/temp/`, '')),
+      ).toBe(EDITOR.id);
+    });
+
+    it('builds the preview prefix as the route that has to answer it', async () => {
+      // The URL and the `@Get` come from one constant, and this is what says so
+      // from the outside: `H5P.getPath` appends `'/' + filename` to this, so
+      // the browser asks for `/api/h5p/temp/<token>/images/x.png`.
+      const model = await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      expect(model.integration.editor?.filesPath).toMatch(
+        /^\/api\/h5p\/temp\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+      );
+    });
+
+    it('carries no token that names anyone but the caller it was built for', async () => {
+      // The service-level half of the cross-user acceptance criterion. Every
+      // token anywhere in the serialised model must verify as this caller —
+      // asserted over the whole body rather than over three known fields, so a
+      // fourth URL that started carrying one could not slip through.
+      const other: IUser = { ...EDITOR, id: 'a-different-editor-000000001' };
+      const model = await harness.service.editorModel(undefined, undefined, EDITOR);
+
+      const tokens = [...JSON.stringify(model).matchAll(/[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g)]
+        .map((match) => match[0])
+        .filter((candidate) => verifyH5pUrlToken(TOKEN_SECRET, candidate, Date.now()).ok);
+
+      expect(tokens.length).toBeGreaterThanOrEqual(3);
+      expect(tokens.map(uidNamedBy)).toEqual(tokens.map(() => EDITOR.id));
+      expect(tokens.map(uidNamedBy)).not.toContain(other.id);
     });
 
     it('boots a blank editor without paying for an index read', async () => {

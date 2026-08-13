@@ -297,6 +297,21 @@ describe('h5p serving (e2e)', () => {
   describe('content files', () => {
     const mediaUrl = (): string => `/api/h5p/content/${exercise.contentId}/${MEDIA_FILE}`;
 
+    it('is cross-origin where the player model is not, which is the boundary', async () => {
+      // The relaxation is scoped to routes that serve **subresources**: a media
+      // element on the public site loads the clip with no CORS request at all
+      // and needs `cross-origin`, while the model itself is JSON read by a CORS
+      // `fetch` and keeps helmet's global `same-origin`. `createTestApp`
+      // installs the same helmet middleware `main.ts` does, so the second half
+      // is what says the first is an override rather than an uncontested
+      // header.
+      const clip = await request(server()).get(mediaUrl()).expect(200);
+      const model = await request(server()).get(`/api/h5p/play/${exercise.contentId}`).expect(200);
+
+      expect(clip.headers['cross-origin-resource-policy']).toBe('cross-origin');
+      expect(model.headers['cross-origin-resource-policy']).toBe('same-origin');
+    });
+
     it('streams the whole file and offers ranges', async () => {
       const response = await request(server()).get(mediaUrl()).expect(200);
 
