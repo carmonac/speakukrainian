@@ -71,6 +71,12 @@ steps:
       - --platform=managed
       - --service-account=speakukrainian-api@${PROJECT_ID}.iam.gserviceaccount.com
       - --set-env-vars=NODE_ENV=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STORAGE_BUCKET=${_STORAGE_BUCKET}
+      # Signs the H5P editor's URL tokens. The API refuses to boot without it,
+      # so the Secret Manager entry `h5p-url-token-secret` must exist and the
+      # deploy service account must be able to read it *before* this step runs
+      # for the first time. Nothing in CI can catch its absence: CI does not
+      # deploy.
+      - --set-secrets=H5P_URL_TOKEN_SECRET=h5p-url-token-secret:latest
       - --min-instances=0
       - --max-instances=10
       - --cpu=1

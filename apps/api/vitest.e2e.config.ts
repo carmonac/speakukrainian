@@ -9,6 +9,11 @@ const emulatorEnv = {
   FIRESTORE_EMULATOR_HOST: 'localhost:8081',
   FIREBASE_AUTH_EMULATOR_HOST: 'localhost:9099',
   STORAGE_API_ENDPOINT: 'http://localhost:4443',
+  // `.env.example` ships this empty on purpose, so the suite has to supply one
+  // of its own. A fixed literal rather than a random value per run, because
+  // every other emulator default here is fixed and a token minted by one worker
+  // has to verify in another.
+  H5P_URL_TOKEN_SECRET: 'the-e2e-signing-key-for-h5p-url-tokens-0123456789',
 };
 
 /**

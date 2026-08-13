@@ -26,6 +26,15 @@ export interface RequestWithUser extends Request {
 /**
  * Verifies the `Authorization: Bearer <idToken>` header against Firebase Auth
  * and attaches the caller to the request. Routes marked `@Public()` skip it.
+ *
+ * A request that already carries a caller is let through, because another guard
+ * has already established one. **The rule that keeps that from being a hole:
+ * `request.user` may be assigned only by an authentication guard, and never
+ * from request input.** Today the only other assignment in the tree is
+ * `H5pUrlTokenGuard`, which is metadata-gated to three routes and derives the
+ * caller from a signed token plus a live Firebase Auth read. A middleware that
+ * ever set `request.user` from a header or a body would be an authentication
+ * bypass.
  */
 @Injectable()
 export class FirebaseAuthGuard implements CanActivate {
@@ -44,6 +53,10 @@ export class FirebaseAuthGuard implements CanActivate {
     }
 
     const request = context.switchToHttp().getRequest<RequestWithUser>();
+    if (request.user) {
+      return true;
+    }
+
     const header = request.headers.authorization;
 
     if (!header?.startsWith('Bearer ')) {
