@@ -760,8 +760,9 @@ describe('H5pEditorService', () => {
     });
 
     it('keeps the page an exercise is attached to', async () => {
-      // `pageId` is `null` today and nothing sets it, but attaching an exercise
-      // to a page is the first thing the admin exercise screen does.
+      // `POST /api/h5p/content/:id/attach` is what puts a page here, and this
+      // save carries no `pageId` of its own — so a row rewritten from the
+      // save's own fields would detach the exercise silently.
       const created = await harness.service.save(undefined, body('Kyiv?'), { uid: 'editor-1' });
       const row = harness.rows.rows.get(created.contentId);
       harness.rows.rows.set(created.contentId, { ...row!, pageId: 'a-page' });
