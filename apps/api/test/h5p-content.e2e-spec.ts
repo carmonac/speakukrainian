@@ -32,14 +32,13 @@ interface ErrorBody {
   message: string;
 }
 
-/** The stored index row, read through the admin SDK rather than through the API. */
-interface IndexRow {
-  title: string;
-  storagePath: string;
-  sizeBytes: number;
-  pageId: string | null;
-  audit: { createdAt: string; createdBy: string; updatedAt: string; updatedBy: string };
-}
+/**
+ * The stored index row, read through the admin SDK rather than through the API.
+ * Derived from the schema rather than restated, so a field added to
+ * `h5pContentSchema` is a field these assertions can reach; `id` is the document
+ * id and so is not inside the document.
+ */
+type IndexRow = Omit<H5pContent, 'id'>;
 
 /** What `GET /api/h5p/params/:contentId` answers with, and what a save posts back. */
 interface ContentParametersBody {
@@ -71,6 +70,13 @@ describe('h5p content index (e2e)', () => {
   let doomedPage: ContentPage;
 
   const createdContentIds: string[] = [];
+
+  /**
+   * Every page this file creates, including the ones a case creates for itself.
+   * A case that fails between creating a page and deleting it would otherwise
+   * orphan it under a section this teardown then cannot remove.
+   */
+  const createdPageIds: string[] = [];
 
   const server = (): ReturnType<INestApplication['getHttpServer']> => app.getHttpServer();
 
@@ -135,7 +141,9 @@ describe('h5p content index (e2e)', () => {
         body: { type: 'rich_text', content: { en: `<p>${title}</p>` } },
       })
       .expect(201);
-    return contentPageSchema.parse(response.body);
+    const created = contentPageSchema.parse(response.body);
+    createdPageIds.push(created.id);
+    return created;
   };
 
   const listAs = async (
@@ -192,11 +200,10 @@ describe('h5p content index (e2e)', () => {
           firestore.collection(COLLECTIONS.h5pContent).doc(id).delete(),
         ),
       );
-      // Pages first: a section delete is refused while it still holds pages.
-      for (const created of [page, doomedPage]) {
-        if (created) {
-          await firestore.collection(COLLECTIONS.pages).doc(created.id).delete();
-        }
+      // Pages first: a section delete is refused while it still holds pages. A
+      // page a case already deleted through the API deletes again harmlessly.
+      for (const pageId of createdPageIds) {
+        await firestore.collection(COLLECTIONS.pages).doc(pageId).delete();
       }
       if (section) {
         await firestore.collection(COLLECTIONS.sections).doc(section.id).delete();
