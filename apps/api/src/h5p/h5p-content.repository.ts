@@ -35,12 +35,14 @@ export class H5pContentRepository extends BaseRepository<H5pContent> {
    * Read straight from the pages collection rather than through a port
    * `PagesModule` exports, for the reason `PagesRepository`'s own `this.sections`
    * gives: the document has to be read *inside* this repository's transaction to
-   * be a read-before-write. The rule that separates the two patterns is what the
-   * foreign module is asked for — `SectionsRepository` reaches pages through the
-   * exported `SectionPagesRepository` because it **writes** them, carrying page
-   * rules with it. This is a one-document existence read that carries no page
-   * rule and never writes, so a new exported port and an import edge between two
-   * modules that have never touched would buy one boolean.
+   * be a read-before-write. What separates the two patterns is not read from
+   * write — `SectionPagesRepository.hasPages` is a read, and it too runs inside
+   * the caller's transaction — but **how much of the pages module the operation
+   * carries**: `hasPages` is a `where('sectionId','==',…)` query living beside
+   * `pagePathRange` and `rewritePagePath`, so it knows how pages hang off a
+   * section and belongs with them. This is `doc(id).get()` on an id the caller
+   * supplied and knows nothing, so a new exported port and an import edge
+   * between two modules that have never touched would buy one boolean.
    */
   private readonly pages: CollectionReference;
 
