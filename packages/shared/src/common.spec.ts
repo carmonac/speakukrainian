@@ -5,6 +5,7 @@ import {
   MAX_RICH_TEXT_LENGTH,
   assetRefSchema,
   documentIdSchema,
+  externalDocumentIdSchema,
   localizedTextSchema,
   paginationQuerySchema,
   resolveLocalized,
@@ -338,5 +339,54 @@ describe('paginationQuerySchema', () => {
     // A cursor goes straight to `collection.doc(cursor).get()`, so an
     // unconstrained one 500s four list routes.
     expect(paginationQuerySchema.safeParse({ cursor }).success).toBe(false);
+  });
+
+  it('refuses an empty cursor rather than reading it as "no cursor"', () => {
+    // A deliberate 2xx → 400: `?cursor=` used to reach `paginate`, whose
+    // `if (cursor)` started from the beginning. Every neighbouring id-shaped
+    // query parameter already refuses an empty value, and a caller with no
+    // cursor omits the parameter — the admin's `toHttpParams` drops it.
+    expect(paginationQuerySchema.safeParse({ cursor: '' }).success).toBe(false);
+  });
+});
+
+describe('externalDocumentIdSchema', () => {
+  it.each([
+    ['auth0|5f2c1b2e6f7a4c2b9d3e5a1b', 'an Auth0 subject'],
+    ['oidc:acct:ada@example.com', 'an OIDC subject with a colon and an @'],
+    ['aBcDeFgHiJkLmNoPqRsTuVwXyZ01', 'a Firebase-generated uid'],
+    ['a.b', 'a dot that is not the whole id'],
+  ])('accepts %s — %s', (uid) => {
+    // The alphabet belongs to the auth provider, so this schema answers only
+    // "can Firestore store it", never "is it made of the right characters". A
+    // uid refused here would turn a legitimate role change into a 400.
+    expect(externalDocumentIdSchema.parse(uid)).toBe(uid);
+  });
+
+  it.each(['__name__', '__foo__', '__', '__foo', '.', '..', 'a/b', '/', ''])(
+    'refuses %s, which Firestore itself refuses',
+    (uid) => {
+      // `PATCH /api/users/__name__/role` answered 500 for exactly this: Firebase
+      // will create such a uid and Firestore will not store a document under it.
+      expect(externalDocumentIdSchema.safeParse(uid).success).toBe(false);
+    },
+  );
+
+  it("accepts 128 characters, Firebase Auth's own cap on a uid, and refuses 129", () => {
+    expect(externalDocumentIdSchema.parse('a'.repeat(128))).toHaveLength(128);
+    expect(externalDocumentIdSchema.safeParse('a'.repeat(129)).success).toBe(false);
+  });
+
+  it('is looser than documentIdSchema in the alphabet and no looser in the rules', () => {
+    // The pair only makes sense if it differs in exactly one dimension: a later
+    // tidy-up that collapses them would either 400 real provider uids or
+    // reopen the reserved-id 500 on every route.
+    expect(documentIdSchema.safeParse('auth0|123').success).toBe(false);
+    expect(externalDocumentIdSchema.safeParse('auth0|123').success).toBe(true);
+
+    for (const refused of ['__name__', '.', '..', 'a/b', '']) {
+      expect(externalDocumentIdSchema.safeParse(refused).success).toBe(false);
+      expect(documentIdSchema.safeParse(refused).success).toBe(false);
+    }
   });
 });

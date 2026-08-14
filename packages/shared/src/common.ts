@@ -167,40 +167,63 @@ export type PublishStatus = z.infer<typeof publishStatusSchema>;
 export const isoDateTimeSchema = z.iso.datetime({ offset: true });
 
 /**
- * A Firestore document id. Firestore's four rules are that an id may not be `.`
- * or `..`, may not contain `/`, may not be of the reserved `__…__` form, and is
- * capped at 1500 bytes; the character class covers the first two, the second
- * regex covers the third, and `.max(128)` covers the fourth.
+ * What Firestore itself refuses in a document id, and nothing more: an id may
+ * not be `.` or `..`, may not contain `/`, may not be of the reserved `__…__`
+ * form, and is capped at 1500 bytes.
  *
- * All of it lives on this schema rather than on a guard inside the
- * repositories, because Firestore does **not** refuse a reserved id at
- * `collection.doc()` — that call happily returns a reference, and the refusal
- * comes back asynchronously from the server as
- * `3 INVALID_ARGUMENT: Resource id "__name__" is invalid because it is
- * reserved`. By the time it exists it is inside a transaction, it is a plain
- * `Error` rather than an `HttpException`, and `HttpExceptionFilter` can only
- * log it as unhandled and answer 500 — for input this schema exists to refuse.
- * Validating at the pipe turns that into a 400 before any I/O happens.
+ * It exists for the ids this system does **not** mint. A Firebase uid is the
+ * only one — `UsersRepository` keys its collection by it — and its alphabet
+ * belongs to the auth provider: a subject carrying `:` or `|` is a legitimate
+ * uid, so {@link documentIdSchema}'s fixed alphabet would turn a real role
+ * change into a 400. What Firestore refuses is a different question from what
+ * an id may be made of, and only the first is this schema's to answer.
+ * `assertSafeOwnerId` in the API's `h5p.paths.ts` draws the same distinction
+ * for a *storage path* segment and comes out the other way, because a path is
+ * not an id: `__name__` is a perfectly legal object name.
+ *
+ * The rules live on a schema rather than on a guard inside the repositories,
+ * because Firestore does **not** refuse a reserved id at `collection.doc()` —
+ * that call happily returns a reference, and the refusal comes back
+ * asynchronously from the server as `3 INVALID_ARGUMENT: Resource id
+ * "__name__" is invalid because it is reserved`. By the time it exists it is
+ * inside a transaction, it is a plain `Error` rather than an `HttpException`,
+ * and `HttpExceptionFilter` can only log it as unhandled and answer 500 — for
+ * input validation exists to refuse. At a pipe it is a 400 before any I/O.
  *
  * The reserved rule is written as a `__` **prefix** rather than Firestore's
  * documented `__.*__` because the documented form is not the line the server
  * actually draws: the emulator refuses `__name__` and `__foo__` but accepts
  * `__`, `___` and `____`. The prefix is a superset of the documented regex and
- * of what the emulator enforces, and it costs nothing to over-reject `__foo`,
- * since no id this system produces begins with `__` — they are Firestore
- * auto-ids, `randomUUID()`s and Firebase uids.
+ * of what the emulator enforces, and over-rejecting `__foo` costs nothing —
+ * no id reaching this system begins with `__`.
  *
- * 128 rather than Firestore's 1500 for the same reason: the longest id anything
- * here writes is a 36-character UUID, and because the character class is
- * ASCII-only, 128 UTF-16 code units is exactly 128 bytes, so nothing has to
- * count bytes to stay an order of magnitude inside the real cap.
+ * 128 rather than Firestore's 1500 because 128 characters is also Firebase
+ * Auth's own cap on a uid, so this cannot refuse a real one; and a UTF-16 code
+ * unit is at most 4 UTF-8 bytes, so 128 of them stay inside the byte cap
+ * without anything having to count bytes.
  */
-export const documentIdSchema = z
+export const externalDocumentIdSchema = z
   .string()
   .min(1)
   .max(128)
-  .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id')
+  .regex(/^[^/]+$/, 'A Firestore document id cannot contain "/"')
+  .regex(/^(?!\.{1,2}$)/, 'A Firestore document id cannot be "." or ".."')
   .regex(/^(?!__)/, 'A Firestore document id cannot begin with "__", which Firestore reserves');
+
+/**
+ * A Firestore document id as this system mints them: everything Firestore
+ * refuses, plus a fixed alphabet. Every id here is a Firestore auto-id, a
+ * `randomUUID()` or a slug-shaped constant, so the alphabet is free to be
+ * narrow — and narrow means one rule to read instead of four, at the schema
+ * every id-carrying route funnels through.
+ *
+ * The one id it is deliberately **not** put on is a Firebase uid; see
+ * {@link externalDocumentIdSchema}.
+ */
+export const documentIdSchema = externalDocumentIdSchema.regex(
+  /^[A-Za-z0-9_-]+$/,
+  'Must be a Firestore document id',
+);
 
 /**
  * URL-safe identifier used in public routes, unique among siblings.
@@ -248,6 +271,13 @@ export const paginationQuerySchema = z.object({
    * `BaseRepository.paginate` hands it straight to `collection.doc(cursor)` —
    * so it takes the document id rule. A `nextCursor` this API produced is a
    * document id of the collection being paged and always parses back.
+   *
+   * `?cursor=` with no value is a 400 and not "start from the beginning", which
+   * `paginate`'s `if (cursor)` used to make of it while this field was an
+   * unconstrained string. Refused deliberately: `min(1)` is what every other
+   * id-shaped query parameter already applies to an empty value — `parentId`,
+   * `sectionId`, `recurrenceId` — so an empty cursor was the odd one out, and a
+   * caller with no cursor omits the parameter rather than sending it blank.
    */
   cursor: documentIdSchema.optional(),
 });

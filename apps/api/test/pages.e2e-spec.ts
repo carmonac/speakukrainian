@@ -958,16 +958,26 @@ describe('pages (e2e)', () => {
     expect((owning.body as IssueBody).errors?.[0]?.path).toBe('sectionId');
 
     // A path parameter is a bare string schema, so its issue carries no path —
-    // the URL is what names it. The status is the whole assertion here.
+    // the URL is what names it. The status is the whole assertion here, on
+    // every route that takes an `:id`, since each declares its own pipe.
     const param = await request(server())
       .get(`/api/pages/${RESERVED_ID}`)
       .set('Authorization', bearer(editor))
       .expect(400);
     expect((param.body as ErrorBody).statusCode).toBe(400);
+    await patch(RESERVED_ID, { title: { en: 'Nope' } }).expect(400);
+    await publish(RESERVED_ID).expect(400);
+    await unpublish(RESERVED_ID).expect(400);
+    await remove(RESERVED_ID).expect(400);
 
     // A cursor goes straight to `collection.doc(cursor).get()`.
     await request(server())
       .get(`/api/pages?cursor=${RESERVED_ID}`)
+      .set('Authorization', bearer(editor))
+      .expect(400);
+    // A deliberate 2xx → 400: `?cursor=` used to page from the beginning.
+    await request(server())
+      .get('/api/pages?cursor=')
       .set('Authorization', bearer(editor))
       .expect(400);
 

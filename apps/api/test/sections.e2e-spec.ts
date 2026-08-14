@@ -933,6 +933,12 @@ describe('sections (e2e)', () => {
       .get(`/api/sections?cursor=${RESERVED_ID}`)
       .set('Authorization', bearer(editor))
       .expect(400);
+    // A deliberate 2xx → 400: `?cursor=` used to reach `paginate`, whose
+    // `if (cursor)` read it as "start from the beginning".
+    await request(server())
+      .get('/api/sections?cursor=')
+      .set('Authorization', bearer(editor))
+      .expect(400);
 
     // Nothing was written: the orphan never became a section.
     const roots = await listAll('?parentId=root');
