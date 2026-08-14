@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
+import { ConflictException, HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { H5pError } from '@lumieducation/h5p-server';
 import type { H5PEditor, IContentMetadata, IUser } from '@lumieducation/h5p-server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,9 +14,9 @@ import {
   type ListH5pContentQuery,
   type Page,
 } from '@speakukrainian/shared';
-import type { H5pContentRepository } from './h5p-content.repository.js';
+import type { H5pContentRepository, SetPageIdResult } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
-import { CONTENT_MISSING_MESSAGE } from './h5p.errors.js';
+import { CONTENT_MISSING_MESSAGE, PAGE_MISSING_MESSAGE } from './h5p.errors.js';
 import { buildRawZip, type RawZipEntry } from './h5p.raw-zip.js';
 import { H5pService } from './h5p.service.js';
 import { InMemoryStorage } from './h5p.storage-fake.js';
@@ -51,6 +51,8 @@ interface RepositorySpy {
   corrupt: Set<string>;
   /** Ids `delete` actually removed, so a no-op is not mistaken for a delete. */
   deleted: string[];
+  /** Which page ids exist, for the read `setPageId` makes before it attaches. */
+  pages: Set<string>;
 }
 
 interface RepositoryFailures {
@@ -64,6 +66,7 @@ function createRepositorySpy(failures: RepositoryFailures = {}): RepositorySpy {
   const stored = new Map<string, H5pContent>();
   const corrupt = new Set<string>();
   const deleted: string[] = [];
+  const pages = new Set<string>();
 
   const repository = {
     create: (input: CreateH5pContentInput, actorId: string): Promise<H5pContent> => {
@@ -97,9 +100,44 @@ function createRepositorySpy(failures: RepositoryFailures = {}): RepositorySpy {
     },
     list: (query: ListH5pContentQuery): Promise<Page<H5pContent>> =>
       Promise.resolve({ items: [...stored.values()].slice(0, query.limit), nextCursor: null }),
+    /**
+     * An in-memory stand-in for the write, not a script: the service under test
+     * is the mapping from this union onto HTTP, and it can only be checked
+     * against a repository that really refuses and really writes. The rules
+     * themselves are pinned in `h5p-content.repository.spec.ts`, against the
+     * Firestore double.
+     */
+    setPageId: (id: string, pageId: string | null, actorId: string): Promise<SetPageIdResult> => {
+      const existing = stored.get(id);
+      if (!existing) {
+        return Promise.resolve({ ok: false, reason: 'content-not-found' });
+      }
+      if (existing.pageId === pageId) {
+        return Promise.resolve({ ok: true, content: existing });
+      }
+      if (pageId !== null) {
+        if (!pages.has(pageId)) {
+          return Promise.resolve({ ok: false, reason: 'page-not-found' });
+        }
+        if (existing.pageId !== null) {
+          return Promise.resolve({
+            ok: false,
+            reason: 'attached-elsewhere',
+            pageId: existing.pageId,
+          });
+        }
+      }
+      const updated: H5pContent = {
+        ...existing,
+        pageId,
+        audit: { ...existing.audit, updatedAt: '2026-06-01T00:00:00.000Z', updatedBy: actorId },
+      };
+      stored.set(id, updated);
+      return Promise.resolve({ ok: true, content: updated });
+    },
   } as unknown as H5pContentRepository;
 
-  return { repository, created, stored, corrupt, deleted };
+  return { repository, created, stored, corrupt, deleted, pages };
 }
 
 /**
@@ -357,6 +395,8 @@ describe('H5pService.importPackage', () => {
 
 const INDEXED = 'e2f0b0b6-1f6c-4a3a-9a4b-9d3b2f5a1c77';
 const SIBLING = 'a1b2c3d4-1f6c-4a3a-9a4b-9d3b2f5a1c77';
+const PAGE = 'page-the-exercise-is-attached-to';
+const OTHER_PAGE = 'another-page-entirely';
 const LIBRARY_FILE = 'h5p/libraries/SpeakTest.Main-1.0/library.json';
 
 function indexed(id: string): H5pContent {
@@ -519,6 +559,78 @@ describe('H5pService index routes', () => {
     // The survivor is a row, which the index shows and a retry finishes off.
     expect(storage.paths().filter((path) => path.includes(INDEXED))).toEqual([]);
     expect(stored.has(INDEXED)).toBe(true);
+  });
+
+  it('attaches an exercise to a page and answers with the row that names it', async () => {
+    const { repository, stored, pages } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+    pages.add(PAGE);
+
+    const content = await serviceOver(repository).attachToPage(INDEXED, PAGE, 'editor-2');
+
+    expect(content.pageId).toBe(PAGE);
+    expect(stored.get(INDEXED)?.pageId).toBe(PAGE);
+    expect(content.audit.updatedBy).toBe('editor-2');
+  });
+
+  it('detaches an exercise and answers with the row that names no page', async () => {
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, { ...indexed(INDEXED), pageId: PAGE });
+
+    const content = await serviceOver(repository).detachFromPage(INDEXED, 'editor-2');
+
+    expect(content.pageId).toBeNull();
+    expect(stored.get(INDEXED)?.pageId).toBeNull();
+    expect(content.audit.updatedBy).toBe('editor-2');
+    // Detaching reads no page: none was ever registered on the fake.
+    expect(content.title).toBe(indexed(INDEXED).title);
+  });
+
+  it.each([
+    ['attach', (service: H5pService) => service.attachToPage(INDEXED, PAGE, 'editor-2')],
+    ['detach', (service: H5pService) => service.detachFromPage(INDEXED, 'editor-2')],
+  ])(
+    'answers %s for an unindexed exercise with the sentence every other route uses',
+    async (_name, call) => {
+      const { repository, pages } = createRepositorySpy();
+      pages.add(PAGE);
+
+      const error = await call(serviceOver(repository)).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect((error as NotFoundException).message).toBe(CONTENT_MISSING_MESSAGE);
+    },
+  );
+
+  it('refuses to attach to a page that does not exist, and changes nothing', async () => {
+    const { repository, stored } = createRepositorySpy();
+    stored.set(INDEXED, indexed(INDEXED));
+
+    const error = await serviceOver(repository)
+      .attachToPage(INDEXED, PAGE, 'editor-2')
+      .catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(NotFoundException);
+    expect((error as NotFoundException).message).toBe(PAGE_MISSING_MESSAGE);
+    expect(stored.get(INDEXED)?.pageId).toBeNull();
+  });
+
+  it('refuses to move an exercise with a 409 that names the page it is on', async () => {
+    // Moving is two explicit calls, and the message says which one comes first
+    // because the page it names may itself be gone.
+    const { repository, stored, pages } = createRepositorySpy();
+    stored.set(INDEXED, { ...indexed(INDEXED), pageId: PAGE });
+    pages.add(OTHER_PAGE);
+
+    const error = await serviceOver(repository)
+      .attachToPage(INDEXED, OTHER_PAGE, 'editor-2')
+      .catch((thrown: unknown) => thrown);
+
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getStatus()).toBe(HttpStatus.CONFLICT);
+    expect((error as ConflictException).message).toContain(PAGE);
+    expect((error as ConflictException).message).toContain('Detach it first.');
+    expect(stored.get(INDEXED)?.pageId).toBe(PAGE);
   });
 
   it('keeps the index document when the sweep fails, so a retry can still find it', async () => {

@@ -311,8 +311,10 @@ truth, so deleting them would destroy a good exercise because an audit field cou
 The id is logged in both branches, since that is the only thing that tells an operator which
 exercise is affected. `H5pContentRepository.update` takes `{ title, mainLibrary, sizeBytes }` and
 merges over the stored row — `pageId` and `storagePath` are not in its input, because a row
-rewritten from a save's own fields would silently detach an exercise from its page the moment the
-admin screen sets one.
+rewritten from a save's own fields would silently detach an exercise from its page. Since #63 that
+is a live failure mode rather than a precaution: `setPageId` really does write the field, so a save
+racing an attach must leave it alone, and each transaction merging only its own fields is what makes
+both survive in either order.
 
 _Player and editor language (amended by #36, corrected by #52)._ `GET /api/h5p/play/:contentId`
 accepts `?lang` and `GET /api/h5p/editor[/:contentId]` accepts `?language`, and both select the
@@ -377,20 +379,87 @@ human can act on it; the warning says the same thing to whoever is reading the l
 locale, so it passes it, and absent `?lang` the answer is `en`. Exercise _content_ is unaffected —
 that comes out of the uploaded package and is the author's to translate.
 
-_Who may read H5P content._ `GET /api/h5p/play/:contentId` and `GET /api/h5p/content/:contentId/*`
-are `@Public()`. **What protects them is the unguessable id, not publication state**, and that is a
-decision rather than an oversight: `h5pContentSchema` has no published/draft field, and
-`h5pContent.pageId` is written as `null` and never set, so "is this exercise on a published page?"
-is not answerable from the data today. Content ids are `randomUUID()`, no public route enumerates
-them, and the player model exposes only the content asked for. An unpublished exercise is
-reachable by anyone who already knows its id — which, until a published page links one, is only
-its author.
+_Who may read H5P content (amended by #63)._ `GET /api/h5p/play/:contentId` and
+`GET /api/h5p/content/:contentId/*` are `@Public()`. **What protects them is the unguessable id, not
+publication state**, and that is a decision rather than an oversight: `h5pContentSchema` has no
+published/draft field. Content ids are `randomUUID()`, no public route enumerates them, and the
+player model exposes only the content asked for. An unpublished exercise is reachable by anyone who
+already knows its id — which, until a published page links one, is only its author.
+
+This paragraph previously offered a second piece of evidence — that `h5pContent.pageId` "is written
+as `null` and never set, so 'is this exercise on a published page?' is not answerable from the data
+today" — and #63 made that clause false: the field **is** written now, by two role-guarded routes.
+The route's protection never rested on it, so nothing about the route changes; but the clause was
+offered as proof that a better rule was _impossible_, and it has to be replaced rather than left
+standing. The question is still not answerable, for two independent reasons:
+
+- `pageId` is a **back-reference**, and `contentPage.body.h5pContentId` is the authoritative record
+  of the same relationship. Nothing clears `pageId` when a page is deleted or when a page body
+  stops naming the exercise, so it may name a page that does not exist, or one that names a
+  different exercise.
+- Even a correct value names a page without saying whether that page is published.
+
+**The rule, and it is the one thing to carry away: nothing may authorize a read on `pageId`.** A
+reader that needs to know what is true reads the page. Its legitimate uses are diagnostic — showing
+an author that an exercise looks attached, and filtering the admin index. **This paragraph is the
+only statement of that rule**: `h5pContentSchema.pageId` and `H5pService.attachToPage` point at it
+rather than restate it, because #63 shipped it as three paraphrases at three strengths and two of
+them had drifted into "nothing reads this field at all" before the branch was reviewed.
+
+Something does read it, and it is the one permitted reader: **the field's own writer,
+`H5pContentRepository.setPageId`**, reading the stored value to decide whether to write at all — the
+no-write short-circuit, which runs on detach as well as attach, and the attach path's conflict guard
+— together with the 409 message that carries out the value it found. Those two reads are the field's
+sole writer reading it to decide whether to write, not a second reader deciding what is true about a
+page, and a stale value there is survivable because the way out of that 409 is `detach`, which reads
+no page at all.
+
+**One half of the rule is enforced and the rest is convention, and it is worth knowing which is
+which.** Enforced: `pageId` never crosses a `@Public()` boundary, because every route that answers
+with an `h5pContent` row is `@Roles('editor')`, pinned per route by `h5p.controller.spec.ts`'s
+metadata table — the play and content-file routes answer with a player model and with bytes, not
+with the row. Enforced too: the divergence itself, by the e2e that attaches, deletes the page and
+asserts the row still names it, so a cascade added later fails a test. Convention: that no admin or
+public screen reads the field to decide what to render or who may see it. Nothing in the API can
+enforce that, and no test worth inventing would; it rests on this paragraph and on review.
 
 The invariant this places on future work: **any route that lists or searches `h5pContent` must be
 role-guarded, or must filter by the publication state of the page that references it.** A stronger
-guarantee than that would need `h5pContent.pageId` to be populated plus the page's `status`, and
-would cost a Firestore read per _content file_ request — per image and per audio clip — so it
-needs a cache and is not something to add casually.
+guarantee than that would need `h5pContent.pageId` to be populated **and maintained transactionally
+with the page body**, which it deliberately is not, plus the page's `status` — and would cost a
+Firestore read per _content file_ request — per image and per audio clip — so it needs a cache and
+is not something to add casually.
+
+_Attaching an exercise to a page (#63)._ `POST /api/h5p/content/:id/attach` with `{ pageId }` and
+`POST /api/h5p/content/:id/detach` are the only writers of `h5pContent.pageId`; both answer 200 with
+the updated row. Two routes rather than one taking a nullable body, by #52's rule — split when the
+outcomes differ, share when they do not: attach reads a foreign document and can answer 404 and 409,
+detach reads nothing and can answer neither. The split is also what lets the request schema be
+`z.strictObject({ pageId })`, non-nullable and closed, which is the sharpest available form of "this
+route cannot write any other field". Verbs rather than `DELETE /api/h5p/content/:id/page`, which
+would sit one dropped path segment from `DELETE /api/h5p/content/:id`.
+
+**`contentPage.body.h5pContentId` is authoritative and this issue deliberately does not keep the two
+consistent.** The page body is what renders and what publication is gated on; writing both sides
+from the H5P module would put a second writer of the page body in another module, racing the page
+form's own save and bypassing `PagesService.sanitizeBody` and `PagesRepository`'s section, slug and
+path rules. So the two can disagree by three ordinary routes — a page delete, a page body edit that
+names another exercise, and a crash between the admin's two calls — and a stale `pageId` is a
+**normal, permanent, expected** state rather than a bug. An e2e pins it, so a cascade added later
+fails a test instead of quietly making this paragraph false.
+
+The rules and their reasons: attaching to the page an exercise already names **writes nothing at
+all**, because a retry after a dropped response is ordinary here and `audit.updatedAt` means "when
+this exercise was last changed"; attaching an exercise that is already on another page is a **409**
+rather than a silent move, because the field is a single nullable scalar and an overwrite would turn
+it into "the last page anyone attached this to". The refusal says `Detach it first.` because the
+page it names may itself be deleted, and detach is unconditional. The page existence read is
+**inside the transaction**, which makes it a read-before-write and stops a page delete interleaving
+with the commit — and that buys almost nothing on its own, since nothing clears the field a second
+later; it is a guard against a typo at write time, not a guarantee at read time. Two exercises may
+name one page, and a `where('pageId','==',…)` guard would not close that either: a Firestore
+read-write transaction locks the documents it reads, not the query range, which is the same fact
+`PagesRepository`'s slug docblock records.
 
 `GET /api/h5p/temp-files/*` is on the other side of that line and is `@Roles('editor')`, along with
 `GET` and `POST /api/h5p/ajax`, `GET /api/h5p/temp/:token/*` and the four routes that load and save
@@ -513,7 +582,8 @@ establish that a browser loads the file — there is no browser harness in this 
 test here can create one.
 
 `GET /api/h5p/content` is that enumeration, and it satisfies the invariant by being role-guarded:
-it lives on `H5pController`, where every route is `@Roles('editor')`, and the guard is pinned per
+it lives on `H5pController`, where every route is `@Roles('editor')` — the upload, the two reads,
+the delete and the two page writes `POST content/:id/attach|detach` — and the guard is pinned per
 route by the metadata block in `h5p.controller.spec.ts`, so relaxing it to `@Public()` fails a unit
 test rather than quietly widening the public surface.
 

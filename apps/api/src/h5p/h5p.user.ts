@@ -1,4 +1,23 @@
+import { UnauthorizedException } from '@nestjs/common';
 import type { IUser } from '@lumieducation/h5p-server';
+import type { AuthenticatedUser } from '../auth/firebase-auth.guard.js';
+
+/**
+ * The verified caller, for the handlers that record *who* acted rather than
+ * only acting on their behalf.
+ *
+ * The global `FirebaseAuthGuard` makes the `undefined` branch unreachable; this
+ * narrows a type `CurrentUser` cannot guarantee on its own. One definition for
+ * the whole module, in the file that already owns "who the caller is here":
+ * both H5P controllers had a copy, and two copies are two answers to what an
+ * absent caller means.
+ */
+export function requireCaller(caller?: AuthenticatedUser): AuthenticatedUser {
+  if (!caller) {
+    throw new UnauthorizedException();
+  }
+  return caller;
+}
 
 /**
  * The `IUser` every H5P library call is handed on behalf of an authenticated

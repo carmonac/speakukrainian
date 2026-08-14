@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   H5P_PACKAGE_EXTENSION,
   MAX_H5P_UPLOAD_BYTES,
+  attachH5pContentSchema,
   createH5pContentSchema,
   formatMaxH5pUploadSize,
   h5pContentSchema,
@@ -199,9 +200,9 @@ describe('saveH5pContentSchema', () => {
 
 describe('updateH5pContentSchema', () => {
   it('carries the three fields a save recomputes and nothing else', () => {
-    // `pageId` in particular: it is `null` today, but attaching an exercise to
-    // a page is the first thing the admin exercise screen does, and a save
-    // that rewrote the row would silently detach it.
+    // `pageId` in particular: it is written by the attach and detach routes, so
+    // a save that rewrote the row from its own fields would silently detach an
+    // exercise from the page an author had just attached it to.
     expect(Object.keys(updateH5pContentSchema.shape).sort()).toEqual([
       'mainLibrary',
       'sizeBytes',
@@ -221,5 +222,37 @@ describe('updateH5pContentSchema', () => {
       mainLibrary: 'H5P.MultiChoice 1.16',
       sizeBytes: 8192,
     });
+  });
+});
+
+describe('attachH5pContentSchema', () => {
+  it('accepts the one field the attach route carries', () => {
+    expect(attachH5pContentSchema.parse({ pageId: 'abc-123' })).toEqual({ pageId: 'abc-123' });
+  });
+
+  it('refuses a body that also names another field of the row', () => {
+    // The whole point of the route: it can write `pageId` and nothing else. A
+    // plain `object` would strip `title` and answer 200 for an edit that never
+    // happened, which is worse than refusing it.
+    expect(attachH5pContentSchema.safeParse({ pageId: 'abc-123', title: 'hacked' }).success).toBe(
+      false,
+    );
+    expect(
+      attachH5pContentSchema.safeParse({ pageId: 'abc-123', storagePath: 'h5p/elsewhere' }).success,
+    ).toBe(false);
+  });
+
+  it('refuses a null page id, because detaching is its own route', () => {
+    expect(attachH5pContentSchema.safeParse({ pageId: null }).success).toBe(false);
+  });
+
+  it.each([
+    ['nothing at all', {}],
+    ['an empty id', { pageId: '' }],
+    ['a path segment', { pageId: '../other' }],
+    ['a slash', { pageId: 'pages/abc' }],
+    ['an id past the document-id length', { pageId: 'p'.repeat(129) }],
+  ])('refuses a body carrying %s', (_shape, body) => {
+    expect(attachH5pContentSchema.safeParse(body).success).toBe(false);
   });
 });

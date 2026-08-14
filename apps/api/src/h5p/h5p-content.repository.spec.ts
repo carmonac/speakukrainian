@@ -295,10 +295,9 @@ describe('H5pContentRepository.update', () => {
   });
 
   it('keeps the page the exercise is attached to, and where its files live', async () => {
-    // The destructive failure mode: `pageId` is `null` today, but attaching an
-    // exercise to a page is the first thing the admin exercise screen does,
-    // and a row rewritten from the save's own fields would detach it with
-    // nothing else going red.
+    // The destructive failure mode: `setPageId` is what attaches an exercise to
+    // a page, and a row rewritten from the save's own fields would detach it
+    // with nothing else going red.
     const { firestore, docs } = createFirestoreDouble();
     seed(docs);
 
@@ -339,6 +338,183 @@ describe('H5pContentRepository.update', () => {
     await new H5pContentRepository(firestore).update(INPUT.id, PATCH, 'editor-2');
 
     expect(docs.get(`h5pContent/${INPUT.id}`)).not.toHaveProperty('id');
+  });
+});
+
+describe('H5pContentRepository.setPageId', () => {
+  const PAGE = 'page-the-exercise-is-attached-to';
+  const OTHER_PAGE = 'another-page-entirely';
+  const SEEDED_AT = '2026-04-05T06:07:08.000Z';
+
+  /** A stored row, attached or not, plus the page documents the double holds. */
+  function seed(
+    docs: Map<string, Record<string, unknown>>,
+    options: { pageId?: string | null; pages?: string[] } = {},
+  ): void {
+    docs.set(
+      `h5pContent/${INPUT.id}`,
+      toDocumentData({
+        ...INPUT,
+        pageId: options.pageId ?? null,
+        audit: {
+          createdAt: SEEDED_AT,
+          createdBy: 'editor-1',
+          updatedAt: SEEDED_AT,
+          updatedBy: 'editor-1',
+        },
+      }),
+    );
+    for (const pageId of options.pages ?? []) {
+      docs.set(`pages/${pageId}`, { slug: 'a-page' });
+    }
+  }
+
+  const rowOf = (docs: Map<string, Record<string, unknown>>): Record<string, unknown> =>
+    docs.get(`h5pContent/${INPUT.id}`) ?? {};
+
+  const auditOf = (docs: Map<string, Record<string, unknown>>): Record<string, unknown> =>
+    (rowOf(docs).audit ?? {}) as Record<string, unknown>;
+
+  it('attaches an exercise to a page and leaves every other field alone', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs, { pages: [PAGE] });
+    const before = structuredClone(rowOf(docs));
+
+    const result = await new H5pContentRepository(firestore).setPageId(INPUT.id, PAGE, 'editor-2');
+
+    expect(result).toMatchObject({ ok: true, content: { pageId: PAGE } });
+    expect(rowOf(docs)).toMatchObject({
+      pageId: PAGE,
+      title: INPUT.title,
+      mainLibrary: INPUT.mainLibrary,
+      sizeBytes: INPUT.sizeBytes,
+      storagePath: INPUT.storagePath,
+    });
+    // Who created it survives; who changed it moves.
+    expect(auditOf(docs)).toMatchObject({
+      createdAt: SEEDED_AT,
+      createdBy: 'editor-1',
+      updatedBy: 'editor-2',
+    });
+    expect(auditOf(docs).updatedAt).not.toBe(SEEDED_AT);
+    // The write added no field the row did not already have.
+    expect(Object.keys(rowOf(docs)).sort()).toEqual(Object.keys(before).sort());
+  });
+
+  it('detaches an exercise, leaving the row in place with everything else untouched', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs, { pageId: PAGE, pages: [PAGE] });
+
+    const result = await new H5pContentRepository(firestore).setPageId(INPUT.id, null, 'editor-2');
+
+    expect(result).toMatchObject({ ok: true, content: { pageId: null } });
+    expect(rowOf(docs)).toMatchObject({
+      pageId: null,
+      title: INPUT.title,
+      mainLibrary: INPUT.mainLibrary,
+      sizeBytes: INPUT.sizeBytes,
+      storagePath: INPUT.storagePath,
+    });
+    expect(auditOf(docs)).toMatchObject({ createdAt: SEEDED_AT, createdBy: 'editor-1' });
+  });
+
+  it('detaches without any page document existing anywhere', async () => {
+    // The outcome-shaped way of asserting that detach reads no page: there is
+    // none to read, and the page an author is escaping from is usually the one
+    // that was deleted.
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs, { pageId: PAGE });
+
+    await expect(
+      new H5pContentRepository(firestore).setPageId(INPUT.id, null, 'editor-2'),
+    ).resolves.toMatchObject({ ok: true, content: { pageId: null } });
+    expect(rowOf(docs)).toMatchObject({ pageId: null });
+  });
+
+  it('reports an id nothing was stored under, and writes nothing', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    docs.set(`pages/${PAGE}`, { slug: 'a-page' });
+
+    const result = await new H5pContentRepository(firestore).setPageId(INPUT.id, PAGE, 'editor-2');
+
+    expect(result).toEqual({ ok: false, reason: 'content-not-found' });
+    expect(docs.has(`h5pContent/${INPUT.id}`)).toBe(false);
+  });
+
+  it('refuses a page nothing was stored under, and writes nothing', async () => {
+    // A back-reference allowed to name nothing answers no question, and the
+    // failure would be silent.
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs);
+    const before = structuredClone(rowOf(docs));
+
+    const result = await new H5pContentRepository(firestore).setPageId(INPUT.id, PAGE, 'editor-2');
+
+    expect(result).toEqual({ ok: false, reason: 'page-not-found' });
+    expect(rowOf(docs)).toEqual(before);
+  });
+
+  it('refuses to move an exercise that is already attached, naming the page it is on', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs, { pageId: PAGE, pages: [PAGE, OTHER_PAGE] });
+    const before = structuredClone(rowOf(docs));
+
+    const result = await new H5pContentRepository(firestore).setPageId(
+      INPUT.id,
+      OTHER_PAGE,
+      'editor-2',
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'attached-elsewhere', pageId: PAGE });
+    expect(rowOf(docs)).toEqual(before);
+  });
+
+  it('attaching to the page it already names writes nothing at all', async () => {
+    // A retry after a dropped response must not read as a fresh edit: the
+    // exercise was not changed, so `audit.updatedAt` must not move.
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs, { pageId: PAGE, pages: [PAGE] });
+    const before = structuredClone(rowOf(docs));
+
+    const result = await new H5pContentRepository(firestore).setPageId(INPUT.id, PAGE, 'editor-2');
+
+    expect(result).toMatchObject({ ok: true, content: { pageId: PAGE } });
+    expect(rowOf(docs)).toEqual(before);
+    expect(rowOf(docs).audit).toMatchObject({ updatedAt: SEEDED_AT, updatedBy: 'editor-1' });
+  });
+
+  it('re-attaches to a page that has since been deleted, rather than refusing it', async () => {
+    // Pins the ordering: the no-write short-circuit runs before the page read,
+    // because nothing clears `pageId` when a page is deleted, so this row is a
+    // normal state and a refusal here would be noise.
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs, { pageId: PAGE });
+    const before = structuredClone(rowOf(docs));
+
+    const result = await new H5pContentRepository(firestore).setPageId(INPUT.id, PAGE, 'editor-2');
+
+    expect(result).toMatchObject({ ok: true, content: { pageId: PAGE } });
+    expect(rowOf(docs)).toEqual(before);
+  });
+
+  it('detaching a row that is already detached writes nothing', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs);
+    const before = structuredClone(rowOf(docs));
+
+    const result = await new H5pContentRepository(firestore).setPageId(INPUT.id, null, 'editor-2');
+
+    expect(result).toMatchObject({ ok: true, content: { pageId: null } });
+    expect(rowOf(docs)).toEqual(before);
+  });
+
+  it('keeps the id out of the document body', async () => {
+    const { firestore, docs } = createFirestoreDouble();
+    seed(docs, { pages: [PAGE] });
+
+    await new H5pContentRepository(firestore).setPageId(INPUT.id, PAGE, 'editor-2');
+
+    expect(rowOf(docs)).not.toHaveProperty('id');
   });
 });
 
