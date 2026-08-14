@@ -192,12 +192,18 @@ export class H5pService {
   }
 
   /**
-   * Clears the page an exercise names, unconditionally.
+   * Clears the page an exercise names, whatever has become of that page.
    *
-   * It reads no page and can refuse for no reason but a missing exercise, which
-   * is what makes it the escape from `attachedElsewhereMessage`: the page an
-   * exercise is stuck on may itself be deleted, so a detach that checked
-   * anything about it could leave an author with no way out.
+   * **It reads no page**, so nothing about the page an exercise is stuck on can
+   * refuse it — which is what makes it the escape from
+   * `attachedElsewhereMessage`: that page may itself have been deleted, and a
+   * detach that checked anything about it could leave an author with no way out.
+   *
+   * What it can still refuse for is the exercise's own row: absent, or stored in
+   * a shape `fromDocument` cannot parse, which is a 500 exactly as a save or a
+   * read of the same row is. `H5pContentRepository.exists` buys the delete path
+   * a parse-free existence read and `setPageId` cannot use one, because it needs
+   * the stored `pageId` and `audit` to decide and to write at all.
    */
   async detachFromPage(contentId: string, actorId: string): Promise<H5pContent> {
     const result = await this.repository.setPageId(contentId, null, actorId);
