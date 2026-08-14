@@ -9,7 +9,6 @@ import {
   Param,
   Post,
   Query,
-  UnauthorizedException,
   UploadedFile,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -30,6 +29,7 @@ import { Roles } from '../auth/roles.decorator.js';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { H5pPackageUpload } from './h5p.upload.decorator.js';
 import { H5pService } from './h5p.service.js';
+import { requireCaller } from './h5p.user.js';
 
 /**
  * The authoring half of H5P: installing an uploaded package, and reading or
@@ -133,19 +133,4 @@ export class H5pController {
   remove(@Param('id', new ZodValidationPipe(documentIdSchema)) id: string): Promise<void> {
     return this.h5p.remove(id);
   }
-}
-
-/**
- * The global `FirebaseAuthGuard` makes an absent caller unreachable; this
- * narrows a type `CurrentUser` cannot guarantee on its own.
- *
- * One helper rather than the branch repeated per handler, so this file has a
- * single place that decides what an absent caller means —
- * `h5p-editor.controller.ts` carries the same helper for the same reason.
- */
-function requireCaller(caller?: AuthenticatedUser): AuthenticatedUser {
-  if (!caller) {
-    throw new UnauthorizedException();
-  }
-  return caller;
 }

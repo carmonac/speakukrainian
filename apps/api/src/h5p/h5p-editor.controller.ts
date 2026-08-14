@@ -11,7 +11,6 @@ import {
   Query,
   Req,
   Res,
-  UnauthorizedException,
   UploadedFiles,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -46,7 +45,7 @@ import { H5pAjaxUpload } from './h5p.upload.decorator.js';
 import { TEMP_FILES_TOKEN_PATH } from './h5p.url-generator.js';
 import { H5pUrlToken } from './h5p.url-token.decorator.js';
 import { H5P_URL_TOKEN_PARAM } from './h5p.url-token.js';
-import { h5pUserFor } from './h5p.user.js';
+import { h5pUserFor, requireCaller } from './h5p.user.js';
 
 /**
  * A temporary file belongs to one editor, lives about two hours and is
@@ -379,23 +378,10 @@ export class H5pEditorController {
 }
 
 /**
- * The verified caller, for the routes that record *who* saved rather than only
- * acting on their behalf: `save` stamps the audit and builds the `IUser`
- * itself, so it needs the uid and not an `IUser`.
- *
- * The global `FirebaseAuthGuard` makes the `undefined` branch unreachable; it
- * narrows a type `CurrentUser` cannot guarantee on its own, exactly as
- * `H5pController.upload` does. One place decides what an absent caller means,
- * because two would be two answers to it.
+ * The H5P `IUser` for the verified caller. The save routes take the caller
+ * itself rather than this, because `save` stamps the audit and builds the
+ * `IUser` for the library, so it needs the uid and not an `IUser`.
  */
-function requireCaller(caller: AuthenticatedUser | undefined): AuthenticatedUser {
-  if (!caller) {
-    throw new UnauthorizedException();
-  }
-  return caller;
-}
-
-/** The H5P `IUser` for the verified caller. */
 function callerOf(caller: AuthenticatedUser | undefined): IUser {
   const { uid, email } = requireCaller(caller);
   return h5pUserFor(uid, email);
