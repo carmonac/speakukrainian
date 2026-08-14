@@ -401,7 +401,25 @@ standing. The question is still not answerable, for two independent reasons:
 
 **The rule, and it is the one thing to carry away: nothing may authorize a read on `pageId`.** A
 reader that needs to know what is true reads the page. Its legitimate uses are diagnostic — showing
-an author that an exercise looks attached, and filtering the admin index.
+an author that an exercise looks attached, and filtering the admin index. **This paragraph is the
+only statement of that rule**: `h5pContentSchema.pageId` and `H5pService.attachToPage` point at it
+rather than restate it, because #63 shipped it as three paraphrases at three strengths and two of
+them had drifted into "nothing reads this field at all" before the branch was reviewed.
+
+Something does read it, and it is the one permitted reader: **the attach path's own conflict guard**.
+`H5pContentRepository.setPageId` reads the stored `pageId` inside its transaction to answer the 409
+below instead of moving an exercise silently. That is the field's sole writer reading it to decide
+whether to write, not a second reader deciding what is true about a page, and a stale value there is
+survivable because the way out of that 409 is `detach`, which reads no page at all.
+
+**One half of the rule is enforced and the rest is convention, and it is worth knowing which is
+which.** Enforced: `pageId` never crosses a `@Public()` boundary, because every route that answers
+with an `h5pContent` row is `@Roles('editor')`, pinned per route by `h5p.controller.spec.ts`'s
+metadata table — the play and content-file routes answer with a player model and with bytes, not
+with the row. Enforced too: the divergence itself, by the e2e that attaches, deletes the page and
+asserts the row still names it, so a cascade added later fails a test. Convention: that no admin or
+public screen reads the field to decide what to render or who may see it. Nothing in the API can
+enforce that, and no test worth inventing would; it rests on this paragraph and on review.
 
 The invariant this places on future work: **any route that lists or searches `h5pContent` must be
 role-guarded, or must filter by the publication state of the page that references it.** A stronger

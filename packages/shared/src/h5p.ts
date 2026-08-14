@@ -23,9 +23,12 @@ export const h5pContentSchema = z.object({
    * field is deliberately not kept consistent with it — nothing clears it when
    * the page is deleted or when a page body stops naming this exercise — so it
    * may name a page that no longer exists, or one that now names another
-   * exercise. **Nothing may read it to decide what is true**; a reader that
-   * needs the truth reads the page. Its uses are diagnostic: showing an author
-   * that an exercise looks attached, and filtering the admin index.
+   * exercise. **What a reader may then do with it is ADR-007's rule, under
+   * _Who may read H5P content_, and only there** — including which single
+   * reader is exempt from it and which half of it a test enforces. Read it
+   * before reading this field anywhere. It is deliberately not restated here:
+   * it was, at three sites in three strengths, and the paraphrases had drifted
+   * apart by the time they were first reviewed.
    */
   pageId: z.string().min(1).nullable().default(null),
   /** Storage prefix holding the content's files. */
