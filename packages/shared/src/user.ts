@@ -11,6 +11,13 @@ export type UserRole = z.infer<typeof userRoleSchema>;
  * why the alphabet is left to the auth provider. Firebase will happily create
  * `__name__`, which Firestore then refuses to store, and that pair is what used
  * to answer 500 on `PATCH /api/users/:uid/role`.
+ *
+ * It guards the **arriving** uid only. `userProfileSchema.id` below stays
+ * `z.string().min(1)` on purpose, and tightening it to match would be a
+ * regression rather than a tidy-up: this rule deliberately over-rejects — see
+ * ADR-018 — so `__foo` fails it while Firestore stores such a document happily,
+ * and a stored profile that failed the read schema would 500 the whole admin
+ * user list on account of one row (ADR-012).
  */
 export const userIdSchema = externalDocumentIdSchema;
 

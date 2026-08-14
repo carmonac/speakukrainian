@@ -171,36 +171,20 @@ export const isoDateTimeSchema = z.iso.datetime({ offset: true });
  * not be `.` or `..`, may not contain `/`, may not be of the reserved `__…__`
  * form, and is capped at 1500 bytes.
  *
- * It exists for the ids this system does **not** mint. A Firebase uid is the
- * only one — `UsersRepository` keys its collection by it — and its alphabet
- * belongs to the auth provider: a subject carrying `:` or `|` is a legitimate
- * uid, so {@link documentIdSchema}'s fixed alphabet would turn a real role
- * change into a 400. What Firestore refuses is a different question from what
- * an id may be made of, and only the first is this schema's to answer.
- * `assertSafeOwnerId` in the API's `h5p.paths.ts` draws the same distinction
- * for a *storage path* segment and comes out the other way, because a path is
- * not an id: `__name__` is a perfectly legal object name.
+ * The cap is 128 rather than Firestore's 1500 because 128 characters is also
+ * Firebase Auth's own cap on a uid, so this cannot refuse a real one, and a
+ * UTF-16 code unit is at most 4 UTF-8 bytes, so nothing has to count bytes.
  *
- * The rules live on a schema rather than on a guard inside the repositories,
- * because Firestore does **not** refuse a reserved id at `collection.doc()` —
- * that call happily returns a reference, and the refusal comes back
- * asynchronously from the server as `3 INVALID_ARGUMENT: Resource id
- * "__name__" is invalid because it is reserved`. By the time it exists it is
- * inside a transaction, it is a plain `Error` rather than an `HttpException`,
- * and `HttpExceptionFilter` can only log it as unhandled and answer 500 — for
- * input validation exists to refuse. At a pipe it is a 400 before any I/O.
+ * It is the schema for the ids this system does **not** mint: a Firebase uid —
+ * `UsersRepository` keys its collection by one — and the pagination cursor over
+ * any collection keyed by one. Their alphabet belongs to the auth provider, so
+ * {@link documentIdSchema} would turn a legitimate subject carrying `:` or `|`
+ * into a 400. What Firestore refuses is a different question from what an id
+ * may be made of, and only the first is this schema's to answer.
  *
- * The reserved rule is written as a `__` **prefix** rather than Firestore's
- * documented `__.*__` because the documented form is not the line the server
- * actually draws: the emulator refuses `__name__` and `__foo__` but accepts
- * `__`, `___` and `____`. The prefix is a superset of the documented regex and
- * of what the emulator enforces, and over-rejecting `__foo` costs nothing —
- * no id reaching this system begins with `__`.
- *
- * 128 rather than Firestore's 1500 because 128 characters is also Firebase
- * Auth's own cap on a uid, so this cannot refuse a real one; and a UTF-16 code
- * unit is at most 4 UTF-8 bytes, so 128 of them stay inside the byte cap
- * without anything having to count bytes.
+ * ADR-018 records the rest: which of the two schemas a new route takes, why the
+ * reserved rule is a `__` prefix rather than Firestore's documented `__.*__`,
+ * and why it is enforced at the pipe rather than in a repository.
  */
 export const externalDocumentIdSchema = z
   .string()
@@ -212,13 +196,13 @@ export const externalDocumentIdSchema = z
 
 /**
  * A Firestore document id as this system mints them: everything Firestore
- * refuses, plus a fixed alphabet. Every id here is a Firestore auto-id, a
+ * refuses, plus a fixed alphabet. Every such id is a Firestore auto-id, a
  * `randomUUID()` or a slug-shaped constant, so the alphabet is free to be
- * narrow — and narrow means one rule to read instead of four, at the schema
- * every id-carrying route funnels through.
+ * narrow — and narrow means one rule to read at the schema every id-carrying
+ * route funnels through.
  *
- * The one id it is deliberately **not** put on is a Firebase uid; see
- * {@link externalDocumentIdSchema}.
+ * The ids it is deliberately **not** put on are the ones something else mints;
+ * see {@link externalDocumentIdSchema} and ADR-018.
  */
 export const documentIdSchema = externalDocumentIdSchema.regex(
   /^[A-Za-z0-9_-]+$/,
@@ -269,8 +253,12 @@ export const paginationQuerySchema = z.object({
   /**
    * The id of the last document of the previous page —
    * `BaseRepository.paginate` hands it straight to `collection.doc(cursor)` —
-   * so it takes the document id rule. A `nextCursor` this API produced is a
-   * document id of the collection being paged and always parses back.
+   * so it is bounded by what Firestore can address, and by that alone. It takes
+   * the **external** rule because one paginated collection is keyed by ids this
+   * system does not mint: `GET /api/users` pages the profile documents, whose
+   * ids are Firebase uids, so it can hand back `auth0|5f2c…` as a `nextCursor`
+   * and has to accept the same value back. A cursor this API produced always
+   * parses, which is only true of the looser schema.
    *
    * `?cursor=` with no value is a 400 and not "start from the beginning", which
    * `paginate`'s `if (cursor)` used to make of it while this field was an
@@ -279,7 +267,7 @@ export const paginationQuerySchema = z.object({
    * `sectionId`, `recurrenceId` — so an empty cursor was the odd one out, and a
    * caller with no cursor omits the parameter rather than sending it blank.
    */
-  cursor: documentIdSchema.optional(),
+  cursor: externalDocumentIdSchema.optional(),
 });
 export type PaginationQuery = z.infer<typeof paginationQuerySchema>;
 

@@ -3,7 +3,12 @@ import type { Firestore } from '@google-cloud/firestore';
 import type { Auth } from 'firebase-admin/auth';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { COLLECTIONS, userProfileSchema, type UserProfile } from '@speakukrainian/shared';
+import {
+  COLLECTIONS,
+  userProfileSchema,
+  type Page,
+  type UserProfile,
+} from '@speakukrainian/shared';
 import { FIRESTORE } from '../src/infra/firestore/firestore.tokens.js';
 import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
 
@@ -17,6 +22,13 @@ const RESERVED_UID = '__name__';
 
 /** A uid from an identity provider that is not Firebase — legal, and not a Firestore auto-id shape. */
 const IMPORTED_UID = 'auth0|5f2c1b2e6f7a4c2b';
+
+/**
+ * A second profile, with an email that sorts after the imported one — the list
+ * is ordered by email — so a page ending at the imported profile has a page
+ * after it and therefore a `nextCursor`.
+ */
+const NEIGHBOUR_UID = 'auth0|9b8a7c6d5e4f3a2b';
 
 /** 20 characters, the shape of a Firestore auto-id, and no account has it. */
 const UNKNOWN_ID = 'zzzz0000zzzz0000zzzz';
@@ -46,6 +58,15 @@ describe('users (e2e)', () => {
     await auth.createUser({ uid, email });
   };
 
+  const list = (query: string): request.Test =>
+    request(server()).get(`/api/users${query}`).set('Authorization', bearer(admin));
+
+  const listProfiles = async (query: string): Promise<Page<UserProfile>> => {
+    const response = await list(query).expect(200);
+    const page = response.body as Page<UserProfile>;
+    return { ...page, items: page.items.map((item) => userProfileSchema.parse(item)) };
+  };
+
   /** The claim `RolesGuard` reads, as a value an assertion can compare. */
   const roleClaim = async (uid: string): Promise<unknown> =>
     (await auth.getUser(uid)).customClaims?.['role'] as unknown;
@@ -61,23 +82,27 @@ describe('users (e2e)', () => {
     admin = await signInAs(auth, 'admin');
     // A run killed before its teardown would otherwise fail the next one on a
     // uid that is already taken.
-    await Promise.all([dropAccount(RESERVED_UID), dropAccount(IMPORTED_UID)]);
+    await Promise.all([RESERVED_UID, IMPORTED_UID, NEIGHBOUR_UID].map((uid) => dropAccount(uid)));
     await Promise.all([
       createAccount(RESERVED_UID, 'reserved-uid@e2e.local'),
       createAccount(IMPORTED_UID, 'imported-uid@e2e.local'),
+      createAccount(NEIGHBOUR_UID, 'zzz-neighbour-uid@e2e.local'),
     ]);
   });
 
   afterAll(async () => {
     if (firestore) {
-      // Only the imported account can have a profile document: writing one
-      // under the reserved uid is precisely what Firestore refuses.
-      await firestore.collection(COLLECTIONS.users).doc(IMPORTED_UID).delete();
+      // Only these two can have a profile document: writing one under the
+      // reserved uid is precisely what Firestore refuses.
+      await Promise.all(
+        [IMPORTED_UID, NEIGHBOUR_UID].map((uid) =>
+          firestore.collection(COLLECTIONS.users).doc(uid).delete(),
+        ),
+      );
     }
     if (auth) {
       await Promise.all([
-        dropAccount(RESERVED_UID),
-        dropAccount(IMPORTED_UID),
+        ...[RESERVED_UID, IMPORTED_UID, NEIGHBOUR_UID].map((uid) => dropAccount(uid)),
         admin ? auth.deleteUser(admin.uid) : Promise.resolve(),
       ]);
     }
@@ -114,12 +139,32 @@ describe('users (e2e)', () => {
   });
 
   it('refuses a list cursor that is not a document id, including an empty one', async () => {
-    const list = (query: string): request.Test =>
-      request(server()).get(`/api/users${query}`).set('Authorization', bearer(admin));
-
     await list('').expect(200);
     await list(`?cursor=${RESERVED_UID}`).expect(400);
     // A deliberate 2xx → 400: `?cursor=` used to page from the beginning.
     await list('?cursor=').expect(400);
+  });
+
+  it('takes back the provider-shaped cursor it hands out for this collection', async () => {
+    // The users collection is keyed by uids, so `nextCursor` is whatever an
+    // auth provider minted. Under `documentIdSchema` the API answered 400 to
+    // the very cursor it had just produced, and page two of the admin user list
+    // was unreachable for an imported account.
+    await setRole(IMPORTED_UID, 'editor').expect(200);
+    await setRole(NEIGHBOUR_UID, 'editor').expect(200);
+
+    const all = await listProfiles('?limit=100');
+    const index = all.items.findIndex((profile) => profile.id === IMPORTED_UID);
+    expect(index).toBeGreaterThanOrEqual(0);
+    // Ordered by email, and the neighbour's sorts last, so there is a page after.
+    expect(all.items.length).toBeGreaterThan(index + 1);
+
+    const firstPage = await listProfiles(`?limit=${index + 1}`);
+    expect(firstPage.nextCursor).toBe(IMPORTED_UID);
+
+    const rest = await listProfiles(`?limit=100&cursor=${encodeURIComponent(IMPORTED_UID)}`);
+    expect(rest.items.map((profile) => profile.id)).toEqual(
+      all.items.slice(index + 1).map((profile) => profile.id),
+    );
   });
 });

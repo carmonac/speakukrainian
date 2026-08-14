@@ -2,7 +2,15 @@ import { H5pError, LibraryName } from '@lumieducation/h5p-server';
 import type { ContentId, ILibraryName } from '@lumieducation/h5p-server';
 import { STORAGE_PREFIXES } from '@speakukrainian/shared';
 
-/** Content ids address a storage prefix, so they may only be path-safe atoms. */
+/**
+ * Content ids address a storage prefix, so they may only be path-safe atoms.
+ *
+ * It looks like `documentIdSchema`'s character class and is not it: this bounds
+ * a **Cloud Storage path segment**, where `__name__` is a perfectly legal
+ * object name and a `|` is not. Replacing it with the shared schema would swap
+ * one rule for another that happens to have the same alphabet and a different
+ * reason, so the two are left to move independently (ADR-018).
+ */
 const SAFE_CONTENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**

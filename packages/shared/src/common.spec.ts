@@ -335,6 +335,14 @@ describe('paginationQuerySchema', () => {
     });
   });
 
+  it('accepts a cursor over a collection keyed by ids this system did not mint', () => {
+    // `GET /api/users` pages documents whose ids are Firebase uids, so it can
+    // hand back this exact value as a `nextCursor`. On `documentIdSchema` the
+    // API would 400 the cursor it had just produced.
+    expect(paginationQuerySchema.parse({ cursor: 'auth0|5f2c1b2e' }).cursor).toBe('auth0|5f2c1b2e');
+    expect(documentIdSchema.safeParse('auth0|5f2c1b2e').success).toBe(false);
+  });
+
   it.each(['__name__', 'a/b', '..'])('refuses a cursor of %s', (cursor) => {
     // A cursor goes straight to `collection.doc(cursor).get()`, so an
     // unconstrained one 500s four list routes.
