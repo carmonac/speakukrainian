@@ -11,15 +11,21 @@ export type RangeCallback = (fileSize: number) => { start: number; end: number }
 /**
  * Cross-origin, deliberately, and only on these routes.
  *
- * `helmet` sets `Cross-Origin-Resource-Policy: same-origin` for the whole API,
- * which is right for JSON that only the admin reads and fatal for these: the
- * admin runs on :4200 and the API on :8080, so a browser refuses every
- * `<script>`, `<link>`, `<img>` and `<audio>` load from here — 200 in a test
- * client, blocked in Chrome. Only four routes serve subresources to another
- * origin — content files, library files, and the core and editor client trees —
- * so the override lives here rather than in `main.ts`, where it would relax the
- * whole API. `play` is not one of them: it is JSON the admin reads with a CORS
- * `fetch`, and it keeps helmet's `same-origin`.
+ * `helmet` sets `Cross-Origin-Resource-Policy: same-origin` for the whole API
+ * (`common/security-headers.ts`), which is right for JSON that only the admin
+ * reads and fatal for these: the admin runs on :4200 and the API on :8080, so a
+ * browser refuses every `<script>`, `<link>`, `<img>` and `<audio>` load from
+ * here — 200 in a test client, blocked in Chrome. **Six routes** serve
+ * subresources to another origin — content files, library files, the core and
+ * editor client trees, and the two temporary-file routes the authoring widget
+ * previews an upload through — so the override lives here rather than in
+ * `main.ts`, where it would relax the whole API. `play` is not one of them: it
+ * is JSON the admin reads with a CORS `fetch`, and it keeps helmet's
+ * `same-origin`.
+ *
+ * `createTestApp` installs the same helmet middleware, so the e2e assertions on
+ * these values are assertions that the route beats the global default rather
+ * than that it sets a header nobody contradicted.
  *
  * Exported because the asset routes send their bytes with `res.sendFile`
  * instead of a stream from here, and a second copy of the policy is how the

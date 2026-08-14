@@ -20,6 +20,8 @@ import { H5pContentStorage } from './h5p-content.storage.js';
 import { H5pEditorController } from './h5p-editor.controller.js';
 import { H5pEditorService } from './h5p-editor.service.js';
 import { H5pLibraryStorage } from './h5p-library.storage.js';
+import { H5pUrlTokenGuard } from './h5p-url-token.guard.js';
+import { H5pUrlTokenService } from './h5p-url-token.service.js';
 import { H5pPublicController } from './h5p-public.controller.js';
 import { H5pServeService } from './h5p-serve.service.js';
 import { H5pTemporaryStorage } from './h5p-temporary.storage.js';
@@ -42,6 +44,7 @@ import {
   buildTranslationFunction,
   loadUpstreamTranslations,
 } from './h5p.translations.js';
+import { createH5pUrlGenerator } from './h5p.url-generator.js';
 import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
 
 /**
@@ -111,6 +114,7 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
         H5pContentStorage,
         H5P_TEMPORARY_STORAGE,
         H5P_TRANSLATE,
+        H5pUrlTokenService,
       ],
       useFactory: async (
         config: H5PConfig,
@@ -118,6 +122,7 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
         contentStorage: H5pContentStorage,
         temporaryStorage: ITemporaryFileStorage,
         translate: ITranslationFunction,
+        tokens: H5pUrlTokenService,
       ): Promise<H5PEditor> => {
         // `InMemoryStorage` is only reachable through `fsImplementations`; it is
         // not a named export of the package root.
@@ -169,6 +174,15 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
         // here rather than in a route because it is shared state on a
         // singleton — a route that set it per request is a route the next route
         // can forget.
+        //
+        // **The URL generator is the seventh positional argument**, straight
+        // after `translationCallback`, and the same warning applies as on
+        // `H5P_PLAYER`'s two `undefined`s: get the position wrong and the
+        // server still boots, still answers every route, and serves ajax URLs
+        // with no token in them — which fails only in a browser. It is what
+        // puts the editing session's credential into `integration.ajaxPath` and
+        // `integration.editor.ajaxPath`; `integration.editor.filesPath` cannot
+        // come from here, because `temporaryFiles()` takes no user.
         return new H5PEditor(
           keyValueStorage,
           config,
@@ -176,6 +190,7 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
           contentStorage,
           temporaryStorage,
           translate,
+          createH5pUrlGenerator(config, (uid) => tokens.mint(uid)),
         ).setRenderer((model: IEditorModel) => model);
       },
     },
@@ -219,7 +234,18 @@ import { H5pWorkingDirsModule } from './h5p.working-dirs.module.js';
     H5pService,
     H5pServeService,
     H5pEditorService,
+    H5pUrlTokenService,
+    H5pUrlTokenGuard,
   ],
-  exports: [H5P_EDITOR, H5P_PLAYER, H5P_CONFIG, H5pContentStorage, H5pLibraryStorage],
+  exports: [
+    H5P_EDITOR,
+    H5P_PLAYER,
+    H5P_CONFIG,
+    H5pContentStorage,
+    H5pLibraryStorage,
+    // `AppModule` registers the guard globally, so it has to be resolvable from
+    // outside this module.
+    H5pUrlTokenGuard,
+  ],
 })
 export class H5pModule {}

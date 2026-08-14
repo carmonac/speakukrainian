@@ -3,9 +3,9 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import helmet from 'helmet';
 import { AppModule } from './app.module.js';
 import { useJsonBodyParser } from './common/body-parser.js';
+import { securityHeaders } from './common/security-headers.js';
 import { loadConfig } from './config/configuration.js';
 
 async function bootstrap(): Promise<void> {
@@ -20,13 +20,7 @@ async function bootstrap(): Promise<void> {
   app.setGlobalPrefix('api', { exclude: ['healthz', 'readyz'] });
   app.enableShutdownHooks();
 
-  app.use(
-    helmet({
-      // The public site embeds H5P iframes served from this origin.
-      crossOriginEmbedderPolicy: false,
-      contentSecurityPolicy: env.NODE_ENV === 'production' ? undefined : false,
-    }),
-  );
+  app.use(securityHeaders(env.NODE_ENV));
 
   app.enableCors({
     origin: env.CORS_ORIGINS,

@@ -71,6 +71,28 @@ export const envSchema = z.object({
   H5P_BASE_URL: z.string().default('/api/h5p'),
 
   /**
+   * Signs the short-lived per-user credential the H5P editor's own client
+   * carries in the URLs it builds its requests from.
+   *
+   * Joubel's editor JavaScript runs in a srcless iframe and sends no
+   * `Authorization` header, so `integration.ajaxPath`,
+   * `integration.editor.ajaxPath` and `integration.editor.filesPath` carry an
+   * HMAC-SHA256 token instead. See `h5p.url-token.ts` for what it does and does
+   * not grant.
+   *
+   * **Required, with no default on purpose.** A server that boots with a
+   * placeholder signing key is worse than one that refuses to boot: the
+   * placeholder would be in this repository, so anybody could mint a token for
+   * any uid. `.env.example` ships the key with an empty value, which fails
+   * `min(32)`, so copying the example refuses the boot rather than starting on
+   * a shared secret.
+   *
+   * Rotating it invalidates every live editing session; an author's cost is a
+   * reload, and nothing is lost, because saving uses a bearer token.
+   */
+  H5P_URL_TOKEN_SECRET: z.string().min(32),
+
+  /**
    * How long a content or library file may deliver nothing at all before the
    * API gives up on it and answers.
    *

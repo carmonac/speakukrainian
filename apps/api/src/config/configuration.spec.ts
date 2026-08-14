@@ -4,6 +4,7 @@ import { loadConfig } from './configuration.js';
 const required = {
   GOOGLE_CLOUD_PROJECT: 'speakukrainian-local',
   STORAGE_BUCKET: 'speakukrainian-media',
+  H5P_URL_TOKEN_SECRET: 'a-signing-key-long-enough-to-be-one-0123456789',
 };
 
 describe('loadConfig', () => {
@@ -27,6 +28,22 @@ describe('loadConfig', () => {
 
   it('fails fast when a required setting is missing', () => {
     expect(() => loadConfig({ STORAGE_BUCKET: 'b' })).toThrow(/GOOGLE_CLOUD_PROJECT/);
+  });
+
+  it('refuses to boot without a signing key for the H5P URL token', () => {
+    // No default on purpose: a placeholder in this repository would let anyone
+    // mint a token for any uid. `.env.example` ships the key empty, so copying
+    // it produces exactly the first case here.
+    const { H5P_URL_TOKEN_SECRET: _omitted, ...withoutSecret } = required;
+
+    expect(() => loadConfig(withoutSecret)).toThrow(/H5P_URL_TOKEN_SECRET/);
+    expect(() => loadConfig({ ...required, H5P_URL_TOKEN_SECRET: '' })).toThrow(
+      /H5P_URL_TOKEN_SECRET/,
+    );
+    expect(() => loadConfig({ ...required, H5P_URL_TOKEN_SECRET: 'x'.repeat(31) })).toThrow(
+      /H5P_URL_TOKEN_SECRET/,
+    );
+    expect(loadConfig({ ...required, H5P_URL_TOKEN_SECRET: 'x'.repeat(32) })).toBeDefined();
   });
 
   it('rejects a storage endpoint that is not a URL', () => {

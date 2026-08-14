@@ -10,11 +10,17 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { COLLECTIONS, h5pSaveResultSchema, type H5pSaveResult } from '@speakukrainian/shared';
 import { H5pTemporaryStorage } from '../src/h5p/h5p-temporary.storage.js';
+import { H5pUrlTokenService } from '../src/h5p/h5p-url-token.service.js';
 import { H5P_CONFIG, H5P_EDITOR } from '../src/h5p/h5p.tokens.js';
+import {
+  H5P_URL_TOKEN_EXPIRED_MESSAGE,
+  H5P_URL_TOKEN_INVALID_MESSAGE,
+} from '../src/h5p/h5p.url-token.js';
 import { FIRESTORE } from '../src/infra/firestore/firestore.tokens.js';
 import { StorageService } from '../src/infra/storage/storage.service.js';
 import { authOf, createTestApp, signInAs, type TestUser } from './emulator.js';
 import {
+  CONTENT_FILE,
   DEP_LIBRARY_DIR,
   MAIN_LIBRARY,
   MAIN_LIBRARY_DIR,
@@ -159,11 +165,27 @@ interface IndexRow {
 /** The three fields `GET editor` answers with, read the way a client reads them. */
 interface EditorModelBody {
   integration: {
-    editor: { assets: { js: string[]; css: string[] }; nodeVersionId?: string; language: string };
+    /** `H5PEditor.getAjaxUrl` concatenates the action onto the end of this. */
+    ajaxPath: string;
+    editor: {
+      ajaxPath: string;
+      /** `H5P.getPath` composes `filesPath + '/' + <stored filename>`. */
+      filesPath: string;
+      assets: { js: string[]; css: string[] };
+      nodeVersionId?: string;
+      language: string;
+    };
     l10n: { H5P: Record<string, string> };
   };
   scripts: string[];
   styles: string[];
+}
+
+/** The three URLs Joubel's own client builds its requests from. */
+interface WidgetUrls {
+  ajaxPath: string;
+  editorAjaxPath: string;
+  filesPath: string;
 }
 
 describe('h5p editor ajax (e2e)', () => {
@@ -174,6 +196,8 @@ describe('h5p editor ajax (e2e)', () => {
   let editor: TestUser;
   /** A second editor, so "another editor cannot read this file" is a real claim. */
   let otherEditor: TestUser;
+  /** An editor whose claim is taken away mid-session, to prove the token is not a role grant. */
+  let demotedEditor: TestUser;
   let student: TestUser;
   let exercise: H5pSaveResult;
 
@@ -215,6 +239,52 @@ describe('h5p editor ajax (e2e)', () => {
     return path.startsWith('/api/h5p/') ? path : null;
   };
 
+  /**
+   * The path (and query) of a URL the model advertised, for supertest.
+   *
+   * Everything below drives **the URL the server generated**, never one built
+   * here: a hand-built URL would keep passing if the model stopped carrying a
+   * token, which is the whole thing these cases exist to notice.
+   */
+  const requestPathOf = (url: string): string => {
+    const path = apiPathOf(url);
+    if (path === null) {
+      throw new Error(`${url} is not a URL on this API`);
+    }
+    return path;
+  };
+
+  /** The three tokenised URLs out of one editor-model response. */
+  const widgetUrls = async (token = editor.idToken): Promise<WidgetUrls> => {
+    const model = (await editorModel(undefined, undefined, token).expect(200))
+      .body as EditorModelBody;
+
+    return {
+      ajaxPath: model.integration.ajaxPath,
+      editorAjaxPath: model.integration.editor.ajaxPath,
+      filesPath: model.integration.editor.filesPath,
+    };
+  };
+
+  /**
+   * Runs `work` with the live `H5PConfig.temporaryFileLifetime` moved.
+   *
+   * That setting is the token's lifetime, so this is how an expired editing
+   * session is reached without a test-only production API and without a fake
+   * clock inside a process that is also talking to the emulators. It is the
+   * same lever the sweep cases use, restored in a `finally` for the same reason.
+   */
+  const withTokenLifetime = async <T>(lifetimeMs: number, work: () => Promise<T>): Promise<T> => {
+    const config = app.get<H5PConfig>(H5P_CONFIG);
+    const original = config.temporaryFileLifetime;
+    config.temporaryFileLifetime = lifetimeMs;
+    try {
+      return await work();
+    } finally {
+      config.temporaryFileLifetime = original;
+    }
+  };
+
   const tempFile = (filename: string, token = editor.idToken) =>
     request(server())
       .get(`/api/h5p/temp-files/${filename}`)
@@ -241,7 +311,8 @@ describe('h5p editor ajax (e2e)', () => {
     auth = authOf(app);
     storage = app.get(StorageService);
     firestore = app.get<Firestore>(FIRESTORE);
-    [editor, otherEditor, student] = await Promise.all([
+    [editor, otherEditor, demotedEditor, student] = await Promise.all([
+      signInAs(auth, 'editor'),
       signInAs(auth, 'editor'),
       signInAs(auth, 'editor'),
       signInAs(auth, 'student'),
@@ -272,7 +343,7 @@ describe('h5p editor ajax (e2e)', () => {
       await Promise.all(
         createdContentIds.map((id) => storage.deleteByPrefix(`${CONTENT_PREFIX}${id}/`)),
       );
-      const owners = [editor, otherEditor].filter((user) => user !== undefined);
+      const owners = [editor, otherEditor, demotedEditor].filter((user) => user !== undefined);
       await Promise.all(owners.map((user) => storage.deleteByPrefix(`${TEMP_PREFIX}${user.uid}/`)));
     }
     if (firestore) {
@@ -282,7 +353,9 @@ describe('h5p editor ajax (e2e)', () => {
         ),
       );
     }
-    const created = [editor, otherEditor, student].filter((user) => user !== undefined);
+    const created = [editor, otherEditor, demotedEditor, student].filter(
+      (user) => user !== undefined,
+    );
     await Promise.all(created.map((user) => auth.deleteUser(user.uid)));
     if (app) {
       await app.close();
@@ -644,6 +717,289 @@ describe('h5p editor ajax (e2e)', () => {
       expect(response.status).toBe(400);
       expect((response.body as ErrorBody).message).toBe(REFUSED_PATH);
       expect(response.text).not.toContain('SpeakTest.Main');
+    });
+  });
+
+  /**
+   * The credential Joubel's own client carries, driven end to end.
+   *
+   * Every case here takes a URL out of an editor-model response and requests it
+   * **with no `Authorization` header**, which is the only way the widget can
+   * ever ask: `GET /ajax`, `POST /ajax` and the `<img>` preview are all issued
+   * by the library's own code from a srcless iframe, where the admin's
+   * `HttpClient` interceptor cannot reach.
+   */
+  describe('the URL token the editor model carries', () => {
+    it('authenticates a GET /ajax made from the model’s own ajaxPath', async () => {
+      const urls = await widgetUrls();
+
+      // `ajaxPath` ends in `&action=`, exactly as `H5PEditor.getAjaxUrl` expects
+      // to concatenate onto. No header at all on this request.
+      const response = await request(server())
+        .get(`${requestPathOf(urls.editorAjaxPath)}content-type-cache`)
+        .expect(200);
+
+      const body = response.body as ContentTypeCacheBody;
+      expect(body.user).toBe('local');
+      expect(body.libraries.map((library) => library.machineName)).toContain(
+        MAIN_LIBRARY.machineName,
+      );
+    });
+
+    it('authenticates the top-level ajaxPath too, which is a second field', async () => {
+      // `generateIntegration` builds `integration.ajaxPath` and
+      // `integration.editor.ajaxPath` from the same `ajaxEndpoint(user)` call.
+      // Letting the library write both is why this is not two code paths, and
+      // this is the case that says the second one really is tokenised.
+      const urls = await widgetUrls();
+
+      await request(server())
+        .get(`${requestPathOf(urls.ajaxPath)}content-type-cache`)
+        .expect(200);
+    });
+
+    it('authenticates a POST /ajax made from the model’s own ajaxPath', async () => {
+      const urls = await widgetUrls();
+
+      const response = await request(server())
+        .post(`${requestPathOf(urls.editorAjaxPath)}libraries`)
+        .send({ libraries: [`${MAIN_LIBRARY.machineName} 1.0`] })
+        .expect(200);
+
+      expect((response.body as { uberName: string }[]).map((library) => library.uberName)).toEqual([
+        `${MAIN_LIBRARY.machineName} 1.0`,
+      ]);
+    });
+
+    it('uploads and then previews a file with no header on either request', async () => {
+      // **The whole `<img>` preview path, which is the gap ADR-007 recorded.**
+      // Upload through the tokenised ajax URL, then read the stored file back
+      // through the tokenised `filesPath` the same model advertised — the two
+      // requests Joubel's client makes, in the order it makes them, neither of
+      // them carrying a header.
+      const urls = await widgetUrls();
+
+      const uploaded = await request(server())
+        .post(`${requestPathOf(urls.editorAjaxPath)}files`)
+        .field('field', JSON.stringify({ type: 'audio', name: 'file' }))
+        .attach('file', CLIP_BYTES, { filename: 'clip.mp3', contentType: 'audio/mpeg' })
+        .expect(200);
+
+      const preview = await request(server())
+        .get(`${requestPathOf(urls.filesPath)}/${storedName(uploaded)}`)
+        .expect(200);
+
+      expect(preview.headers['content-type']).toMatch(/^audio\/mpeg/);
+      expect(preview.headers['cache-control']).toBe('private, no-store');
+      // Byte equality, not existence: an empty object would pass a status check
+      // and render as a broken preview.
+      expect(Buffer.from(preview.body as Buffer)).toEqual(CLIP_BYTES);
+    });
+
+    it('serves a byte range through the tokenised preview URL', async () => {
+      // The token route shares one streaming path with the bearer route, and
+      // this is what says it did not lose the range handling on the way.
+      const urls = await widgetUrls();
+      const uploaded = await request(server())
+        .post(`${requestPathOf(urls.editorAjaxPath)}files`)
+        .field('field', JSON.stringify({ type: 'audio', name: 'file' }))
+        .attach('file', CLIP_BYTES, { filename: 'clip.mp3', contentType: 'audio/mpeg' })
+        .expect(200);
+
+      const response = await request(server())
+        .get(`${requestPathOf(urls.filesPath)}/${storedName(uploaded)}`)
+        .set('Range', 'bytes=1000-1099')
+        .expect(206);
+
+      expect(response.headers['content-range']).toBe(
+        `bytes 1000-1099/${String(CLIP_BYTES.length)}`,
+      );
+      expect(Buffer.from(response.body as Buffer)).toEqual(CLIP_BYTES.subarray(1000, 1100));
+    });
+
+    it('does not let one editor’s token reach another editor’s file', async () => {
+      // The acceptance criterion, as an outcome rather than as a mock: the
+      // token names an owner, the owner is a storage prefix, and the second
+      // editor's prefix simply does not hold this filename.
+      const mine = await widgetUrls();
+      const theirs = await widgetUrls(otherEditor.idToken);
+
+      const uploaded = await request(server())
+        .post(`${requestPathOf(mine.editorAjaxPath)}files`)
+        .field('field', JSON.stringify({ type: 'audio', name: 'file' }))
+        .attach('file', CLIP_BYTES, { filename: 'clip.mp3', contentType: 'audio/mpeg' })
+        .expect(200);
+
+      // The same filename, through the other editor's own tokenised prefix.
+      const response = await request(server())
+        .get(`${requestPathOf(theirs.filesPath)}/${storedName(uploaded)}`)
+        .expect(404);
+
+      expect((response.body as ErrorBody).message).toBe(
+        'That file is not in temporary storage. It may have expired.',
+      );
+    });
+
+    it('runs as the token’s user when a bearer header names a different one', async () => {
+      // The precedence, as an effective identity rather than as a status: the
+      // upload carries editor A's token in the URL *and* editor B's header, and
+      // the bytes land in A's prefix. Not an escalation — holding A's token
+      // already grants A's identity — but the order is load-bearing, so it is
+      // pinned here rather than left to the guard registration.
+      const mine = await widgetUrls();
+      const theirs = await widgetUrls(otherEditor.idToken);
+
+      const uploaded = await request(server())
+        .post(`${requestPathOf(mine.editorAjaxPath)}files`)
+        .set('Authorization', `Bearer ${otherEditor.idToken}`)
+        .field('field', JSON.stringify({ type: 'audio', name: 'file' }))
+        .attach('file', CLIP_BYTES, { filename: 'clip.mp3', contentType: 'audio/mpeg' })
+        .expect(200);
+
+      await request(server())
+        .get(`${requestPathOf(mine.filesPath)}/${storedName(uploaded)}`)
+        .expect(200);
+      await request(server())
+        .get(`${requestPathOf(theirs.filesPath)}/${storedName(uploaded)}`)
+        .expect(404);
+    });
+
+    it('refuses a request carrying neither credential', async () => {
+      const refusedToken = await request(server())
+        .get('/api/h5p/temp/not-a-token/audios/audio-anything.mp3')
+        .expect(401);
+      expect((refusedToken.body as ErrorBody).message).toBe(H5P_URL_TOKEN_INVALID_MESSAGE);
+
+      // The composition rule: an *absent* token is not an error, it means the
+      // request is using the other credential — so this one is still the bearer
+      // guard's refusal and not the token guard's.
+      const noCredential = await request(server())
+        .get('/api/h5p/ajax?action=content-type-cache')
+        .expect(401);
+      expect((noCredential.body as ErrorBody).message).toBe('Missing bearer token');
+    });
+
+    it.each([
+      [
+        'the ajax route',
+        (urls: WidgetUrls) => `${requestPathOf(urls.editorAjaxPath)}content-type-cache`,
+      ],
+      ['the preview route', (urls: WidgetUrls) => `${requestPathOf(urls.filesPath)}/audios/x.mp3`],
+    ])('tells an author on %s that their editing session expired', async (_name, pathOf) => {
+      // Distinguishable from both "no credential" and "that link is not valid",
+      // which is what the acceptance criterion asks for: the author's answer is
+      // "reload the editor", and nothing they did was wrong.
+      const urls = await withTokenLifetime(1, () => widgetUrls());
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const response = await request(server()).get(pathOf(urls)).expect(401);
+
+      expect((response.body as ErrorBody).message).toBe(H5P_URL_TOKEN_EXPIRED_MESSAGE);
+      expect((response.body as ErrorBody).message).not.toBe('Missing bearer token');
+      expect((response.body as ErrorBody).message).not.toBe(H5P_URL_TOKEN_INVALID_MESSAGE);
+    });
+
+    it('stops working the moment its editor is demoted, because it carries no role', async () => {
+      // **This is what justifies paying for a Firebase read per request.** The
+      // token names who is asking and nothing else, so the role comes from the
+      // claims as they are *now*: the same URL that worked a moment ago is a
+      // 403 once the claim is taken away, with no waiting for the token to
+      // expire. A role baked into the payload would keep authorizing.
+      const urls = await widgetUrls(demotedEditor.idToken);
+      await request(server())
+        .get(`${requestPathOf(urls.editorAjaxPath)}content-type-cache`)
+        .expect(200);
+
+      await auth.setCustomUserClaims(demotedEditor.uid, { role: 'student' });
+
+      const response = await request(server())
+        .get(`${requestPathOf(urls.editorAjaxPath)}content-type-cache`)
+        .expect(403);
+      expect((response.body as ErrorBody).message).toContain('editor');
+    });
+  });
+
+  /**
+   * `Cross-Origin-Resource-Policy`, which is what decides whether a browser on
+   * the admin's origin is allowed to use these bytes at all.
+   *
+   * **What these establish, and what they do not.** They establish what a
+   * browser *will be told*. They do not establish that a browser loads the
+   * file: there is no browser harness anywhere in this repository, and nothing
+   * here can create one. `createTestApp` installs the same helmet middleware
+   * `main.ts` does, so an assertion of `cross-origin` here is an assertion that
+   * the route beats the global `same-origin` — which is the part that was
+   * previously untestable.
+   */
+  describe('cross-origin resource policy', () => {
+    const corpOf = (response: request.Response): string | undefined =>
+      response.headers['cross-origin-resource-policy'];
+
+    it('answers cross-origin for every asset URL the editor model advertises', async () => {
+      const model = (await editorModel(exercise.contentId).expect(200)).body as EditorModelBody;
+
+      const paths = [
+        ...new Set(
+          [
+            ...model.scripts,
+            ...model.styles,
+            ...model.integration.editor.assets.js,
+            ...model.integration.editor.assets.css,
+          ]
+            .map(apiPathOf)
+            .filter((path): path is string => path !== null),
+        ),
+      ];
+
+      // The same anti-vacuity guard the 200 loop above carries: an empty list
+      // would pass this without asserting anything.
+      expect(paths.length).toBeGreaterThan(40);
+
+      const answers = await Promise.all(
+        paths.map(async (path) => [path, corpOf(await request(server()).get(path))] as const),
+      );
+      expect(answers.filter(([, policy]) => policy !== 'cross-origin')).toEqual([]);
+    });
+
+    it('answers cross-origin for a content file and a library file', async () => {
+      const content = await request(server())
+        .get(`/api/h5p/content/${exercise.contentId}/${CONTENT_FILE}`)
+        .expect(200);
+      const library = await request(server())
+        .get(`/api/h5p/libraries/${MAIN_LIBRARY_DIR}/main.js`)
+        .expect(200);
+
+      expect(corpOf(content)).toBe('cross-origin');
+      expect(corpOf(library)).toBe('cross-origin');
+    });
+
+    it('answers cross-origin for the tokenised preview, which the `<img>` depends on', async () => {
+      // The route a new one can most easily forget, because it gets the header
+      // only by streaming through `pipeWholeStream`.
+      const urls = await widgetUrls();
+      const uploaded = await request(server())
+        .post(`${requestPathOf(urls.editorAjaxPath)}files`)
+        .field('field', JSON.stringify({ type: 'audio', name: 'file' }))
+        .attach('file', CLIP_BYTES, { filename: 'clip.mp3', contentType: 'audio/mpeg' })
+        .expect(200);
+
+      const preview = await request(server())
+        .get(`${requestPathOf(urls.filesPath)}/${storedName(uploaded)}`)
+        .expect(200);
+
+      expect(corpOf(preview)).toBe('cross-origin');
+    });
+
+    it('leaves the JSON routes on the global same-origin', async () => {
+      // **Without this, the three cases above would pass even with helmet
+      // absent from the test app** — which is exactly the flaw this issue was
+      // filed to close. The relaxation is scoped to routes that serve
+      // subresources, and these two say so from the other side.
+      const model = await editorModel(exercise.contentId).expect(200);
+      const player = await request(server()).get(`/api/h5p/play/${exercise.contentId}`).expect(200);
+
+      expect(corpOf(model)).toBe('same-origin');
+      expect(corpOf(player)).toBe('same-origin');
     });
   });
 
@@ -1131,6 +1487,18 @@ describe('h5p editor ajax (e2e)', () => {
           ),
       },
       { name: 'GET temp-files', call: (token) => tempFile('audios/audio-anything.mp3', token) },
+      {
+        // A token minted for the *student*, so the URL credential identifies
+        // somebody the route still has to refuse. A junk segment here would be
+        // a 401 from the token guard and would say nothing about roles.
+        name: 'GET temp/:token',
+        call: (token) =>
+          request(server())
+            .get(
+              `/api/h5p/temp/${app.get(H5pUrlTokenService).mint(student.uid)}/audios/audio-anything.mp3`,
+            )
+            .set('Authorization', `Bearer ${token ?? ''}`),
+      },
     ];
 
     it.each(routes().map((route) => [route.name, route.call] as const))(

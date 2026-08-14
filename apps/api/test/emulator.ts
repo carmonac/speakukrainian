@@ -5,9 +5,12 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import type { Auth } from 'firebase-admin/auth';
 import type { AuthClaims, UserRole } from '@speakukrainian/shared';
+import { ConfigService } from '@nestjs/config';
 import { AppModule } from '../src/app.module.js';
 import { FIREBASE_AUTH } from '../src/auth/auth.tokens.js';
 import { useJsonBodyParser } from '../src/common/body-parser.js';
+import { securityHeaders } from '../src/common/security-headers.js';
+import type { Env } from '../src/config/configuration.js';
 
 /**
  * Boots the real application against the emulators, prefixed the way `main.ts`
@@ -15,8 +18,19 @@ import { useJsonBodyParser } from '../src/common/body-parser.js';
  * under test are the ones the front ends call, and a suite running at a
  * different body limit tests a server that does not exist. The two bootstraps
  * can drift, so what decides whether a request is answered at all belongs here.
- * Helmet and CORS are deliberately not mirrored: supertest is not a browser, so
- * neither changes any response these tests can observe.
+ *
+ * **Helmet is mirrored, and that used to be the opposite claim.** The sentence
+ * here said supertest is not a browser so helmet changes nothing observable;
+ * that is false for one header. `Cross-Origin-Resource-Policy` is on the wire
+ * and it is what decides whether a browser loads the 50 scripts, styles,
+ * library files and content files the H5P widget needs — so without helmet in
+ * this chain, an assertion that an H5P route answers `cross-origin` would only
+ * prove the route sets a header, not that it beats the global `same-origin` it
+ * has to override. `securityHeaders` is the one definition both bootstraps use.
+ *
+ * **CORS is still not mirrored**, and for the original reason, which is true of
+ * CORS alone: supertest sends no `Origin`, so `enableCors` adds nothing to any
+ * response these tests can observe.
  *
  * It listens on an ephemeral port rather than stopping at `init()`: supertest
  * binds and closes a fresh port per request against a non-listening server, and
@@ -38,6 +52,7 @@ export async function createTestApp(): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
   app.setGlobalPrefix('api', { exclude: ['healthz', 'readyz'] });
+  app.use(securityHeaders(app.get(ConfigService<Env, true>).get('NODE_ENV', { infer: true })));
   useJsonBodyParser(app);
   await app.listen(0, '127.0.0.1');
   return app;
