@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { auditSchema, paginationQuerySchema } from './common.js';
+import { pageIdSchema } from './page.js';
 
 /**
  * Metadata for one piece of H5P content. The actual content files and libraries
@@ -12,7 +13,20 @@ export const h5pContentSchema = z.object({
   title: z.string().min(1),
   /** Main library machine name, e.g. `H5P.MultiChoice 1.16`. */
   mainLibrary: z.string().min(1),
-  /** Page this exercise is attached to, if any. */
+  /**
+   * Page this exercise is attached to, if any — a **back-reference**, written
+   * only by `POST /api/h5p/content/:id/attach` and cleared only by
+   * `POST /api/h5p/content/:id/detach`.
+   *
+   * `contentPage.body.h5pContentId` is the authoritative record of the same
+   * relationship: that is what renders and what publication is gated on. This
+   * field is deliberately not kept consistent with it — nothing clears it when
+   * the page is deleted or when a page body stops naming this exercise — so it
+   * may name a page that no longer exists, or one that now names another
+   * exercise. **Nothing may read it to decide what is true**; a reader that
+   * needs the truth reads the page. Its uses are diagnostic: showing an author
+   * that an exercise looks attached, and filtering the admin index.
+   */
   pageId: z.string().min(1).nullable().default(null),
   /** Storage prefix holding the content's files. */
   storagePath: z.string().min(1),
@@ -29,10 +43,11 @@ export type CreateH5pContentInput = z.infer<typeof createH5pContentSchema>;
  * What a save may change about an existing index row.
  *
  * **`pageId` and `storagePath` are deliberately absent.** `storagePath` is
- * derived from the content id, which a save never changes; `pageId` is `null`
- * today and nothing sets it, but attaching an exercise to a page is the first
- * thing the admin exercise screen does, and a save that rewrote the row from
- * scratch would silently detach it.
+ * derived from the content id, which a save never changes; `pageId` is written
+ * by `POST /api/h5p/content/:id/attach|detach` and by nothing else, so a save
+ * that rewrote the row from its own fields would silently detach an exercise
+ * from its page a moment after an author attached it. Now that the field really
+ * is written, that is a live failure mode rather than a precaution.
  */
 export const updateH5pContentSchema = h5pContentSchema.pick({
   title: true,
@@ -40,6 +55,25 @@ export const updateH5pContentSchema = h5pContentSchema.pick({
   sizeBytes: true,
 });
 export type UpdateH5pContentInput = z.infer<typeof updateH5pContentSchema>;
+
+/**
+ * The body of `POST /api/h5p/content/:id/attach`.
+ *
+ * **`strictObject`, not `object`**: a plain object strips an unrecognized key
+ * silently, so `{ pageId, title }` would answer 200 for a title change that
+ * never happened — the same argument `pageBodySchema` makes about a body posted
+ * with the wrong variant's fields. Strict is what makes "this route cannot
+ * write any other field" observable from the wire.
+ *
+ * **No `null`**: detaching is `POST /api/h5p/content/:id/detach`, a route of its
+ * own, so the schema itself refuses the other mode rather than a handler
+ * branching on it.
+ *
+ * A one-field object rather than a bare string because a JSON body has to be an
+ * object, and it is the object that the strictness above applies to.
+ */
+export const attachH5pContentSchema = z.strictObject({ pageId: pageIdSchema });
+export type AttachH5pContentInput = z.infer<typeof attachH5pContentSchema>;
 
 /**
  * Query for `GET /api/h5p/content`. It carries no filters of its own yet; the
