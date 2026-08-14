@@ -406,11 +406,13 @@ only statement of that rule**: `h5pContentSchema.pageId` and `H5pService.attachT
 rather than restate it, because #63 shipped it as three paraphrases at three strengths and two of
 them had drifted into "nothing reads this field at all" before the branch was reviewed.
 
-Something does read it, and it is the one permitted reader: **the attach path's own conflict guard**.
-`H5pContentRepository.setPageId` reads the stored `pageId` inside its transaction to answer the 409
-below instead of moving an exercise silently. That is the field's sole writer reading it to decide
-whether to write, not a second reader deciding what is true about a page, and a stale value there is
-survivable because the way out of that 409 is `detach`, which reads no page at all.
+Something does read it, and it is the one permitted reader: **the field's own writer,
+`H5pContentRepository.setPageId`**, reading the stored value to decide whether to write at all — the
+no-write short-circuit, which runs on detach as well as attach, and the attach path's conflict guard
+— together with the 409 message that carries out the value it found. Those two reads are the field's
+sole writer reading it to decide whether to write, not a second reader deciding what is true about a
+page, and a stale value there is survivable because the way out of that 409 is `detach`, which reads
+no page at all.
 
 **One half of the rule is enforced and the rest is convention, and it is worth knowing which is
 which.** Enforced: `pageId` never crosses a `@Public()` boundary, because every route that answers

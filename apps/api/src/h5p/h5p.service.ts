@@ -180,8 +180,8 @@ export class H5pService {
    * it, and none of the three clears this field. What keeps that from being a
    * second source of truth is ADR-007's read rule, under _Who may read H5P
    * content_ — stated once there rather than paraphrased here, and it names the
-   * one reader exempt from it: the conflict guard inside
-   * `H5pContentRepository.setPageId`, which is this field's own writer.
+   * one reader exempt from it: `H5pContentRepository.setPageId`, this field's
+   * own writer.
    */
   async attachToPage(contentId: string, pageId: string, actorId: string): Promise<H5pContent> {
     const result = await this.repository.setPageId(contentId, pageId, actorId);

@@ -24,11 +24,11 @@ export const h5pContentSchema = z.object({
    * the page is deleted or when a page body stops naming this exercise — so it
    * may name a page that no longer exists, or one that now names another
    * exercise. **What a reader may then do with it is ADR-007's rule, under
-   * _Who may read H5P content_, and only there** — including which single
-   * reader is exempt from it and which half of it a test enforces. Read it
-   * before reading this field anywhere. It is deliberately not restated here:
-   * it was, at three sites in three strengths, and the paraphrases had drifted
-   * apart by the time they were first reviewed.
+   * _Who may read H5P content_, and only there** — including which reader is
+   * exempt from it and which half of it a test enforces. Read it before
+   * reading this field anywhere. It is deliberately not restated here: it was,
+   * at three sites in three strengths, and the paraphrases had drifted apart by
+   * the time they were first reviewed.
    */
   pageId: z.string().min(1).nullable().default(null),
   /** Storage prefix holding the content's files. */
