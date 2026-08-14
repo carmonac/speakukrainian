@@ -114,9 +114,12 @@ export const h5pExercisePageBodySchema = storedH5pExercisePageBodySchema.extend(
    * from its own edit screen — where a stored `sourceSectionId` above is what
    * the page is rendered *from*, and has no useful lenient reading.
    *
-   * Bounding the input variant closes every writer: `h5p.service.ts` records
-   * the relationship on the H5P side and deliberately does not write the page,
-   * so `PATCH /api/pages/:id` is the only route that sets this.
+   * Bounding the input variant closes every writer: the field is set by the
+   * two routes that carry a page body — `POST /api/pages` through
+   * `createContentPageSchema.body` and `PATCH /api/pages/:id` through
+   * `updateContentPageSchema.body` — and by nothing else, since `h5p.service.ts`
+   * records the relationship on the H5P side and deliberately does not write
+   * the page.
    */
   h5pContentId: documentIdSchema.nullable().default(null),
 });

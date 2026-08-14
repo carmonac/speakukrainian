@@ -1309,22 +1309,27 @@ shows up as a client that hangs rather than as a stack trace pointing back here.
 Every id that reaches `collection.doc()` is validated at the **pipe**, from one of two schemas in
 `packages/shared/src/common.ts`. Which one a route takes depends on who minted the id:
 
-| the id                                                                                      | schema                     | rule                                             |
-| ------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------ |
-| minted here — a Firestore auto-id, a `randomUUID()`, a slug-shaped constant                 | `documentIdSchema`         | `[A-Za-z0-9_-]`, plus everything below           |
-| minted elsewhere — a Firebase uid, and any pagination cursor over a collection keyed by one | `externalDocumentIdSchema` | exactly what Firestore refuses, and nothing more |
+- **`documentIdSchema`** — the character class `[A-Za-z0-9_-]`, plus everything the wide rule
+  below refuses. For an id this system mints: a Firestore auto-id, a `randomUUID()`, a slug-shaped
+  constant. Every `:id` path parameter and every id-shaped body field takes it.
+- **`externalDocumentIdSchema`** — exactly what Firestore refuses, and nothing more. For an id
+  something else mints: a Firebase uid, which the routes take under the name `userIdSchema`, and
+  every pagination cursor.
 
 The narrow one is the default and the wide one is the exception, because an alphabet this system
 controls is one rule to read instead of four. The exception exists because an id's alphabet belongs
 to whoever mints it: Firebase Auth subjects imported from another provider carry `:` and `|`, and a
 schema that refused them would turn a legitimate role change into a 400 — the failure mode of
-guessing at someone else's namespace, which is worse than the one being prevented. `userIdSchema`
-is the wide schema under the name the routes use.
+guessing at someone else's namespace, which is worse than the one being prevented.
 
-**A cursor takes the wide rule.** `BaseRepository.paginate` returns `nextCursor` as the id of the
-last document of the page, so the cursor's alphabet is the alphabet of whatever collection is being
-paged — and `GET /api/users` pages documents keyed by uids. The invariant worth stating is that a
-`nextCursor` this API produced always parses back, which the narrow rule breaks for that one route.
+**Every cursor takes the wide rule, including collections whose ids are minted here.** There is one
+`paginationQuerySchema` behind `?cursor=` on every list route, so the choice is made once for all of
+them and has to fit the loosest collection: `GET /api/users` pages documents keyed by uids, and
+`BaseRepository.paginate` returns `nextCursor` as the id of the last document of the page. So
+`GET /api/sections` also accepts a cursor it would never emit, which costs nothing — the only reason
+a cursor is bounded at all is that it reaches `collection.doc()`, and the wide rule already refuses
+everything that makes that a 500. What the narrow rule would break is the invariant worth stating:
+a `nextCursor` this API produced always parses back.
 
 **Why enforce at the pipe and not in a repository.** Firestore does not refuse a reserved id at
 `collection.doc()`: that call returns a `DocumentReference` happily, and the refusal arrives
@@ -1353,13 +1358,23 @@ bytes. The emulator does not enforce 1500 at all, so this cap is the only length
 locally.
 
 _Not this rule, though it looks like it:_ `SAFE_CONTENT_ID` in `apps/api/src/h5p/h5p.paths.ts` has
-the same character class and bounds a **Cloud Storage path segment**, where `__name__` is a legal
-object name and a `|` is not. Same shape, different boundary; the two move independently.
+the same character class and bounds a **Cloud Storage path segment**. Storage is far more permissive
+about a segment than Firestore is about an id — `__name__` and `|` are both legal object names — so
+that rule refuses a `|` by its own choice and not the platform's, for the reason `assertSafeOwnerId`
+records. Same shape, different boundary; the two move independently.
 
 _Cost:_ a uid this rule over-rejects cannot be given a profile at all — `UsersService.getOrProvision`
 refuses it with a 400 rather than letting it reach `.doc(uid)`, since that uid arrives on a verified
 token and no pipe stands in front of it. Loud, and diagnosable from the message; the alternative was
 a 500 with a stack.
+
+_And a cost the two rules only show together:_ an imported subject such as `auth0|5f2c…` is admitted
+everywhere this ADR governs — it holds a profile, it can be given the editor role, and it pages the
+user list — and is still refused by `assertSafeOwnerId` the moment that editor uploads an H5P file,
+because a temporary file's owner is a storage path segment and `|` is not in `SAFE_CONTENT_ID`. That
+is pre-existing and outside this decision, which only ever widened what is accepted; it is recorded
+here because this is the first place the two rules are described side by side, and the answer if it
+ever bites is in `assertSafeOwnerId`, not in these schemas.
 
 ## Data model
 
