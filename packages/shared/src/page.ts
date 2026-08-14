@@ -94,6 +94,13 @@ export const subsectionListPageBodySchema = storedSubsectionListPageBodySchema.e
 
 export const h5pExercisePageBodySchema = storedH5pExercisePageBodySchema.extend({
   explanation: richTextSchema.optional(),
+  /**
+   * The id of another document, which Phase 2 hands to `collection.doc()` to
+   * render the exercise. Bounded on this side only, per ADR-012: the rule
+   * arrives after H5P pages exist, so a value already stored stays readable and
+   * repairable while every request carrying the field is refused at the pipe.
+   */
+  h5pContentId: documentIdSchema.nullable().default(null),
 });
 
 /**

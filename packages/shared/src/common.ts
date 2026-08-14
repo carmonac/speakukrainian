@@ -167,16 +167,40 @@ export type PublishStatus = z.infer<typeof publishStatusSchema>;
 export const isoDateTimeSchema = z.iso.datetime({ offset: true });
 
 /**
- * A Firestore document id. Constrained so a hand-crafted path segment cannot
- * reach `collection.doc()` as `..` or a nested path — a value carrying `/`
- * makes `doc()` throw for an odd number of segments, which would turn a bad
- * request into a 500.
+ * A Firestore document id. Firestore's four rules are that an id may not be `.`
+ * or `..`, may not contain `/`, may not be of the reserved `__…__` form, and is
+ * capped at 1500 bytes; the character class covers the first two, the second
+ * regex covers the third, and `.max(128)` covers the fourth.
+ *
+ * All of it lives on this schema rather than on a guard inside the
+ * repositories, because Firestore does **not** refuse a reserved id at
+ * `collection.doc()` — that call happily returns a reference, and the refusal
+ * comes back asynchronously from the server as
+ * `3 INVALID_ARGUMENT: Resource id "__name__" is invalid because it is
+ * reserved`. By the time it exists it is inside a transaction, it is a plain
+ * `Error` rather than an `HttpException`, and `HttpExceptionFilter` can only
+ * log it as unhandled and answer 500 — for input this schema exists to refuse.
+ * Validating at the pipe turns that into a 400 before any I/O happens.
+ *
+ * The reserved rule is written as a `__` **prefix** rather than Firestore's
+ * documented `__.*__` because the documented form is not the line the server
+ * actually draws: the emulator refuses `__name__` and `__foo__` but accepts
+ * `__`, `___` and `____`. The prefix is a superset of the documented regex and
+ * of what the emulator enforces, and it costs nothing to over-reject `__foo`,
+ * since no id this system produces begins with `__` — they are Firestore
+ * auto-ids, `randomUUID()`s and Firebase uids.
+ *
+ * 128 rather than Firestore's 1500 for the same reason: the longest id anything
+ * here writes is a 36-character UUID, and because the character class is
+ * ASCII-only, 128 UTF-16 code units is exactly 128 bytes, so nothing has to
+ * count bytes to stay an order of magnitude inside the real cap.
  */
 export const documentIdSchema = z
   .string()
   .min(1)
   .max(128)
-  .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id');
+  .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id')
+  .regex(/^(?!__)/, 'A Firestore document id cannot begin with "__", which Firestore reserves');
 
 /**
  * URL-safe identifier used in public routes, unique among siblings.
@@ -219,7 +243,13 @@ export type AssetRef = z.infer<typeof assetRefSchema>;
 
 export const paginationQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
-  cursor: z.string().optional(),
+  /**
+   * The id of the last document of the previous page —
+   * `BaseRepository.paginate` hands it straight to `collection.doc(cursor)` —
+   * so it takes the document id rule. A `nextCursor` this API produced is a
+   * document id of the collection being paged and always parses back.
+   */
+  cursor: documentIdSchema.optional(),
 });
 export type PaginationQuery = z.infer<typeof paginationQuerySchema>;
 

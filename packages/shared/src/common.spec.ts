@@ -4,7 +4,9 @@ import {
   MAX_LOCALIZED_TEXT_LENGTH,
   MAX_RICH_TEXT_LENGTH,
   assetRefSchema,
+  documentIdSchema,
   localizedTextSchema,
+  paginationQuerySchema,
   resolveLocalized,
   richTextSchema,
   storedAssetRefSchema,
@@ -248,5 +250,93 @@ describe('assetRefSchema', () => {
     const alt = { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) };
 
     expect(storedAssetRefSchema.parse({ ...asset, alt }).alt).toEqual(alt);
+  });
+});
+
+/** The shape Firestore's own `collection.doc()` hands out: 20 mixed characters. */
+const AUTO_ID = 'aB3xY9zQ1mN4pR7sT2vW';
+
+describe('documentIdSchema', () => {
+  it.each([
+    ['__name__', 'the id Firestore itself uses for a document key'],
+    ['__foo__', 'the general reserved form'],
+    ['__', 'shorter than Firestore\'s documented "__.*__", and refused anyway'],
+    ['__foo', 'a prefix without the closing underscores'],
+  ])('refuses %s — %s', (id) => {
+    // These are the cases the fix is: each one reached `collection.doc()` and
+    // came back as an async INVALID_ARGUMENT from the server, which the
+    // exception filter could only log as unhandled and answer 500.
+    //
+    // `__` and `__foo` matter on their own: Firestore's documented rule is
+    // `__.*__`, which lets both through, so anyone "simplifying" this back to
+    // the documented regex has to fail here.
+    expect(documentIdSchema.safeParse(id).success).toBe(false);
+  });
+
+  it('names the reserved form in the message, not just the character class', () => {
+    const result = documentIdSchema.safeParse('__name__');
+
+    expect(result.error?.issues.map((issue) => issue.message)).toContain(
+      'A Firestore document id cannot begin with "__", which Firestore reserves',
+    );
+  });
+
+  it('accepts a Firestore auto-id', () => {
+    expect(documentIdSchema.parse(AUTO_ID)).toBe(AUTO_ID);
+  });
+
+  it.each(['a_b', 'my-id', 'x__y', 'foo__', '_x_', 'sec-1', 'h5p-42'])(
+    'accepts %s — underscores and hyphens are only reserved as a leading pair',
+    (id) => {
+      expect(documentIdSchema.parse(id)).toBe(id);
+    },
+  );
+
+  it.each([
+    ['0f4c1b2e-6f7a-4c2b-9d3e-5a1b2c3d4e5f', 'a randomUUID(), as H5P content ids are'],
+    ['aBcDeFgHiJkLmNoPqRsTuVwXyZ01', 'a 28-character Firebase uid'],
+  ])('accepts %s — %s', (id) => {
+    // These are ids the system really stores; a schema that refused one would
+    // break H5P saves and the admin user list rather than any attacker.
+    expect(documentIdSchema.parse(id)).toBe(id);
+  });
+
+  it.each(['a/b', '.', '..', '', 'a b', 'a.b'])('refuses %s', (id) => {
+    // Pre-existing behaviour, pinned so a rewrite of the character class cannot
+    // drop it: `/` makes `doc()` throw on an odd segment count, and `.`/`..`
+    // are path traversal.
+    expect(documentIdSchema.safeParse(id).success).toBe(false);
+  });
+
+  it('accepts 128 characters and refuses 129 or 1501', () => {
+    // The length bound predates this rule and is deliberately 11× tighter than
+    // Firestore's 1500 bytes, so these pin the criterion rather than prove the
+    // reserved-form fix. The character class is ASCII-only, which is what makes
+    // 128 code units also 128 bytes.
+    expect(documentIdSchema.parse('a'.repeat(128))).toHaveLength(128);
+    expect(documentIdSchema.safeParse('a'.repeat(129)).success).toBe(false);
+    expect(documentIdSchema.safeParse('a'.repeat(1501)).success).toBe(false);
+  });
+});
+
+describe('paginationQuerySchema', () => {
+  it('defaults the limit and coerces it from the query string', () => {
+    expect(paginationQuerySchema.parse({})).toEqual({ limit: 25 });
+    expect(paginationQuerySchema.parse({ limit: '10' })).toMatchObject({ limit: 10 });
+  });
+
+  it('accepts a cursor of the shape it hands back', () => {
+    // `paginate` returns `nextCursor` as the last document's id, so a cursor
+    // this API produced always parses back.
+    expect(paginationQuerySchema.parse({ cursor: AUTO_ID })).toEqual({
+      limit: 25,
+      cursor: AUTO_ID,
+    });
+  });
+
+  it.each(['__name__', 'a/b', '..'])('refuses a cursor of %s', (cursor) => {
+    // A cursor goes straight to `collection.doc(cursor).get()`, so an
+    // unconstrained one 500s four list routes.
+    expect(paginationQuerySchema.safeParse({ cursor }).success).toBe(false);
   });
 });

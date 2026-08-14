@@ -4,9 +4,11 @@ import {
   contentPageSchema,
   createContentPageSchema,
   editableContentPageFields,
+  h5pExercisePageBodySchema,
   listPagesQuerySchema,
   pageBodySchema,
   richTextPageBodySchema,
+  storedH5pExercisePageBodySchema,
   updateContentPageSchema,
 } from './page.js';
 
@@ -251,6 +253,48 @@ describe('createContentPageSchema', () => {
         body: { type: 'subsection_list', sourceSectionId: 'sec-2' },
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('h5pContentId is a document id on the way in (ADR-012)', () => {
+  it('refuses a reserved Firestore id, pathed to the field', () => {
+    // It is the id of another document and Phase 2 renders the exercise by
+    // handing it to `collection.doc()`, where a reserved id comes back as an
+    // async INVALID_ARGUMENT and a 500.
+    const result = h5pExercisePageBodySchema.safeParse({
+      type: 'h5p_exercise',
+      h5pContentId: '__name__',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['h5pContentId']);
+  });
+
+  it('still accepts a real content id and an explicit null', () => {
+    // Null is the ordinary state of an exercise page before its first upload,
+    // so the tightening must not make one unsavable.
+    expect(
+      h5pExercisePageBodySchema.parse({
+        type: 'h5p_exercise',
+        h5pContentId: '0f4c1b2e-6f7a-4c2b-9d3e-5a1b2c3d4e5f',
+      }).h5pContentId,
+    ).toBe('0f4c1b2e-6f7a-4c2b-9d3e-5a1b2c3d4e5f');
+    expect(
+      h5pExercisePageBodySchema.parse({ type: 'h5p_exercise', h5pContentId: null }).h5pContentId,
+    ).toBeNull();
+  });
+
+  it('reads back a stored value the input schema refuses', () => {
+    // The stored variant stays lenient so a document written before the rule
+    // existed is still readable and still repairable through the admin — the
+    // whole point of the split. Firestore cannot actually hold a reserved id,
+    // which is why this is the ADR-012 shape and not a live hazard.
+    expect(
+      storedH5pExercisePageBodySchema.parse({
+        type: 'h5p_exercise',
+        h5pContentId: '__name__',
+      }).h5pContentId,
+    ).toBe('__name__');
   });
 });
 
