@@ -22,6 +22,32 @@ const LIBRARY_NOT_INSTALLED = 'That library is not installed on this server.';
  */
 export const CONTENT_MISSING_MESSAGE = 'That exercise does not exist.';
 
+/**
+ * What `POST /api/h5p/content/:id/attach` says about the page it was handed.
+ *
+ * This and `attachedElsewhereMessage` are not mappings of a library error id —
+ * the H5P library knows nothing about pages — so they widen this file's job
+ * from "what the library's failures are called" to "the sentences this area
+ * says", which is what `CONTENT_MISSING_MESSAGE` already does.
+ *
+ * Here beside `CONTENT_MISSING_MESSAGE` rather than in `packages/shared`:
+ * nothing in a browser pre-checks either condition, unlike
+ * `h5pUploadTooLargeMessage`, which is shared precisely because the admin
+ * restates the rule before sending. The service and its tests read one
+ * constant, so they cannot drift into two wordings for one fact.
+ */
+export const PAGE_MISSING_MESSAGE = 'That page does not exist.';
+
+/**
+ * `Detach it first.` is not politeness. Nothing clears `pageId` when a page is
+ * deleted, so the page named here may be gone — and `detach` is unconditional,
+ * so it is the escape that always works. Without the second sentence the author
+ * is left reading a refusal that names a page they cannot open.
+ */
+export function attachedElsewhereMessage(pageId: string): string {
+  return `That exercise is already attached to page "${pageId}". Detach it first.`;
+}
+
 const MESSAGES: Record<string, string> = {
   'unable-to-unzip': UNREADABLE_ARCHIVE,
   'package-validation-failed': 'The package is not a valid H5P package.',

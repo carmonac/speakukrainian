@@ -1,5 +1,5 @@
 import { rm } from 'node:fs/promises';
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { H5PEditor, LibraryName } from '@lumieducation/h5p-server';
 import type { IContentMetadata } from '@lumieducation/h5p-server';
 import {
@@ -10,9 +10,14 @@ import {
   type Page,
 } from '@speakukrainian/shared';
 import { StorageService } from '../infra/storage/storage.service.js';
-import { H5pContentRepository } from './h5p-content.repository.js';
+import { H5pContentRepository, type SetPageIdResult } from './h5p-content.repository.js';
 import { H5pContentStorage } from './h5p-content.storage.js';
-import { CONTENT_MISSING_MESSAGE, toHttpException } from './h5p.errors.js';
+import {
+  CONTENT_MISSING_MESSAGE,
+  PAGE_MISSING_MESSAGE,
+  attachedElsewhereMessage,
+  toHttpException,
+} from './h5p.errors.js';
 import { assertSafePackageEntries } from './h5p.package-scan.js';
 import { contentPrefix, contentStoragePath } from './h5p.paths.js';
 import { H5P_EDITOR } from './h5p.tokens.js';
@@ -158,6 +163,66 @@ export class H5pService {
       throw new NotFoundException(CONTENT_MISSING_MESSAGE);
     }
     return found;
+  }
+
+  /**
+   * Records that an exercise belongs to a page.
+   *
+   * **This does not write the page.** `contentPage.body.h5pContentId` is the
+   * authoritative record of the same relationship — it is what renders and what
+   * `contentPageSchema` gates publication on — and it is written by
+   * `PATCH /api/pages/:id`. Writing both sides from here would put a second
+   * writer of the page body in another module, racing the page form's own save
+   * and bypassing `PagesService.sanitizeBody` and `PagesRepository`'s section,
+   * slug and path rules. So the two records may disagree, and that is a
+   * permitted state rather than a bug: a page delete, a page body edit that
+   * names another exercise, and a crash between the admin's two calls all reach
+   * it, and none of the three clears this field. What keeps that from being a
+   * second source of truth is that nothing reads `pageId` to decide what is
+   * true.
+   */
+  async attachToPage(contentId: string, pageId: string, actorId: string): Promise<H5pContent> {
+    const result = await this.repository.setPageId(contentId, pageId, actorId);
+    if (!result.ok) {
+      this.failToSetPage(result);
+    }
+    return result.content;
+  }
+
+  /**
+   * Clears the page an exercise names, unconditionally.
+   *
+   * It reads no page and can refuse for no reason but a missing exercise, which
+   * is what makes it the escape from `attachedElsewhereMessage`: the page an
+   * exercise is stuck on may itself be deleted, so a detach that checked
+   * anything about it could leave an author with no way out.
+   */
+  async detachFromPage(contentId: string, actorId: string): Promise<H5pContent> {
+    const result = await this.repository.setPageId(contentId, null, actorId);
+    if (!result.ok) {
+      this.failToSetPage(result);
+    }
+    return result.content;
+  }
+
+  /**
+   * The whole error table in one place, so attach and detach cannot word the
+   * same fact differently. `detachFromPage` can only meet the first case, and
+   * it still calls this rather than restating that one mapping.
+   */
+  private failToSetPage(failure: Extract<SetPageIdResult, { ok: false }>): never {
+    switch (failure.reason) {
+      case 'content-not-found':
+        throw new NotFoundException(CONTENT_MISSING_MESSAGE);
+      case 'page-not-found':
+        throw new NotFoundException(PAGE_MISSING_MESSAGE);
+      case 'attached-elsewhere':
+        // A conflict rather than a silent move: `pageId` is a single nullable
+        // scalar, so the model says at most one page, and `slug-taken` is a
+        // `ConflictException` for the same "fine in isolation, conflicts with
+        // stored state" reason.
+        throw new ConflictException(attachedElsewhereMessage(failure.pageId));
+    }
   }
 
   /**
