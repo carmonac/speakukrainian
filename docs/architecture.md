@@ -1414,17 +1414,36 @@ inside an `async` method: an unhandled rejection and a blank screen. A new exerc
 string `content-id="new"`, which is what `render()` special-cases into `loadContentCallback(undefined)`,
 an empty `ns.Editor` and `saveContentCallback(undefined, …)`; an **absent** id renders nothing at all.
 
-_`editorloaded` never arrives, so nothing may be gated on it._ `H5PEditorComponent` re-dispatches
-an `editorloaded` DOM event from a handler it registers on the **host window's**
-`H5P.externalDispatcher`, and with the client assets `scripts/fetch-h5p-core.ts` pins that
-dispatcher is never triggered: the relay in `h5peditor-editor.js` runs inside the editor's own
-iframe, against that iframe's `H5P`. Measured in Chrome against a stored exercise: the form was
-built and `editorInstance.selector.form` was set within 1.5 s, while neither the DOM event nor a
-listener added directly to the host's `externalDispatcher` fired once in 28 s. So the screen's only
-readiness signal is **the mount itself** — Save is enabled as soon as `mountH5pEditor` returns, and
-the widget stays the authority on whether its contents are valid, which it already reports through
-`validation-error`. The first version of this screen gated Save on `editorloaded` and was unusable:
-no automated test could have caught it, and the manual check is what did.
+_`editorloaded` is the readiness signal, and what it does and does not mean._ Save waits for the
+component's `editorloaded` event, because before it there is nothing the widget can save:
+`H5PEditorComponent.save()` calls `getParams()` on an editor with no form and throws a raw
+`TypeError` **before** it reaches any of its own `dispatchAndThrowError` calls, so it is a failure
+that dispatches no `save-error`, no `validation-error`, and reports itself nowhere. A Save enabled
+earlier is a button that does nothing and says nothing.
+
+It means "a content type's form has been built" — not "the widget is on screen".
+`h5peditor-library-selector.js` fires it at the end of `loadSemantics`, so for a **new** exercise it
+does not arrive until the author has chosen a content type, which is also the first moment a save
+could succeed. The screen therefore says two different things while Save is disabled: an existing
+exercise is "Loading the exercise editor…" with a progress bar, and a new one is "Choose a content
+type…" with neither, because a new one is not loading — its content type list is already up.
+
+**The state it never reaches, and how to recognise it.** `trigger('editorloaded', library)` is the
+_last_ statement of that callback, so any throw while the form is being built skips it: the editor
+is left half-drawn and Save stays disabled for good. Upstream's `ns.Html.createHtml` reads
+`this.field.tags.includes('table')` unconditionally, so a single `widget: 'html'` field with no
+`tags` in a library's `semantics.json` is enough to cause it. The symptom is a `TypeError` from
+`h5peditor-html.js` in the console with the editor visibly missing a field; the fix is in the
+library, not here. There is nothing to time out against and no timer is added — enabling Save on a
+timer would only restore the silent button above.
+
+_A retraction, because this ADR previously stated the opposite as measured fact._ An earlier version
+of this section said `editorloaded` "never arrives" because the relay in `h5peditor-editor.js` runs
+against the editor iframe's `H5P` rather than the host's, and cited a 28-second observation. The
+observation was real; the cause was wrong. `editorload` — registered on the _same_ object one line
+above, through the _same_ `relayEvent` — does reach the host, which disproves it. The event was
+missing because of the malformed `tags` above, in this repository's own test fixture, which was the
+only library installed in that environment.
 
 _Why the package's types are not used._ Only `defineElements` is imported. The package's `.d.ts`
 files import `IEditorModel` and `IContentMetadata` from `@lumieducation/h5p-server`, which is an
@@ -1446,9 +1465,13 @@ and real listeners, which is the whole surface this screen touches.
 _What no test in this repository can establish._ In ADR-013's terms: jsdom implements no
 `ResizeObserver`, executes no external or cross-origin script, and runs no
 `iframe.contentDocument.write`. So the suite covers the route, the resolver, the request shapes, the
-mount's own contract, the teardown and the `history.state` hand-off — and a green suite is **not**
-evidence that the widget boots. Those checks are manual, and each PR that touches this screen states
-what was actually seen.
+mount's own contract — **including its write order**, by instrumenting the element `mountH5pEditor`
+creates rather than by upgrading it — the teardown and the `history.state` hand-off. A green suite
+is still **not** evidence that the widget boots. Those checks are manual, and each PR that touches
+this screen states what was actually seen. Both defects found in this screen so far were found that
+way and neither was reachable from a unit test; and the first attempt at explaining one of them from
+the console alone produced the retraction above, which is the standard of evidence these checks are
+held to.
 
 _One H5P surface per screen._ `window.H5PIntegration` is merged and never replaced,
 `window.h5pIsInitialized` is set once and never cleared, and the scripts are appended to
