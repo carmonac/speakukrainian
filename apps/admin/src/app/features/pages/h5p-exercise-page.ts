@@ -17,16 +17,23 @@ import type { H5pSaveResult, SaveH5pContentInput } from '@speakukrainian/shared'
 import { LocalesStore } from '../../core/locales/locales.store';
 import type { HasUnsavedChanges } from '../../core/router/unsaved-changes.guard';
 import { H5P_DEFINE_ELEMENTS } from './h5p-elements';
+import { NotificationService } from '../../core/notifications/notification.service';
 import {
   EXERCISE_RESULT_STATE,
   H5P_NEW_CONTENT_ID,
   mountH5pEditor,
+  reattachExercise,
   type ExerciseResult,
   type H5pEditorHost,
 } from './h5p-exercise.model';
 import type { H5pExerciseData } from './h5p-exercise.resolver';
 import { H5pApi } from './h5p.api';
-import { EXERCISE_LOADING, EXERCISE_PICK_TYPE, EXERCISE_SAVE_FAILED } from './page-messages';
+import {
+  EXERCISE_LOADING,
+  EXERCISE_PICK_TYPE,
+  EXERCISE_PREVIOUS_DETACHED,
+  EXERCISE_SAVE_FAILED,
+} from './page-messages';
 import { pageTitle } from './pages.model';
 
 /**
@@ -52,6 +59,7 @@ import { pageTitle } from './pages.model';
 })
 export class H5pExercisePage implements HasUnsavedChanges {
   private readonly api = inject(H5pApi);
+  private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
   /** Read once: the default locale does not change while a screen is open. */
   private readonly defaultCode = inject(LocalesStore).defaultCode();
@@ -190,8 +198,18 @@ export class H5pExercisePage implements HasUnsavedChanges {
     }
   }
 
+  /**
+   * **The attach for this flow lives here and not in the body editor.** The
+   * result reaches that editor through `writeValue`, which also runs on every
+   * page load — so an attach there would fire on page open. This screen already
+   * holds the page id and the id the body named before the save, which is
+   * everything a replace needs.
+   *
+   * The navigation happens whatever the reconciliation returned: the exercise
+   * is saved, and refusing to hand its id back would strand it.
+   */
   private async finish(contentId: string): Promise<void> {
-    // Before the navigation, or the guard prompts on the way out of a screen
+    // Before anything awaits, or the guard prompts on the way out of a screen
     // that has just saved.
     this.savedContentId.set(contentId);
 
@@ -201,6 +219,17 @@ export class H5pExercisePage implements HasUnsavedChanges {
       // resolved, so the recorded result is the one this id came from.
       mainLibrary: this.saveResult?.mainLibrary ?? '',
     };
+
+    const { detachedPrevious } = await reattachExercise(this.api, {
+      pageId: this.exerciseData().page.id,
+      // The resolver's own copy of `body.h5pContentId`, which is what the page
+      // named on the way in — so a save under a new id is a replace.
+      previousContentId: this.exerciseData().contentId,
+      nextContentId: contentId,
+    });
+    if (detachedPrevious) {
+      this.notifications.info(EXERCISE_PREVIOUS_DETACHED);
+    }
 
     await this.router.navigate(['/pages', this.exerciseData().page.id], {
       state: { [EXERCISE_RESULT_STATE]: result },

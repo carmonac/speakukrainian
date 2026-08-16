@@ -10,9 +10,11 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  H5P_NEEDS_CONTENT_MESSAGE,
   h5pExercisePageBodySchema,
   pageBodySchema,
   type ContentPage,
+  type H5pContent,
   type ListSectionsQuery,
   type LocaleCode,
   type Page,
@@ -27,11 +29,13 @@ import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { RichTextEditor } from '../../shared/rich-text/rich-text-editor';
 import { SectionsApi } from '../sections/sections.api';
 import { EXERCISE_RESULT_STATE, type ExerciseResult } from './h5p-exercise.model';
+import { H5pApi } from './h5p.api';
 import {
   EXERCISE_NEEDS_PAGE,
   EXERCISE_NEEDS_SAVE,
   NO_EXERCISE_YET,
   PAGE_NEEDS_SECTION,
+  PUBLISH_NEEDS_SAVE,
   SECTION_CANNOT_HOLD_PAGES,
 } from './page-messages';
 import { PageFormPage } from './page-form-page';
@@ -118,6 +122,17 @@ const EXERCISE_PAGE = page('page-h5p', {
   path: '/grammar-points/telling-the-time',
   body: exerciseBody(null),
 });
+
+/** What `GET /h5p/content/:id` answers for the body editor's summary. */
+const H5P_ROW: H5pContent = {
+  id: 'c-9',
+  title: 'Telling the time',
+  mainLibrary: 'H5P.MultiChoice 1.16',
+  pageId: 'page-h5p',
+  storagePath: 'h5p/content/c-9',
+  sizeBytes: 4096,
+  audit,
+};
 
 @Component({ selector: 'app-pages-list-stub', template: 'list' })
 class ListStub {}
@@ -218,6 +233,18 @@ function setup(options: Options = {}): Recorded {
       ),
       { provide: PagesApi, useValue: api },
       { provide: SectionsApi, useValue: sectionsApi },
+      // The `h5p_exercise` body editor reads the attached exercise's index row
+      // for its title. The upload and attach halves are covered by that
+      // component's own spec; here it only has to have somewhere to ask.
+      {
+        provide: H5pApi,
+        useValue: {
+          content: (contentId: string) => {
+            recorded.calls.push({ method: 'h5p.content', args: [contentId] });
+            return of<H5pContent>({ ...H5P_ROW, id: contentId });
+          },
+        } as unknown as H5pApi,
+      },
       {
         provide: LocalesStore,
         useValue: {
@@ -303,12 +330,21 @@ function fillSlug(harness: RouterTestingHarness, value: string): void {
 
 /** The enabled anchor to the widget route, or `null` when it is refused. */
 function exerciseLink(harness: RouterTestingHarness): HTMLAnchorElement | null {
-  return root(harness).querySelector<HTMLAnchorElement>('a.page-form__exercise-link');
+  return root(harness).querySelector<HTMLAnchorElement>('a.h5p-body__exercise-link');
 }
 
 /** The sentence shown in place of the link, or `null` when the link is there. */
 function exerciseBlocked(harness: RouterTestingHarness): string | null {
-  return root(harness).querySelector('.page-form__exercise-blocked')?.textContent?.trim() ?? null;
+  return root(harness).querySelector('.h5p-body__exercise-blocked')?.textContent?.trim() ?? null;
+}
+
+/** Why Publish is refused, or `null` when it is not. */
+function publishBlocked(harness: RouterTestingHarness): string | null {
+  return root(harness).querySelector('.page-form__publish-blocked')?.textContent?.trim() ?? null;
+}
+
+function publishButton(harness: RouterTestingHarness): HTMLButtonElement | null {
+  return root(harness).querySelector<HTMLButtonElement>('.page-form__publish');
 }
 
 /**
@@ -746,7 +782,7 @@ describe('PageFormPage', () => {
     const { calls } = setup();
     const harness = await open('/pages/new?sectionId=grammar&type=h5p_exercise');
 
-    expect(root(harness).querySelector('.page-form__exercise-empty')?.textContent?.trim()).toBe(
+    expect(root(harness).querySelector('.h5p-body__empty')?.textContent?.trim()).toBe(
       NO_EXERCISE_YET,
     );
     expect(root(harness).querySelector(BODY)).toBeNull();
@@ -791,7 +827,7 @@ describe('PageFormPage', () => {
     const harness = await open('/pages/page-h5p');
 
     expect(form(harness).hasUnsavedChanges()).toBe(true);
-    expect(root(harness).querySelector('.page-form__exercise-id')?.textContent?.trim()).toBe('c-9');
+    expect(root(harness).querySelector('.h5p-body__id')?.textContent?.trim()).toBe('c-9');
 
     await submit(harness);
 
@@ -812,7 +848,70 @@ describe('PageFormPage', () => {
     const harness = await open('/pages/page-h5p-2');
 
     expect(form(harness).hasUnsavedChanges()).toBe(false);
-    expect(root(harness).querySelector('.page-form__exercise-id')?.textContent?.trim()).toBe('c-9');
+    expect(root(harness).querySelector('.h5p-body__id')?.textContent?.trim()).toBe('c-9');
+  });
+
+  it('refuses to publish an exercise page with no exercise, in the API’s own words', async () => {
+    // The sentence comes from `publishBlockedReason` in `packages/shared`,
+    // which `contentPageSchema`'s refinement also calls — so the refusal the
+    // author reads here is the one the 422 would have carried.
+    const { calls } = setup({ pages: [EXERCISE_PAGE] });
+    const harness = await open('/pages/page-h5p');
+
+    expect(publishBlocked(harness)).toBe(H5P_NEEDS_CONTENT_MESSAGE);
+    expect(publishButton(harness)?.disabled).toBe(true);
+
+    publishButton(harness)?.click();
+    await harness.fixture.whenStable();
+
+    expect(calls.some((call) => call.method === 'publish')).toBe(false);
+  });
+
+  it('publishes an exercise page once the stored body names an exercise', async () => {
+    const { calls } = setup({ pages: [page('page-h5p-3', { body: exerciseBody('c-9') })] });
+    const harness = await open('/pages/page-h5p-3');
+
+    expect(publishBlocked(harness)).toBeNull();
+
+    publishButton(harness)?.click();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(calls.some((call) => call.method === 'publish')).toBe(true);
+    expect(root(harness).querySelector('.page-form__status')?.textContent?.trim()).toBe(
+      'published',
+    );
+  });
+
+  it('says "save first" rather than "no exercise" while the form is dirty', async () => {
+    // Both rules refuse the same button; the one the author can act on first is
+    // the one worth printing.
+    setup({ pages: [EXERCISE_PAGE] });
+    const harness = await open('/pages/page-h5p');
+
+    fillSlug(harness, 'telling-the-time-2');
+
+    expect(publishBlocked(harness)).toBe(PUBLISH_NEEDS_SAVE);
+  });
+
+  it('still lets an exercise page that is somehow live be unpublished', async () => {
+    // The body rule refuses publication, not the recovery from it: a page that
+    // went live before an exercise was detached has to be takeable down.
+    const live = page('page-h5p-4', {
+      body: exerciseBody(null),
+      status: 'published',
+      publishedAt: '2026-03-01T09:00:00.000Z',
+    });
+    const { calls } = setup({ pages: [live] });
+    const harness = await open('/pages/page-h5p-4');
+
+    const unpublish = root(harness).querySelector<HTMLButtonElement>('.page-form__unpublish');
+    expect(unpublish?.disabled).toBe(false);
+
+    unpublish?.click();
+    await harness.fixture.whenStable();
+
+    expect(calls.some((call) => call.method === 'unpublish')).toBe(true);
   });
 
   it('seeds the body control with the type the route asked for', async () => {
@@ -841,7 +940,7 @@ describe('PageFormPage', () => {
     // absent. (This replaces an assertion on `.page-form__body-unavailable`,
     // which no longer exists and so could not fail.)
     expect(root(harness).querySelector(BODY)).toBeNull();
-    expect(root(harness).querySelector('.page-form__exercise-empty')).toBeNull();
+    expect(root(harness).querySelector('.h5p-body__empty')).toBeNull();
     expect(saveButton(harness).disabled).toBe(true);
 
     await typeInto(harness, TITLE, EN, '<p>Grammar points</p>');

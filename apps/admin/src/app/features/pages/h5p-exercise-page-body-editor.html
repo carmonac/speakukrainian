@@ -1,0 +1,138 @@
+<div class="h5p-body">
+  <fieldset class="h5p-body__exercise">
+    <legend>The exercise</legend>
+
+    @switch (summaryStatus()) {
+      @case ('none') {
+        <p class="h5p-body__empty">{{ noExerciseYet }}</p>
+      }
+      @case ('loading') {
+        <mat-progress-bar mode="indeterminate" class="h5p-body__summary-progress" />
+      }
+      @case ('missing') {
+        <!-- The body still names an id, so this is not "no exercise yet": the
+             page points at content that has been deleted, and the remedy is to
+             attach another rather than to retry. -->
+        <p class="h5p-body__summary-missing">{{ contentMissing }}</p>
+      }
+      <!-- `ready` and `failed` together: both mean the body names an exercise
+           the page will show, and the failed read costs the title, not the
+           attachment. The note below says which of the two this is. -->
+      @default {
+        <p class="h5p-body__attached">
+          @if (summaryTitle(); as title) {
+            <span class="h5p-body__title">{{ title }}</span>
+          }
+          @if (libraryLabel(); as library) {
+            <span class="h5p-body__library">{{ library }}</span>
+          }
+          <code class="h5p-body__id">{{ h5pContentId() }}</code>
+        </p>
+        @if (summaryStatus() === 'failed') {
+          <p class="h5p-body__summary-failed">{{ summaryFailed }}</p>
+        }
+      }
+    }
+
+    <div class="h5p-body__actions">
+      <!-- A disabled button inside a tooltipped span, because a tooltip on a
+           disabled control is unreachable — the shape `pages-page.html`'s New
+           page hint uses. -->
+      @if (uploadBlockedReason(); as reason) {
+        <span class="h5p-body__action-hint" [matTooltip]="reason">
+          <button matButton type="button" class="h5p-body__upload" disabled>Upload .h5p package</button>
+        </span>
+      } @else {
+        <button
+          matButton
+          type="button"
+          class="h5p-body__upload"
+          [disabled]="uploading() || disabled()"
+          (click)="chooseFile()"
+        >
+          Upload .h5p package
+        </button>
+      }
+
+      <!-- A disabled anchor is not disabled, so the refused form of the link is
+           a button rather than an `<a>` with no href. -->
+      @if (exerciseBlockedReason(); as reason) {
+        <span class="h5p-body__action-hint" [matTooltip]="reason">
+          <button matButton type="button" class="h5p-body__exercise-link" disabled>
+            {{ exerciseLinkLabel() }}
+          </button>
+        </span>
+      } @else {
+        <a matButton type="button" class="h5p-body__exercise-link" [routerLink]="exerciseRoute()">
+          {{ exerciseLinkLabel() }}
+        </a>
+      }
+    </div>
+
+    <!-- Always rendered, and hidden rather than conditional: it is what the
+         Upload button clicks, and a picker that only exists while the upload is
+         allowed would be gone at the moment the click needs it. -->
+    <input
+      #picker
+      type="file"
+      hidden
+      class="h5p-body__picker"
+      [accept]="acceptAttribute"
+      (change)="onFileChosen($event)"
+    />
+
+    @if (uploadBlockedReason(); as reason) {
+      <p class="h5p-body__upload-blocked">{{ reason }}</p>
+    } @else {
+      <p class="h5p-body__hint">{{ uploadHint }}</p>
+    }
+    @if (exerciseBlockedReason(); as reason) {
+      <p class="h5p-body__exercise-blocked">{{ reason }}</p>
+    }
+    @if (uploading()) {
+      <!-- Indeterminate: `ApiService.upload` reports no progress events, and
+           making it do so would change a method the media picker also uses. -->
+      <mat-progress-bar mode="indeterminate" class="h5p-body__upload-progress" />
+    }
+  </fieldset>
+
+  <fieldset class="h5p-body__explanation-fields">
+    <legend>Explanation</legend>
+
+    <!-- The full toolbar, deliberately: an explanation is where a pronunciation
+         clip belongs, and audio is a first-class part of the content rather
+         than a decoration. Audio and images embedded here are recorded in the
+         stored HTML and nowhere else — `h5pExercisePageBodySchema` has no asset
+         arrays, the same documented hole `subsection_list.intro` has. -->
+    <app-localized-rich-text-editor
+      class="h5p-body__explanation"
+      [locales]="locales()"
+      [disabled]="disabled()"
+      [ngModel]="explanation()"
+      (ngModelChange)="onExplanation($event)"
+    />
+
+    <mat-form-field appearance="outline">
+      <mat-label>Position</mat-label>
+      <mat-select
+        class="h5p-body__position"
+        [value]="explanationPosition()"
+        [disabled]="disabled()"
+        (selectionChange)="onExplanationPosition($event.value)"
+      >
+        <mat-option value="above">Above the exercise</mat-option>
+        <mat-option value="below">Below the exercise</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <mat-checkbox
+      class="h5p-body__track-results"
+      [checked]="trackResults()"
+      [disabled]="disabled()"
+      (change)="onTrackResults($event.checked)"
+    >
+      Record learner attempts
+    </mat-checkbox>
+    <p class="h5p-body__hint">{{ trackResultsHint }}</p>
+  </fieldset>
+</div>
