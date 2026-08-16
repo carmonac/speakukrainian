@@ -1376,6 +1376,88 @@ is pre-existing and outside this decision, which only ever widened what is accep
 here because this is the first place the two rules are described side by side, and the answer if it
 ever bites is in `assertSafeOwnerId`, not in these schemas.
 
+### ADR-019 — The authoring widget is mounted by `@lumieducation/h5p-webcomponents`, and that puts GPL-3.0 in the admin bundle
+
+**The licence first, because it is the decision.** `@lumieducation/h5p-webcomponents@10.0.4` is
+GPL-3.0-or-later, and `apps/admin` imports it, so it is **linked into the admin's shipped
+JavaScript**. That is a different obligation from the GPL client assets under `apps/api/h5p/`, which
+the API serves as separate files it never links against. It is accepted deliberately, and it is
+recorded here so a licence audit finds it stated rather than discovers it.
+
+The alternative that would have avoided the linking — serving the component as a separate
+`<script>` from the API and reading it off `window` — is a worse version of the same distribution:
+the same code still reaches the same browsers from the same product, with a hand-written global
+seam and no types in place of an import. A hand-roll is ~120 lines that acquire the same bugs
+against the same GPL assets and gain nothing on the licence, since the assets are GPL either way.
+
+_What the wrapper does that a hand-roll must reinvent_, each read out of `build/es2015`:
+`window.H5P.preventInit = true` around the script load and back to `false` after it;
+`mergeH5PIntegration`, which **merges** `window.H5PIntegration` rather than replacing it, so an
+editor and a player can coexist on one page; ordered, deduped (`data-h5p-src`), `AwaitLock`-ed
+script appending with `async = false; defer = true`; and deliberately **no** stylesheets — the
+component adds only the scripts "to avoid side effects", which is why the eight editor stylesheets
+never leak into the admin's own styles and the editor loads them inside its iframe from
+`H5PEditor.assets`.
+
+_The trap in the obvious alternative._ `ns.Editor` ends by calling `$iframe.replaceAll(target)`,
+which **removes the target element from the DOM**. Handing it an Angular-rendered node would leave
+the view holding a node that is no longer in the tree, with nothing saying so. The component
+sidesteps it by building a throwaway `div` per render and giving that away.
+
+_Why the mount order is the boot._ `attributeChangedCallback` renders when `content-id` changes and
+the `loadContentCallback` **setter** renders when the callback identity changes, while `render()`
+returns early if either is missing and `connectedCallback` is what creates the root that render
+writes into. So `mountH5pEditor` appends the element, sets `content-id`, assigns
+`saveContentCallback`, and assigns `loadContentCallback` **last** — that assignment is the one real
+render. Assigning it before the element is connected reaches `this.root.innerHTML` with no root,
+inside an `async` method: an unhandled rejection and a blank screen. A new exercise is the literal
+string `content-id="new"`, which is what `render()` special-cases into `loadContentCallback(undefined)`,
+an empty `ns.Editor` and `saveContentCallback(undefined, …)`; an **absent** id renders nothing at all.
+
+_`editorloaded` never arrives, so nothing may be gated on it._ `H5PEditorComponent` re-dispatches
+an `editorloaded` DOM event from a handler it registers on the **host window's**
+`H5P.externalDispatcher`, and with the client assets `scripts/fetch-h5p-core.ts` pins that
+dispatcher is never triggered: the relay in `h5peditor-editor.js` runs inside the editor's own
+iframe, against that iframe's `H5P`. Measured in Chrome against a stored exercise: the form was
+built and `editorInstance.selector.form` was set within 1.5 s, while neither the DOM event nor a
+listener added directly to the host's `externalDispatcher` fired once in 28 s. So the screen's only
+readiness signal is **the mount itself** — Save is enabled as soon as `mountH5pEditor` returns, and
+the widget stays the authority on whether its contents are valid, which it already reports through
+`validation-error`. The first version of this screen gated Save on `editorloaded` and was unusable:
+no automated test could have caught it, and the manual check is what did.
+
+_Why the package's types are not used._ Only `defineElements` is imported. The package's `.d.ts`
+files import `IEditorModel` and `IContentMetadata` from `@lumieducation/h5p-server`, which is an
+**API** dependency: under `node-linker=isolated` with `shamefully-hoist=false` that import does not
+resolve from the admin, and `skipLibCheck: true` means it does not error either — the types degrade
+silently to `any`, which is a CLAUDE.md violation no check in the gate would report. Independently,
+`loadContentCallback` is declared to return an `IEditorModel`, which requires `urlGenerator` — the
+field ADR-007 says the editor-model route must never send — so the declared type is unsatisfiable
+here by design. `h5p-exercise.model.ts` therefore declares its own narrow structural types over the
+two JSON responses and over the part of the element this screen drives.
+
+_Why `defineElements` is behind an injection token._ `H5P_DEFINE_ELEMENTS` exists so a spec can
+leave `h5p-editor` **undefined**. A defined element upgrades on append, and `connectedCallback`
+constructs a `ResizeObserver` — which jsdom does not implement — and then awaits `onload` on every
+script the model lists, which jsdom never fetches, so a spec that upgraded the element would _hang_
+rather than fail. Undefined, it is an ordinary `HTMLElement` carrying attributes, expando properties
+and real listeners, which is the whole surface this screen touches.
+
+_What no test in this repository can establish._ In ADR-013's terms: jsdom implements no
+`ResizeObserver`, executes no external or cross-origin script, and runs no
+`iframe.contentDocument.write`. So the suite covers the route, the resolver, the request shapes, the
+mount's own contract, the teardown and the `history.state` hand-off — and a green suite is **not**
+evidence that the widget boots. Those checks are manual, and each PR that touches this screen states
+what was actually seen.
+
+_One H5P surface per screen._ `window.H5PIntegration` is merged and never replaced,
+`window.h5pIsInitialized` is set once and never cleared, and the scripts are appended to
+`document.head` for the life of the browser session — nothing is torn down, because removing the
+tags would not un-define `window.H5P` and re-adding them would re-execute them. Within one SPA
+session that makes editor → page form → editor untested territory for these components, whose
+reference host is a page load per screen. The editor route and #13's player preview therefore stay
+on separate routes; this is the paragraph to re-read if that ever changes.
+
 ## Data model
 
 | Collection      | Holds            | Notes                                                                           |
