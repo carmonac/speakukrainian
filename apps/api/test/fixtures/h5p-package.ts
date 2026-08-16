@@ -104,7 +104,23 @@ function packageEntries(options: PackageOptions = {}): RawZipEntry[] {
       // the package still validates.
       name: `${MAIN_LIBRARY_DIR}/semantics.json`,
       content: json([
-        { name: 'question', type: 'text', label: 'Question', widget: 'html' },
+        {
+          name: 'question',
+          type: 'text',
+          label: 'Question',
+          widget: 'html',
+          // **`tags` is required in practice, though no schema says so.**
+          // `ns.Html.createHtml` reads `this.field.tags.includes('table')`
+          // unconditionally (`h5p/editor/scripts/h5peditor-html.js`), so an
+          // `html` widget without it throws a `TypeError` while the editor is
+          // building the form — six lines before
+          // `h5peditor-library-selector.js` fires `editorloaded`. The form is
+          // left half-built, the event never arrives, and nothing on the server
+          // side notices, because no API test builds a form. This library is the
+          // only one a developer has installed locally, so a missing `tags` here
+          // silently breaks every manual check of the authoring widget.
+          tags: ['strong', 'em', 'sub', 'sup', 'a', 'ul', 'ol'],
+        },
         { name: 'clip', type: 'file', label: 'Pronunciation clip', optional: true },
       ]),
     },
