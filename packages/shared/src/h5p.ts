@@ -11,7 +11,7 @@ export const h5pContentSchema = z.object({
   /** The H5P server's content id. */
   id: z.string().min(1),
   title: z.string().min(1),
-  /** Main library machine name, e.g. `H5P.MultiChoice 1.16`. */
+  /** Main library ubername — machine name and version, `H5P.MultiChoice 1.16`. */
   mainLibrary: z.string().min(1),
   /**
    * Page this exercise is attached to, if any — a **back-reference**, written
