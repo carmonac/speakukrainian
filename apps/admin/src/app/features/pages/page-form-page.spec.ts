@@ -837,7 +837,11 @@ describe('PageFormPage', () => {
     const harness = await open('/pages/new?sectionId=grammar&type=subsection_list');
 
     expect(root(harness).querySelector(SUBSECTION_BODY)).not.toBeNull();
-    expect(root(harness).querySelector('.page-form__body-unavailable')).toBeNull();
+    // The branch is chosen, not merely reached: the other two types' panels are
+    // absent. (This replaces an assertion on `.page-form__body-unavailable`,
+    // which no longer exists and so could not fail.)
+    expect(root(harness).querySelector(BODY)).toBeNull();
+    expect(root(harness).querySelector('.page-form__exercise-empty')).toBeNull();
     expect(saveButton(harness).disabled).toBe(true);
 
     await typeInto(harness, TITLE, EN, '<p>Grammar points</p>');
