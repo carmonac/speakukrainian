@@ -10,10 +10,9 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatTableModule } from '@angular/material/table';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
-import type { ContentPage, PageType } from '@speakukrainian/shared';
+import { pageTypeSchema, type ContentPage, type PageType } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { navigationState } from '../../core/router/navigation-state';
-import { AUTHORABLE_PAGE_TYPES } from './page-body';
 import {
   ALL_SECTIONS_OPTION,
   PAGES_LOAD_FAILED,
@@ -106,8 +105,13 @@ export class PagesPage {
    * "New page" is a menu over these rather than a shortcut to one type: a body
    * type reachable only by hand-typing `?type=` in the address bar is not a type
    * an author can create.
+   *
+   * Every page type, straight from the schema, now that each one has an editor
+   * on the form. A fourth variant added to `pageTypeSchema` is therefore offered
+   * here the moment it exists — which is the right default for a menu, and is
+   * caught by `PAGE_TYPE_LABELS` failing to compile without a label for it.
    */
-  protected readonly authorableTypes = AUTHORABLE_PAGE_TYPES;
+  protected readonly authorableTypes: readonly PageType[] = pageTypeSchema.options;
 
   protected newPageParams(type: PageType): Record<string, string> {
     return { sectionId: this.selectedSection()?.id ?? '', type };

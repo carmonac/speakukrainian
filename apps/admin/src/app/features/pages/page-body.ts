@@ -75,23 +75,3 @@ const PARSERS: {
 export function emptyBodyFor<T extends PageType>(type: T): Extract<PageBody, { type: T }> {
   return PARSERS[type](SEEDS[type]);
 }
-
-/**
- * The body types this release can author: the list the "New page" menu offers
- * and the list the page form will enable Save for. Stated once, so those two
- * cannot disagree.
- *
- * It does **not** tie either of them to the `@case` branches in
- * `page-form-page.html`: a type added here with no branch enables Save over the
- * `@default` placeholder, and what holds that is the spec
- * `gives a subsection list page its own editor, and lets it be saved`, not the
- * compiler. Nor is this the only place a reachable type is named —
- * `sections/section-form-page.html`'s "Add page" link hardcodes `type: 'rich_text'`
- * in a query param.
- *
- * #13 gives `h5p_exercise` an editor, and `PageFormPage.bodyEditorAvailable`,
- * the `@default` branch and `BODY_TYPE_UNAVAILABLE` then go away. The menu still
- * needs something to iterate; presumably `pageTypeSchema.options`, which is when
- * this constant goes too.
- */
-export const AUTHORABLE_PAGE_TYPES: readonly PageType[] = ['rich_text', 'subsection_list'];

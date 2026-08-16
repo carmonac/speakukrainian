@@ -80,7 +80,12 @@ export const storedH5pExercisePageBodySchema = z.strictObject({
   type: z.literal('h5p_exercise'),
   /** H5P content id assigned by the H5P server. Null until the first upload. */
   h5pContentId: z.string().min(1).nullable().default(null),
-  /** Machine name of the H5P library, e.g. `H5P.MultiChoice`. Informational. */
+  /**
+   * Ubername of the H5P library, e.g. `H5P.MultiChoice 1.16`. Informational.
+   *
+   * The only value any route produces for it is `H5pSaveResult.mainLibrary`,
+   * which carries the version; a bare machine name is what nothing writes.
+   */
   h5pLibrary: z.string().optional(),
   /** Explanation or instructions shown alongside the exercise. */
   explanation: storedRichTextSchema.optional(),

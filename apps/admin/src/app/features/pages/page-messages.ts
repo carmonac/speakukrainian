@@ -28,8 +28,49 @@ export const SECTION_CANNOT_HOLD_PAGES = 'A link section has no pages of its own
  */
 export const PAGE_NEEDS_SECTION = 'Open a new page from the section it belongs to.';
 
-/** A `?type=` this release has no body editor for — #10 and #13 add the rest. */
-export const BODY_TYPE_UNAVAILABLE = 'This page type cannot be edited here yet.';
+// The H5P authoring widget's wording. `/pages/:id/exercise` is a screen of its
+// own, and the page form is where an author reaches it.
+
+/**
+ * `/pages/:id/exercise` was opened on a page whose body is not an exercise —
+ * a hand-typed URL, or a link followed after the body type changed. Nothing
+ * failed, so nothing else would say anything.
+ */
+export const PAGE_IS_NOT_AN_EXERCISE = 'That page is not an H5P exercise.';
+
+/**
+ * The widget route reads the stored page, so unsaved edits on the form would be
+ * invisible to it and lost on the way back. Refused rather than carried across,
+ * the shape {@link PUBLISH_NEEDS_SAVE} already sets.
+ */
+export const EXERCISE_NEEDS_SAVE = 'Save your changes before editing the exercise.';
+
+/** `/pages/new` has no page id yet, and the widget route is keyed on one. */
+export const EXERCISE_NEEDS_PAGE = 'Save the page before adding an exercise.';
+
+/**
+ * Shown on the widget screen itself, which the author stays on with their work
+ * in front of them. The API's own sentence arrives separately as the
+ * interceptor's toast; this one says what happened to the exercise.
+ */
+export const EXERCISE_SAVE_FAILED = 'The exercise was not saved. Your work is still here.';
+
+/**
+ * Shown on an existing exercise until the widget has built its form. There is
+ * nothing to time out against and no timer is added; what a stuck one means is
+ * in ADR-019.
+ */
+export const EXERCISE_LOADING = 'Loading the exercise editor…';
+
+/**
+ * The same slot on a **new** exercise, where the widget is not loading at all —
+ * its content type list is up and choosing one is the author's next act, and
+ * also what makes Save do anything.
+ */
+export const EXERCISE_PICK_TYPE = 'Choose a content type above to start building the exercise.';
+
+/** An H5P page that has no exercise attached yet. */
+export const NO_EXERCISE_YET = 'No exercise on this page yet.';
 
 export const PLAIN_TITLE_HINT =
   'Formatting is not kept — the title is used in menus, breadcrumbs and the browser tab.';

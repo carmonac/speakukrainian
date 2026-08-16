@@ -10,6 +10,7 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  h5pExercisePageBodySchema,
   pageBodySchema,
   type ContentPage,
   type ListSectionsQuery,
@@ -25,8 +26,11 @@ import { unsavedChangesGuard } from '../../core/router/unsaved-changes.guard';
 import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { RichTextEditor } from '../../shared/rich-text/rich-text-editor';
 import { SectionsApi } from '../sections/sections.api';
+import { EXERCISE_RESULT_STATE, type ExerciseResult } from './h5p-exercise.model';
 import {
-  BODY_TYPE_UNAVAILABLE,
+  EXERCISE_NEEDS_PAGE,
+  EXERCISE_NEEDS_SAVE,
+  NO_EXERCISE_YET,
   PAGE_NEEDS_SECTION,
   SECTION_CANNOT_HOLD_PAGES,
 } from './page-messages';
@@ -98,6 +102,21 @@ const STORED = page('page-1', {
   slug: 'present-simple',
   path: '/grammar-points/present-simple',
   title: { en: 'Present simple', uk: 'Теперішній простий' },
+});
+
+function exerciseBody(h5pContentId: string | null): PageBody {
+  return {
+    type: 'h5p_exercise',
+    h5pContentId,
+    explanationPosition: 'above',
+    trackResults: false,
+  };
+}
+
+const EXERCISE_PAGE = page('page-h5p', {
+  slug: 'telling-the-time',
+  path: '/grammar-points/telling-the-time',
+  body: exerciseBody(null),
 });
 
 @Component({ selector: 'app-pages-list-stub', template: 'list' })
@@ -280,6 +299,25 @@ function fillSlug(harness: RouterTestingHarness, value: string): void {
   input.value = value;
   input.dispatchEvent(new Event('input'));
   harness.detectChanges();
+}
+
+/** The enabled anchor to the widget route, or `null` when it is refused. */
+function exerciseLink(harness: RouterTestingHarness): HTMLAnchorElement | null {
+  return root(harness).querySelector<HTMLAnchorElement>('a.page-form__exercise-link');
+}
+
+/** The sentence shown in place of the link, or `null` when the link is there. */
+function exerciseBlocked(harness: RouterTestingHarness): string | null {
+  return root(harness).querySelector('.page-form__exercise-blocked')?.textContent?.trim() ?? null;
+}
+
+/**
+ * What the widget route leaves behind on the way back. Written into
+ * `history.state` directly, because the router replays it from there on a
+ * refresh — which is the case the pristine assertion below covers.
+ */
+function withExerciseResult(result: ExerciseResult): void {
+  history.replaceState({ [EXERCISE_RESULT_STATE]: result }, '');
 }
 
 function saveButton(harness: RouterTestingHarness): HTMLButtonElement {
@@ -704,20 +742,77 @@ describe('PageFormPage', () => {
     expect(TestBed.inject(Router).url).toBe('/pages');
   });
 
-  it('refuses a page type it has no editor for instead of downgrading it', async () => {
-    // Silently creating a `rich_text` page for a requested `h5p_exercise` would
-    // store the wrong document.
-    setup();
+  it('opens the exercise panel for an H5P page and lets it be saved', async () => {
+    const { calls } = setup();
     const harness = await open('/pages/new?sectionId=grammar&type=h5p_exercise');
 
-    expect(root(harness).querySelector('.page-form__body-unavailable')?.textContent?.trim()).toBe(
-      BODY_TYPE_UNAVAILABLE,
+    expect(root(harness).querySelector('.page-form__exercise-empty')?.textContent?.trim()).toBe(
+      NO_EXERCISE_YET,
     );
     expect(root(harness).querySelector(BODY)).toBeNull();
 
     await typeInto(harness, TITLE, EN, '<p>An exercise</p>');
+    expect(saveButton(harness).disabled).toBe(false);
 
-    expect(saveButton(harness).disabled).toBe(true);
+    await submit(harness);
+
+    // The posted body is one the API would store, not a bare discriminant.
+    expect(h5pExercisePageBodySchema.safeParse(bodyOf(calls, 'create')['body']).success).toBe(true);
+  });
+
+  it('has no exercise link on a page that has not been created yet', async () => {
+    // The widget route is keyed on a stored page id, so there is nothing to
+    // link to until the page exists.
+    setup();
+    const harness = await open('/pages/new?sectionId=grammar&type=h5p_exercise');
+
+    expect(exerciseLink(harness)).toBeNull();
+    expect(exerciseBlocked(harness)).toBe(EXERCISE_NEEDS_PAGE);
+  });
+
+  it('links to the widget on a saved page, and withdraws the link once the form is dirty', async () => {
+    // The widget route reads the stored page, so an unsaved edit would be
+    // invisible to it and overwritten on the way back.
+    setup({ pages: [EXERCISE_PAGE] });
+    const harness = await open('/pages/page-h5p');
+
+    expect(exerciseLink(harness)?.getAttribute('href')).toBe('/pages/page-h5p/exercise');
+    expect(exerciseBlocked(harness)).toBeNull();
+
+    fillSlug(harness, 'telling-the-time-2');
+
+    expect(exerciseLink(harness)).toBeNull();
+    expect(exerciseBlocked(harness)).toBe(EXERCISE_NEEDS_SAVE);
+  });
+
+  it('takes the exercise the widget route saved onto the body, for the author to save', async () => {
+    const { calls } = setup({ pages: [EXERCISE_PAGE] });
+    withExerciseResult({ contentId: 'c-9', mainLibrary: 'H5P.MultiChoice 1.16' });
+    const harness = await open('/pages/page-h5p');
+
+    expect(form(harness).hasUnsavedChanges()).toBe(true);
+    expect(root(harness).querySelector('.page-form__exercise-id')?.textContent?.trim()).toBe('c-9');
+
+    await submit(harness);
+
+    expect(bodyOf(calls, 'update')['body']).toEqual({
+      type: 'h5p_exercise',
+      h5pContentId: 'c-9',
+      h5pLibrary: 'H5P.MultiChoice 1.16',
+      explanationPosition: 'above',
+      trackResults: false,
+    });
+  });
+
+  it('leaves the form pristine when a refresh replays the id the page already holds', async () => {
+    // `history.state` outlives the navigation, so a refresh of `/pages/:id`
+    // replays it; re-dirtying a form the author had already saved is the defect.
+    setup({ pages: [page('page-h5p-2', { body: exerciseBody('c-9') })] });
+    withExerciseResult({ contentId: 'c-9', mainLibrary: 'H5P.MultiChoice 1.16' });
+    const harness = await open('/pages/page-h5p-2');
+
+    expect(form(harness).hasUnsavedChanges()).toBe(false);
+    expect(root(harness).querySelector('.page-form__exercise-id')?.textContent?.trim()).toBe('c-9');
   });
 
   it('seeds the body control with the type the route asked for', async () => {
@@ -742,7 +837,11 @@ describe('PageFormPage', () => {
     const harness = await open('/pages/new?sectionId=grammar&type=subsection_list');
 
     expect(root(harness).querySelector(SUBSECTION_BODY)).not.toBeNull();
-    expect(root(harness).querySelector('.page-form__body-unavailable')).toBeNull();
+    // The branch is chosen, not merely reached: the other two types' panels are
+    // absent. (This replaces an assertion on `.page-form__body-unavailable`,
+    // which no longer exists and so could not fail.)
+    expect(root(harness).querySelector(BODY)).toBeNull();
+    expect(root(harness).querySelector('.page-form__exercise-empty')).toBeNull();
     expect(saveButton(harness).disabled).toBe(true);
 
     await typeInto(harness, TITLE, EN, '<p>Grammar points</p>');

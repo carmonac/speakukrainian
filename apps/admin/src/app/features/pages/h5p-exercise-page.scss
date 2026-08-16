@@ -1,0 +1,35 @@
+.h5p-exercise {
+  display: block;
+  padding: 24px;
+
+  &__card {
+    width: 100%;
+    overflow: hidden;
+  }
+
+  &__page,
+  &__waiting {
+    margin: 4px 0 0;
+    color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__error {
+    margin: 12px 0 0;
+    color: var(--mat-sys-error, #b3261e);
+  }
+
+  // Nothing but a block to append into: the widget lays itself out inside its
+  // own iframe, and the component sets that iframe's height from its own
+  // `ResizeObserver`.
+  &__host {
+    display: block;
+    width: 100%;
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+}

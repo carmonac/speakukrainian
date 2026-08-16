@@ -1,0 +1,47 @@
+<section class="h5p-exercise">
+  <mat-card class="h5p-exercise__card">
+    @if (saving() || loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+
+    <mat-card-header>
+      <mat-card-title>{{ heading() }}</mat-card-title>
+    </mat-card-header>
+
+    <mat-card-content>
+      <!-- Interpolated, never `[innerHTML]`: a page title is stored verbatim
+           (ADR-003), so every place it renders has to be an escaped context. -->
+      <p class="h5p-exercise__page">
+        On <strong>{{ pageTitleText() }}</strong>
+      </p>
+
+      @if (error(); as message) {
+        <p class="h5p-exercise__error" role="alert">{{ message }}</p>
+      }
+
+      <!-- The widget is created imperatively and appended here; it must not be
+           written in this template, because it has to be connected before it is
+           wired. `mountH5pEditor` says why. -->
+      <div #host class="h5p-exercise__host"></div>
+
+      <!-- Below the widget, not above it: on a new exercise this sentence points
+           back at the content type list the widget is already showing. -->
+      @if (!ready()) {
+        <p class="h5p-exercise__waiting">{{ waitingMessage() }}</p>
+      }
+
+      <div class="h5p-exercise__actions">
+        <a matButton type="button" class="h5p-exercise__cancel" [routerLink]="pageLink()">Cancel</a>
+        <button
+          matButton="filled"
+          type="button"
+          class="h5p-exercise__save"
+          [disabled]="!ready() || saving()"
+          (click)="save()"
+        >
+          Save
+        </button>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</section>
