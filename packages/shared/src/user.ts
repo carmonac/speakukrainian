@@ -1,8 +1,25 @@
 import { z } from 'zod';
-import { auditSchema } from './common.js';
+import { auditSchema, externalDocumentIdSchema } from './common.js';
 
 export const userRoleSchema = z.enum(['admin', 'editor', 'student']);
 export type UserRole = z.infer<typeof userRoleSchema>;
+
+/**
+ * A Firebase Auth uid, under the name the routes use. It is the id of the
+ * profile document as well as of the account, so it is bounded by what
+ * Firestore can store and by nothing else — `externalDocumentIdSchema` explains
+ * why the alphabet is left to the auth provider. Firebase will happily create
+ * `__name__`, which Firestore then refuses to store, and that pair is what used
+ * to answer 500 on `PATCH /api/users/:uid/role`.
+ *
+ * It guards the **arriving** uid only. `userProfileSchema.id` below stays
+ * `z.string().min(1)` on purpose, and tightening it to match would be a
+ * regression rather than a tidy-up: this rule deliberately over-rejects — see
+ * ADR-018 — so `__foo` fails it while Firestore stores such a document happily,
+ * and a stored profile that failed the read schema would 500 the whole admin
+ * user list on account of one row (ADR-012).
+ */
+export const userIdSchema = externalDocumentIdSchema;
 
 /**
  * Identity comes from Firebase Auth; this document holds the app-level profile

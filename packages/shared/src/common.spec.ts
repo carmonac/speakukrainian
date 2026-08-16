@@ -4,7 +4,10 @@ import {
   MAX_LOCALIZED_TEXT_LENGTH,
   MAX_RICH_TEXT_LENGTH,
   assetRefSchema,
+  documentIdSchema,
+  externalDocumentIdSchema,
   localizedTextSchema,
+  paginationQuerySchema,
   resolveLocalized,
   richTextSchema,
   storedAssetRefSchema,
@@ -248,5 +251,150 @@ describe('assetRefSchema', () => {
     const alt = { en: 'a'.repeat(MAX_LOCALIZED_TEXT_LENGTH + 1) };
 
     expect(storedAssetRefSchema.parse({ ...asset, alt }).alt).toEqual(alt);
+  });
+});
+
+/** The shape Firestore's own `collection.doc()` hands out: 20 mixed characters. */
+const AUTO_ID = 'aB3xY9zQ1mN4pR7sT2vW';
+
+describe('documentIdSchema', () => {
+  it.each([
+    ['__name__', 'the id Firestore itself uses for a document key'],
+    ['__foo__', 'the general reserved form'],
+    ['__', 'shorter than Firestore\'s documented "__.*__", and refused anyway'],
+    ['__foo', 'a prefix without the closing underscores'],
+  ])('refuses %s — %s', (id) => {
+    // These are the cases the fix is: each one reached `collection.doc()` and
+    // came back as an async INVALID_ARGUMENT from the server, which the
+    // exception filter could only log as unhandled and answer 500.
+    //
+    // `__` and `__foo` matter on their own: Firestore's documented rule is
+    // `__.*__`, which lets both through, so anyone "simplifying" this back to
+    // the documented regex has to fail here.
+    expect(documentIdSchema.safeParse(id).success).toBe(false);
+  });
+
+  it('names the reserved form in the message, not just the character class', () => {
+    const result = documentIdSchema.safeParse('__name__');
+
+    expect(result.error?.issues.map((issue) => issue.message)).toContain(
+      'A Firestore document id cannot begin with "__", which Firestore reserves',
+    );
+  });
+
+  it('accepts a Firestore auto-id', () => {
+    expect(documentIdSchema.parse(AUTO_ID)).toBe(AUTO_ID);
+  });
+
+  it.each(['a_b', 'my-id', 'x__y', 'foo__', '_x_', 'sec-1', 'h5p-42'])(
+    'accepts %s — underscores and hyphens are only reserved as a leading pair',
+    (id) => {
+      expect(documentIdSchema.parse(id)).toBe(id);
+    },
+  );
+
+  it.each([
+    ['0f4c1b2e-6f7a-4c2b-9d3e-5a1b2c3d4e5f', 'a randomUUID(), as H5P content ids are'],
+    ['aBcDeFgHiJkLmNoPqRsTuVwXyZ01', 'a 28-character Firebase uid'],
+  ])('accepts %s — %s', (id) => {
+    // These are ids the system really stores; a schema that refused one would
+    // break H5P saves and the admin user list rather than any attacker.
+    expect(documentIdSchema.parse(id)).toBe(id);
+  });
+
+  it.each(['a/b', '.', '..', '', 'a b', 'a.b'])('refuses %s', (id) => {
+    // Pre-existing behaviour, pinned so a rewrite of the character class cannot
+    // drop it: `/` makes `doc()` throw on an odd segment count, and `.`/`..`
+    // are path traversal.
+    expect(documentIdSchema.safeParse(id).success).toBe(false);
+  });
+
+  it('accepts 128 characters and refuses 129 or 1501', () => {
+    // The length bound predates this rule and is deliberately 11× tighter than
+    // Firestore's 1500 bytes, so these pin the criterion rather than prove the
+    // reserved-form fix. The character class is ASCII-only, which is what makes
+    // 128 code units also 128 bytes.
+    expect(documentIdSchema.parse('a'.repeat(128))).toHaveLength(128);
+    expect(documentIdSchema.safeParse('a'.repeat(129)).success).toBe(false);
+    expect(documentIdSchema.safeParse('a'.repeat(1501)).success).toBe(false);
+  });
+});
+
+describe('paginationQuerySchema', () => {
+  it('defaults the limit and coerces it from the query string', () => {
+    expect(paginationQuerySchema.parse({})).toEqual({ limit: 25 });
+    expect(paginationQuerySchema.parse({ limit: '10' })).toMatchObject({ limit: 10 });
+  });
+
+  it('accepts a cursor of the shape it hands back', () => {
+    // `paginate` returns `nextCursor` as the last document's id, so a cursor
+    // this API produced always parses back.
+    expect(paginationQuerySchema.parse({ cursor: AUTO_ID })).toEqual({
+      limit: 25,
+      cursor: AUTO_ID,
+    });
+  });
+
+  it('accepts a cursor over a collection keyed by ids this system did not mint', () => {
+    // `GET /api/users` pages documents whose ids are Firebase uids, so it can
+    // hand back this exact value as a `nextCursor`. On `documentIdSchema` the
+    // API would 400 the cursor it had just produced.
+    expect(paginationQuerySchema.parse({ cursor: 'auth0|5f2c1b2e' }).cursor).toBe('auth0|5f2c1b2e');
+    expect(documentIdSchema.safeParse('auth0|5f2c1b2e').success).toBe(false);
+  });
+
+  it.each(['__name__', 'a/b', '..'])('refuses a cursor of %s', (cursor) => {
+    // A cursor goes straight to `collection.doc(cursor).get()`, so an
+    // unconstrained one 500s four list routes.
+    expect(paginationQuerySchema.safeParse({ cursor }).success).toBe(false);
+  });
+
+  it('refuses an empty cursor rather than reading it as "no cursor"', () => {
+    // A deliberate 2xx → 400: `?cursor=` used to reach `paginate`, whose
+    // `if (cursor)` started from the beginning. Every neighbouring id-shaped
+    // query parameter already refuses an empty value, and a caller with no
+    // cursor omits the parameter — the admin's `toHttpParams` drops it.
+    expect(paginationQuerySchema.safeParse({ cursor: '' }).success).toBe(false);
+  });
+});
+
+describe('externalDocumentIdSchema', () => {
+  it.each([
+    ['auth0|5f2c1b2e6f7a4c2b9d3e5a1b', 'an Auth0 subject'],
+    ['oidc:acct:ada@example.com', 'an OIDC subject with a colon and an @'],
+    ['aBcDeFgHiJkLmNoPqRsTuVwXyZ01', 'a Firebase-generated uid'],
+    ['a.b', 'a dot that is not the whole id'],
+  ])('accepts %s — %s', (uid) => {
+    // The alphabet belongs to the auth provider, so this schema answers only
+    // "can Firestore store it", never "is it made of the right characters". A
+    // uid refused here would turn a legitimate role change into a 400.
+    expect(externalDocumentIdSchema.parse(uid)).toBe(uid);
+  });
+
+  it.each(['__name__', '__foo__', '__', '__foo', '.', '..', 'a/b', '/', ''])(
+    'refuses %s, which Firestore itself refuses',
+    (uid) => {
+      // `PATCH /api/users/__name__/role` answered 500 for exactly this: Firebase
+      // will create such a uid and Firestore will not store a document under it.
+      expect(externalDocumentIdSchema.safeParse(uid).success).toBe(false);
+    },
+  );
+
+  it("accepts 128 characters, Firebase Auth's own cap on a uid, and refuses 129", () => {
+    expect(externalDocumentIdSchema.parse('a'.repeat(128))).toHaveLength(128);
+    expect(externalDocumentIdSchema.safeParse('a'.repeat(129)).success).toBe(false);
+  });
+
+  it('is looser than documentIdSchema in the alphabet and no looser in the rules', () => {
+    // The pair only makes sense if it differs in exactly one dimension: a later
+    // tidy-up that collapses them would either 400 real provider uids or
+    // reopen the reserved-id 500 on every route.
+    expect(documentIdSchema.safeParse('auth0|123').success).toBe(false);
+    expect(externalDocumentIdSchema.safeParse('auth0|123').success).toBe(true);
+
+    for (const refused of ['__name__', '.', '..', 'a/b', '']) {
+      expect(externalDocumentIdSchema.safeParse(refused).success).toBe(false);
+      expect(documentIdSchema.safeParse(refused).success).toBe(false);
+    }
   });
 });

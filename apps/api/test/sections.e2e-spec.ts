@@ -32,6 +32,13 @@ const PREFIX = '/e2e-';
 /** 20 characters, the shape of a Firestore auto-id, and not one that exists. */
 const UNKNOWN_ID = 'zzzz0000zzzz0000zzzz';
 
+/**
+ * Firestore's reserved id form. It used to pass every pipe and be refused by
+ * the server as an async `INVALID_ARGUMENT`, which the exception filter could
+ * only log as unhandled and answer 500.
+ */
+const RESERVED_ID = '__name__';
+
 interface ErrorBody {
   statusCode: number;
   message: string;
@@ -893,6 +900,49 @@ describe('sections (e2e)', () => {
       title: { en: 'Orphan' },
     }).expect(404);
     expect((response.body as ErrorBody).message).toContain(UNKNOWN_ID);
+  });
+
+  it('refuses a reserved Firestore id with a 400, on a path parameter, a parent and a cursor', async () => {
+    // The 404 half of the pair — a valid-shaped id that does not exist — is the
+    // test above; these are the same routes answering the malformed case.
+    await request(server())
+      .get(`/api/sections/${RESERVED_ID}`)
+      .set('Authorization', bearer(editor))
+      .expect(400);
+    await patch(RESERVED_ID, { title: { en: 'Nope' } }).expect(400);
+    await moveTo(RESERVED_ID, { parentId: null, sortOrder: 0 }).expect(400);
+    await request(server())
+      .delete(`/api/sections/${RESERVED_ID}`)
+      .set('Authorization', bearer(editor))
+      .expect(400);
+
+    const orphan = await post({
+      parentId: RESERVED_ID,
+      slug: 'e2e-reserved-orphan',
+      title: { en: 'Orphan' },
+    }).expect(400);
+    expect((orphan.body as IssueBody).errors?.[0]?.path).toBe('parentId');
+
+    const moved = await create({ slug: 'e2e-reserved-move', title: { en: 'Move' } });
+    const refusedMove = await moveTo(moved.id, { parentId: RESERVED_ID, sortOrder: 0 }).expect(400);
+    expect((refusedMove.body as IssueBody).errors?.[0]?.path).toBe('parentId');
+    expect((await read(moved.id)).parentId).toBeNull();
+
+    // A cursor goes straight to `collection.doc(cursor).get()`.
+    await request(server())
+      .get(`/api/sections?cursor=${RESERVED_ID}`)
+      .set('Authorization', bearer(editor))
+      .expect(400);
+    // A deliberate 2xx → 400: `?cursor=` used to reach `paginate`, whose
+    // `if (cursor)` read it as "start from the beginning".
+    await request(server())
+      .get('/api/sections?cursor=')
+      .set('Authorization', bearer(editor))
+      .expect(400);
+
+    // Nothing was written: the orphan never became a section.
+    const roots = await listAll('?parentId=root');
+    expect(roots.map((section) => section.slug)).not.toContain('e2e-reserved-orphan');
   });
 
   it('filters the list by parent and status and pages with a cursor', async () => {

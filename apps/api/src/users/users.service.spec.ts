@@ -117,6 +117,38 @@ describe('UsersService.getOrProvision', () => {
     expect(profiles.get('admin-uid')?.role).toBe('admin');
   });
 
+  it('refuses a caller whose uid Firestore cannot store, before reading anything', async () => {
+    // Firebase creates `__name__` happily and Firestore refuses to hold a
+    // document under it, so without this the account's first request reaches
+    // `.doc(uid)` and comes back as an unhandled 500. No pipe sees this uid: it
+    // arrives on the verified token, not on the request.
+    const { repository, profiles } = createRepositoryDouble();
+    const { auth } = createAuthDouble([]);
+    const service = new UsersService(repository, auth);
+
+    await expect(
+      service.getOrProvision({ uid: '__name__', email: 'ada@example.com', role: 'student' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(profiles.size).toBe(0);
+  });
+
+  it('provisions a caller whose uid carries a character no Firestore auto-id has', async () => {
+    // The alphabet belongs to the auth provider: an imported subject must still
+    // get a profile, which is why the check is not `documentIdSchema`.
+    const { repository, profiles } = createRepositoryDouble();
+    const { auth } = createAuthDouble([]);
+    const service = new UsersService(repository, auth);
+
+    const result = await service.getOrProvision({
+      uid: 'auth0|5f2c1b2e',
+      email: 'ada@example.com',
+      role: 'student',
+    });
+
+    expect(result.id).toBe('auth0|5f2c1b2e');
+    expect(profiles.get('auth0|5f2c1b2e')?.role).toBe('student');
+  });
+
   it('refuses to provision a caller with no email address', async () => {
     const { repository, profiles } = createRepositoryDouble();
     const { auth } = createAuthDouble([]);

@@ -167,16 +167,47 @@ export type PublishStatus = z.infer<typeof publishStatusSchema>;
 export const isoDateTimeSchema = z.iso.datetime({ offset: true });
 
 /**
- * A Firestore document id. Constrained so a hand-crafted path segment cannot
- * reach `collection.doc()` as `..` or a nested path — a value carrying `/`
- * makes `doc()` throw for an odd number of segments, which would turn a bad
- * request into a 500.
+ * What Firestore itself refuses in a document id, and nothing more: an id may
+ * not be `.` or `..`, may not contain `/`, may not be of the reserved `__…__`
+ * form, and is capped at 1500 bytes.
+ *
+ * The cap is 128 rather than Firestore's 1500 because 128 characters is also
+ * Firebase Auth's own cap on a uid, so this cannot refuse a real one, and a
+ * UTF-16 code unit is at most 4 UTF-8 bytes, so nothing has to count bytes.
+ *
+ * It is the schema for the ids this system does **not** mint: a Firebase uid —
+ * `UsersRepository` keys its collection by one — and the pagination cursor over
+ * any collection keyed by one. Their alphabet belongs to the auth provider, so
+ * {@link documentIdSchema} would turn a legitimate subject carrying `:` or `|`
+ * into a 400. What Firestore refuses is a different question from what an id
+ * may be made of, and only the first is this schema's to answer.
+ *
+ * ADR-018 records the rest: which of the two schemas a new route takes, why the
+ * reserved rule is a `__` prefix rather than Firestore's documented `__.*__`,
+ * and why it is enforced at the pipe rather than in a repository.
  */
-export const documentIdSchema = z
+export const externalDocumentIdSchema = z
   .string()
   .min(1)
   .max(128)
-  .regex(/^[A-Za-z0-9_-]+$/, 'Must be a Firestore document id');
+  .regex(/^[^/]+$/, 'A Firestore document id cannot contain "/"')
+  .regex(/^(?!\.{1,2}$)/, 'A Firestore document id cannot be "." or ".."')
+  .regex(/^(?!__)/, 'A Firestore document id cannot begin with "__", which Firestore reserves');
+
+/**
+ * A Firestore document id as this system mints them: everything Firestore
+ * refuses, plus a fixed alphabet. Every such id is a Firestore auto-id, a
+ * `randomUUID()` or a slug-shaped constant, so the alphabet is free to be
+ * narrow — and narrow means one rule to read at the schema every id-carrying
+ * route funnels through.
+ *
+ * The ids it is deliberately **not** put on are the ones something else mints;
+ * see {@link externalDocumentIdSchema} and ADR-018.
+ */
+export const documentIdSchema = externalDocumentIdSchema.regex(
+  /^[A-Za-z0-9_-]+$/,
+  'Must be a Firestore document id',
+);
 
 /**
  * URL-safe identifier used in public routes, unique among siblings.
@@ -219,7 +250,24 @@ export type AssetRef = z.infer<typeof assetRefSchema>;
 
 export const paginationQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
-  cursor: z.string().optional(),
+  /**
+   * The id of the last document of the previous page —
+   * `BaseRepository.paginate` hands it straight to `collection.doc(cursor)` —
+   * so it is bounded by what Firestore can address, and by that alone. It takes
+   * the **external** rule because one paginated collection is keyed by ids this
+   * system does not mint: `GET /api/users` pages the profile documents, whose
+   * ids are Firebase uids, so it can hand back `auth0|5f2c…` as a `nextCursor`
+   * and has to accept the same value back. A cursor this API produced always
+   * parses, which is only true of the looser schema.
+   *
+   * `?cursor=` with no value is a 400 and not "start from the beginning", which
+   * `paginate`'s `if (cursor)` used to make of it while this field was an
+   * unconstrained string. Refused deliberately: `min(1)` is what every other
+   * id-shaped query parameter already applies to an empty value — `parentId`,
+   * `sectionId`, `recurrenceId` — so an empty cursor was the odd one out, and a
+   * caller with no cursor omits the parameter rather than sending it blank.
+   */
+  cursor: externalDocumentIdSchema.optional(),
 });
 export type PaginationQuery = z.infer<typeof paginationQuerySchema>;
 

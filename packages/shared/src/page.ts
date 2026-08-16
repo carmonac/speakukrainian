@@ -46,9 +46,22 @@ export const storedSubsectionListPageBodySchema = z.strictObject({
    * Defaults to the page's own parent section when omitted. Constrained to a
    * document id for the same reason `createContentPageSchema.sectionId` is:
    * rendering the list means handing this value to `collection.doc()`, where a
-   * nested path or `..` throws and turns a bad request into a 500. ADR-012's
-   * tightening exception does not apply, for the reason the block below gives —
-   * nothing has ever written a page document.
+   * nested path or `..` throws and turns a bad request into a 500.
+   *
+   * Bounded on the **stored** side as well, which is the norm ADR-012 describes
+   * rather than its exception: the page is rendered *from* this value, so there
+   * is no useful lenient reading of one that is not an id — the same reason
+   * `contentPageSchema` keeps `slug` kebab-case and `path` starting with `/`.
+   * The claim this comment used to carry, that nothing has ever written a page
+   * document, no longer holds now that pages ship. What carries the bound
+   * instead is that the field has been on this schema since it was introduced,
+   * so no writer has been able to store a value its alphabet refuses. The
+   * reserved-form rule (#47) is the one addition that *is* a tightening — a
+   * `PATCH` before #30 stored this value without reading it — so a page
+   * carrying `__name__` here would now be unreadable rather than repairable.
+   * Accepted because reaching that state took a hand-crafted request through a
+   * route #30 has since closed; if such a document ever turns up, the fix is to
+   * move this bound to the input variant, as `h5pContentId` below already sits.
    */
   sourceSectionId: documentIdSchema.optional(),
   layout: z.enum(['grid', 'list']).default('grid'),
@@ -94,6 +107,21 @@ export const subsectionListPageBodySchema = storedSubsectionListPageBodySchema.e
 
 export const h5pExercisePageBodySchema = storedH5pExercisePageBodySchema.extend({
   explanation: richTextSchema.optional(),
+  /**
+   * The id of another document. Bounded on the input side only, per ADR-012's
+   * condition: a page is not addressed or routed by this field, so a stored
+   * value the rule refuses leaves the page readable, listable and repairable
+   * from its own edit screen — where a stored `sourceSectionId` above is what
+   * the page is rendered *from*, and has no useful lenient reading.
+   *
+   * Bounding the input variant closes every writer: the field is set by the
+   * two routes that carry a page body — `POST /api/pages` through
+   * `createContentPageSchema.body` and `PATCH /api/pages/:id` through
+   * `updateContentPageSchema.body` — and by nothing else, since `h5p.service.ts`
+   * records the relationship on the H5P side and deliberately does not write
+   * the page.
+   */
+  h5pContentId: documentIdSchema.nullable().default(null),
 });
 
 /**
@@ -104,9 +132,11 @@ export const h5pExercisePageBodySchema = storedH5pExercisePageBodySchema.extend(
  * did not happen. Strict members turn the same body into an
  * `unrecognized_keys` issue pathed at `body`.
  *
- * Nothing has ever written a page document, so no stored body can fail *that*
- * rule and it holds on both shapes. The **length** rules are the ones ADR-012
- * separates, so they live on the bounded variants alone.
+ * Strictness holds on both shapes, and not because no page document exists —
+ * they do now. A stored body carrying a key from another variant is corrupt
+ * whichever schema reads it, and no writer can produce one: every page body is
+ * written through the bounded variants above. The **length** rules are the ones
+ * ADR-012 separates, so they live on the bounded variants alone.
  */
 export const pageBodySchema = z.discriminatedUnion('type', [
   richTextPageBodySchema,

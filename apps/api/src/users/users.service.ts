@@ -1,6 +1,7 @@
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { Auth, UserRecord } from 'firebase-admin/auth';
 import {
+  userIdSchema,
   userRoleSchema,
   type AuthClaims,
   type Page,
@@ -39,6 +40,17 @@ export class UsersService {
    * the token that authorized the request.
    */
   async getOrProvision(caller: AuthenticatedUser): Promise<UserProfile> {
+    // The only uid in this service that no pipe has seen: it comes off the
+    // verified token rather than off the request. `PATCH :uid/role` is checked
+    // at the controller, but an account whose uid Firestore cannot store —
+    // Firebase accepts `__name__`, Firestore does not — would reach
+    // `.doc(uid)` here on the caller's very first request. 400 for the same
+    // reason the missing-email case below is one: the account lacks something
+    // this API needs and no retry changes that.
+    if (!userIdSchema.safeParse(caller.uid).success) {
+      throw new BadRequestException(`Account uid "${caller.uid}" cannot hold a profile`);
+    }
+
     const existing = await this.repository.findById(caller.uid);
     if (existing) {
       return existing;

@@ -77,6 +77,9 @@ const MAX_PURGE_PASSES = 20;
 /** 20 characters, the shape of a Firestore auto-id, and not one that exists. */
 const UNKNOWN_ID = 'zzzz0000zzzz0000zzzz';
 
+/** Firestore's reserved id form, which no auto-id can ever be. */
+const RESERVED_ID = '__name__';
+
 /**
  * Untagged documents the purge has to see past — more than `PURGE_LIMIT`, so a
  * single bounded read cannot hold both them and the fixture.
@@ -801,6 +804,21 @@ describe('schedule slots (e2e)', () => {
     const response = await removeSeries(UNKNOWN_ID).expect(200);
 
     expect(response.body).toEqual({ deleted: 0 });
+  });
+
+  it('refuses a reserved Firestore id on a series delete and on a slot read', async () => {
+    // The series delete used to answer 200 `{ deleted: 0 }` here, because
+    // `recurrenceId` is only ever a `where` value and never reaches
+    // `collection.doc()`. The documented idempotence covers a series that
+    // exists in shape and has nothing left to remove; a value that is not an id
+    // at all is a different case, and no generated series id can begin with
+    // `__` — they are Firestore auto-ids.
+    await removeSeries(RESERVED_ID).expect(400);
+
+    // The slot id does reach `collection.doc()`, and the two refusals stay
+    // distinguishable: 400 is "that is not an id", 404 is "no such slot".
+    await read(RESERVED_ID).expect(400);
+    await read(UNKNOWN_ID).expect(404);
   });
 
   it('lets an editor read the calendar but not write to it', async () => {

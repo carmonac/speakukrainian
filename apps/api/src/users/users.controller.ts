@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   paginationQuerySchema,
   updateUserRoleSchema,
+  userIdSchema,
   type Page,
   type PaginationQuery,
   type UpdateUserRoleInput,
@@ -39,10 +40,19 @@ export class UsersController {
     return this.users.list(query);
   }
 
+  /**
+   * `uid` keys the profile document (`UsersRepository` writes `.doc(uid)`), so
+   * it is validated as the Firestore id it becomes — but with `userIdSchema`
+   * and not `documentIdSchema`: a uid's alphabet belongs to the auth provider,
+   * and a subject carrying `:` or `|` must not turn a real role change into a
+   * 400. Without any check `PATCH /api/users/__name__/role` reached Firestore
+   * and came back as an unhandled 500, since `auth.getUser` accepts a uid
+   * Firestore refuses to store.
+   */
   @Patch(':uid/role')
   @Roles('admin')
   setRole(
-    @Param('uid') uid: string,
+    @Param('uid', new ZodValidationPipe(userIdSchema)) uid: string,
     @Body(new ZodValidationPipe(updateUserRoleSchema)) body: UpdateUserRoleInput,
     @CurrentUser() caller?: AuthenticatedUser,
   ): Promise<UserProfile> {

@@ -32,6 +32,13 @@ const PURGE_LIMIT = 1000;
 /** 20 characters, the shape of a Firestore auto-id, and not one that exists. */
 const UNKNOWN_ID = 'zzzz0000zzzz0000zzzz';
 
+/**
+ * Firestore's reserved id form. It used to pass every pipe and be refused by
+ * the server as an async `INVALID_ARGUMENT`, which the exception filter could
+ * only log as unhandled and answer 500.
+ */
+const RESERVED_ID = '__name__';
+
 interface ErrorBody {
   statusCode: number;
   message: string;
@@ -913,6 +920,79 @@ describe('pages (e2e)', () => {
       body: richText('<p>Orphan</p>'),
     }).expect(404);
     expect((response.body as ErrorBody).message).toContain(UNKNOWN_ID);
+  });
+
+  it('refuses a reserved Firestore id with a 400 that names the field, and still 404s a valid-shaped missing one', async () => {
+    const section = await createSection({
+      slug: 'e2e-reserved-section',
+      title: { en: 'Reserved' },
+    });
+    const page = await create({
+      sectionId: section.id,
+      slug: 'e2e-reserved-page',
+      title: { en: 'Page' },
+      body: { type: 'subsection_list' },
+    });
+
+    const created = await post({
+      sectionId: section.id,
+      slug: 'e2e-reserved-source',
+      title: { en: 'Source' },
+      body: { type: 'subsection_list', sourceSectionId: RESERVED_ID },
+    }).expect(400);
+    expect((created.body as IssueBody).errors?.[0]?.path).toBe('body.sourceSectionId');
+
+    // The same field on a patch, which reads the source section since #30 and
+    // so answered 200 before that and 500 after it.
+    const patched = await patch(page.id, {
+      body: { type: 'subsection_list', sourceSectionId: RESERVED_ID },
+    }).expect(400);
+    expect((patched.body as IssueBody).errors?.[0]?.path).toBe('body.sourceSectionId');
+
+    const owning = await post({
+      sectionId: RESERVED_ID,
+      slug: 'e2e-reserved-owner',
+      title: { en: 'Owner' },
+      body: richText('<p>Owner</p>'),
+    }).expect(400);
+    expect((owning.body as IssueBody).errors?.[0]?.path).toBe('sectionId');
+
+    // A path parameter is a bare string schema, so its issue carries no path —
+    // the URL is what names it. The status is the whole assertion here, on
+    // every route that takes an `:id`, since each declares its own pipe.
+    const param = await request(server())
+      .get(`/api/pages/${RESERVED_ID}`)
+      .set('Authorization', bearer(editor))
+      .expect(400);
+    expect((param.body as ErrorBody).statusCode).toBe(400);
+    await patch(RESERVED_ID, { title: { en: 'Nope' } }).expect(400);
+    await publish(RESERVED_ID).expect(400);
+    await unpublish(RESERVED_ID).expect(400);
+    await remove(RESERVED_ID).expect(400);
+
+    // A cursor goes straight to `collection.doc(cursor).get()`.
+    await request(server())
+      .get(`/api/pages?cursor=${RESERVED_ID}`)
+      .set('Authorization', bearer(editor))
+      .expect(400);
+    // A deliberate 2xx → 400: `?cursor=` used to page from the beginning.
+    await request(server())
+      .get('/api/pages?cursor=')
+      .set('Authorization', bearer(editor))
+      .expect(400);
+
+    // The two refusals stay distinguishable: 400 is "that is not an id", 404 is
+    // "that is an id and there is no such page".
+    await request(server())
+      .get(`/api/pages/${UNKNOWN_ID}`)
+      .set('Authorization', bearer(editor))
+      .expect(404);
+
+    // Refused before any write: the section holds the one page it started with,
+    // still pointing at no source of its own.
+    const remaining = await listAll(`?sectionId=${section.id}`);
+    expect(remaining.map((item) => item.id)).toEqual([page.id]);
+    expect('sourceSectionId' in remaining[0]!.body).toBe(false);
   });
 
   it('refuses a rename or a move that would rewrite more pages than one transaction commits', async () => {
