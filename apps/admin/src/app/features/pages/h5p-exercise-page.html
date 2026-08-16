@@ -1,6 +1,6 @@
 <section class="h5p-exercise">
   <mat-card class="h5p-exercise__card">
-    @if (saving()) {
+    @if (saving() || loading()) {
       <mat-progress-bar mode="indeterminate" />
     }
 
@@ -24,13 +24,19 @@
            wired. `mountH5pEditor` says why. -->
       <div #host class="h5p-exercise__host"></div>
 
+      <!-- Below the widget, not above it: on a new exercise this sentence points
+           back at the content type list the widget is already showing. -->
+      @if (!ready()) {
+        <p class="h5p-exercise__waiting">{{ waitingMessage() }}</p>
+      }
+
       <div class="h5p-exercise__actions">
         <a matButton type="button" class="h5p-exercise__cancel" [routerLink]="pageLink()">Cancel</a>
         <button
           matButton="filled"
           type="button"
           class="h5p-exercise__save"
-          [disabled]="!mounted() || saving()"
+          [disabled]="!ready() || saving()"
           (click)="save()"
         >
           Save

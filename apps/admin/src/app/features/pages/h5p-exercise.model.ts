@@ -55,7 +55,13 @@ export interface H5pEditorHost extends HTMLElement {
     contentId: string | undefined,
     body: SaveH5pContentInput,
   ) => Promise<{ contentId: string }>;
-  save(): Promise<unknown>;
+  /**
+   * Optional because the element only has it once it has been **upgraded**, and
+   * `H5P_DEFINE_ELEMENTS` exists precisely so that it need not be. A caller that
+   * has to handle its absence cannot mistake an un-upgraded element for a save
+   * that quietly did nothing.
+   */
+  save?: () => Promise<unknown>;
 }
 
 /** Everything one mounted widget needs, decided by the caller. */
@@ -68,6 +74,12 @@ export interface H5pEditorMount {
     contentId: string | undefined,
     body: SaveH5pContentInput,
   ) => Promise<{ contentId: string }>;
+  /**
+   * `editorloaded` — a content type's form has been built, which is the first
+   * moment the widget can answer a save. See {@link mountH5pEditor} for what it
+   * does **not** mean and for the one state it never reaches.
+   */
+  onReady: () => void;
   onSaved: (contentId: string) => void;
   /** `save-error` — the message is the caller's own constant. */
   onError: (message: string) => void;
@@ -94,14 +106,17 @@ export interface H5pEditorMount {
  * is wired, the removal is then a teardown this code owns, and the caller's
  * template needs no `CUSTOM_ELEMENTS_SCHEMA`.
  *
- * **Nothing here listens for `editorloaded`, and nothing may depend on it.**
- * The component dispatches that event from a handler it registers on the *host*
- * window's `H5P.externalDispatcher`, and with the client assets this API pins it
- * is never triggered there — the relay in `h5peditor-editor.js` runs inside the
- * editor's own iframe. Verified in Chrome against a real exercise: the editor
- * form was built and `editorInstance.selector.form` was set within 1.5 s, while
- * no `editorloaded` reached the host page in 28 s. Anything gated on it would
- * therefore never enable. ADR-019 has the account.
+ * **`editorloaded` means "a content type's form exists", not "the widget is on
+ * screen", and it has one state it never reaches.** It is triggered by
+ * `h5peditor-library-selector.js` at the end of `loadSemantics`, so for a *new*
+ * exercise it does not fire until the author has chosen a content type — before
+ * that the hub is up and usable and there is genuinely nothing to save. And
+ * because it is the **last** statement of that callback, any throw while the
+ * form is being built skips it: the editor is then half-drawn and no event ever
+ * arrives. That is not hypothetical — upstream's `ns.Html.createHtml` reads
+ * `field.tags.includes('table')` unconditionally, so one `html` field with no
+ * `tags` in a library's `semantics.json` is enough. ADR-019 records what that
+ * looks like to an author and how to recognise it.
  *
  * The editor's **scripts** are not torn down and cannot be: `addScripts`
  * appends them to `document.head` deduped on `data-h5p-src`, removing the tags
@@ -119,6 +134,7 @@ export function mountH5pEditor(container: HTMLElement, mount: H5pEditorMount): (
    */
   let lastSavedContentId: string | null = null;
 
+  const onReady = (): void => mount.onReady();
   const onSaved = (event: Event): void => {
     const contentId = detailContentId(event) ?? lastSavedContentId;
     if (contentId !== null) {
@@ -131,6 +147,7 @@ export function mountH5pEditor(container: HTMLElement, mount: H5pEditorMount): (
   // `replaceChildren`, so a re-run against the same container never leaves two.
   container.replaceChildren(element);
 
+  element.addEventListener('editorloaded', onReady);
   element.addEventListener('saved', onSaved);
   element.addEventListener('save-error', onSaveError);
   element.addEventListener('validation-error', onValidationError);
@@ -154,6 +171,7 @@ export function mountH5pEditor(container: HTMLElement, mount: H5pEditorMount): (
   };
 
   return () => {
+    element.removeEventListener('editorloaded', onReady);
     element.removeEventListener('saved', onSaved);
     element.removeEventListener('save-error', onSaveError);
     element.removeEventListener('validation-error', onValidationError);

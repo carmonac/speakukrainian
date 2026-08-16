@@ -55,6 +55,20 @@ export const EXERCISE_NEEDS_PAGE = 'Save the page before adding an exercise.';
  */
 export const EXERCISE_SAVE_FAILED = 'The exercise was not saved. Your work is still here.';
 
+/**
+ * Shown on an existing exercise until the widget has built its form. There is
+ * nothing to time out against and no timer is added; what a stuck one means is
+ * in ADR-019.
+ */
+export const EXERCISE_LOADING = 'Loading the exercise editor…';
+
+/**
+ * The same slot on a **new** exercise, where the widget is not loading at all —
+ * its content type list is up and choosing one is the author's next act, and
+ * also what makes Save do anything.
+ */
+export const EXERCISE_PICK_TYPE = 'Choose a content type above to start building the exercise.';
+
 /** An H5P page that has no exercise attached yet. */
 export const NO_EXERCISE_YET = 'No exercise on this page yet.';
 

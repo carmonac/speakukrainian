@@ -26,7 +26,7 @@ import {
 } from './h5p-exercise.model';
 import type { H5pExerciseData } from './h5p-exercise.resolver';
 import { H5pApi } from './h5p.api';
-import { EXERCISE_SAVE_FAILED } from './page-messages';
+import { EXERCISE_LOADING, EXERCISE_PICK_TYPE, EXERCISE_SAVE_FAILED } from './page-messages';
 import { pageTitle } from './pages.model';
 
 /**
@@ -62,12 +62,18 @@ export class H5pExercisePage implements HasUnsavedChanges {
   private readonly host = viewChild.required<ElementRef<HTMLElement>>('host');
 
   /**
-   * True once the widget has been mounted, which is the **only** readiness
-   * signal this screen has. The component's `editorloaded` event is not one:
-   * with the client assets this API pins it never reaches the host page, so
-   * Save gated on it would never enable. ADR-019 has the evidence.
+   * True once the widget has built a content type's form and dispatched
+   * `editorloaded`. Save waits for it because before it there is nothing the
+   * widget can save: `H5PEditorComponent.save()` calls `getParams()` on a form
+   * that does not exist and throws a raw `TypeError` **before** it reaches any
+   * of its own `dispatchAndThrowError` calls, so it is a failure that reports
+   * itself nowhere.
+   *
+   * For a new exercise that moment is when the author picks a content type, not
+   * when the screen paints — which is why {@link waitingMessage} says different
+   * things for the two cases rather than calling both of them "loading".
    */
-  protected readonly mounted = signal(false);
+  protected readonly ready = signal(false);
   protected readonly saving = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly savedContentId = signal<string | null>(null);
@@ -83,6 +89,21 @@ export class H5pExercisePage implements HasUnsavedChanges {
   );
   protected readonly pageLink = computed(() => ['/pages', this.exerciseData().page.id]);
 
+  /**
+   * What the screen says while Save is disabled. A new exercise is not waiting
+   * on this screen at all — the content type hub is up and the author's next act
+   * is to choose one — so calling that "loading" would be a lie printed over a
+   * working control.
+   */
+  protected readonly waitingMessage = computed(() =>
+    this.exerciseData().contentId === null ? EXERCISE_PICK_TYPE : EXERCISE_LOADING,
+  );
+
+  /** Only the existing-exercise case is genuinely waiting on a fetch. */
+  protected readonly loading = computed(
+    () => !this.ready() && this.exerciseData().contentId !== null,
+  );
+
   constructor() {
     inject(H5P_DEFINE_ELEMENTS)();
 
@@ -90,7 +111,7 @@ export class H5pExercisePage implements HasUnsavedChanges {
       const container = this.host().nativeElement;
       const data = this.exerciseData();
 
-      this.mounted.set(false);
+      this.ready.set(false);
       this.saving.set(false);
       this.error.set(null);
       this.savedContentId.set(null);
@@ -100,15 +121,15 @@ export class H5pExercisePage implements HasUnsavedChanges {
         contentId: data.contentId ?? H5P_NEW_CONTENT_ID,
         content: data.content,
         save: (contentId, body) => this.persist(contentId, body),
+        onReady: () => this.ready.set(true),
         onSaved: (contentId) => void this.finish(contentId),
         onError: (message) => this.showFailure(message),
         onInvalid: (message) => this.showFailure(message),
       });
-      this.mounted.set(true);
 
       onCleanup(() => {
         teardown();
-        this.mounted.set(false);
+        this.ready.set(false);
       });
     });
   }
@@ -120,19 +141,31 @@ export class H5pExercisePage implements HasUnsavedChanges {
    * the right direction for work no reload can recover.
    */
   hasUnsavedChanges(): boolean {
-    return this.mounted() && this.savedContentId() === null;
+    return this.ready() && this.savedContentId() === null;
   }
 
-  protected save(): void {
+  /**
+   * **Every failure here has to end in a sentence on screen.** The component
+   * dispatches `save-error` or `validation-error` for the failures it
+   * recognises, and those set the banner with wording worth reading — but only
+   * those. A throw it does not recognise, or an element that was never upgraded,
+   * would otherwise leave a button that does nothing and says nothing, which is
+   * the worst outcome available to this screen. So the `catch` fills the banner
+   * in rather than swallowing, and only when an event has not already filled it
+   * with something better.
+   */
+  protected async save(): Promise<void> {
     const element = this.host().nativeElement.querySelector<H5pEditorHost>('h5p-editor');
-    if (element === null || this.saving()) {
+    if (element === null || !this.ready() || this.saving()) {
       return;
     }
+
     this.error.set(null);
-    // The rejection is already reported through the component's own
-    // `save-error` and `validation-error` events; this catch exists so an
-    // unhandled rejection does not reach the console.
-    void element.save().catch(() => {});
+    try {
+      await (element.save?.() ?? Promise.reject(new Error(EXERCISE_SAVE_FAILED)));
+    } catch {
+      this.error.update((current) => current ?? EXERCISE_SAVE_FAILED);
+    }
   }
 
   /**

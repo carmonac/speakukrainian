@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SaveH5pContentInput } from '@speakukrainian/shared';
 import {
   H5P_NEW_CONTENT_ID,
@@ -28,6 +28,7 @@ const BODY: SaveH5pContentInput = {
 
 interface Recorded {
   saves: { contentId: string | undefined; body: SaveH5pContentInput }[];
+  ready: number;
   saved: string[];
   errors: string[];
   invalid: string[];
@@ -41,6 +42,9 @@ function options(recorded: Recorded, overrides: Partial<H5pEditorMount> = {}): H
       recorded.saves.push({ contentId, body });
       return Promise.resolve({ contentId: 'c-new' });
     },
+    onReady: () => {
+      recorded.ready += 1;
+    },
     onSaved: (contentId) => recorded.saved.push(contentId),
     onError: (message) => recorded.errors.push(message),
     onInvalid: (message) => recorded.invalid.push(message),
@@ -49,7 +53,7 @@ function options(recorded: Recorded, overrides: Partial<H5pEditorMount> = {}): H
 }
 
 function blank(): Recorded {
-  return { saves: [], saved: [], errors: [], invalid: [] };
+  return { saves: [], ready: 0, saved: [], errors: [], invalid: [] };
 }
 
 function editorIn(container: HTMLElement): H5pEditorHost {
@@ -58,6 +62,74 @@ function editorIn(container: HTMLElement): H5pEditorHost {
     throw new Error('Expected an h5p-editor in the container');
   }
   return element;
+}
+
+/** What the element looked like at the moment each boot write landed on it. */
+interface BootStep {
+  write: 'content-id' | 'saveContentCallback' | 'loadContentCallback';
+  connected: boolean;
+  contentId: string | null;
+  hasSaveCallback: boolean;
+}
+
+/**
+ * Records the boot sequence by instrumenting the element `mountH5pEditor`
+ * creates, before it is handed back.
+ *
+ * This is the one invariant in this file that no other assertion can reach: the
+ * real component renders from `attributeChangedCallback` and from the
+ * `loadContentCallback` **setter**, so an out-of-order mount fails only inside a
+ * browser — `render()` reaching `this.root.innerHTML` with no root, inside an
+ * `async` method, which is an unhandled rejection and a blank screen. Nothing in
+ * jsdom upgrades the element, so nothing here would otherwise notice.
+ *
+ * `defineProperty` on the *instance* rather than a defined custom element: an
+ * accessor is exactly what the component declares for `loadContentCallback`, and
+ * it costs none of the `ResizeObserver` and script loading an upgrade would.
+ */
+function recordBootOrder(steps: BootStep[]): void {
+  const createElement = document.createElement.bind(document);
+
+  vi.spyOn(document, 'createElement').mockImplementation((tag: string, ...rest: unknown[]) => {
+    const element = createElement(tag, ...(rest as []));
+    if (tag !== 'h5p-editor') {
+      return element;
+    }
+
+    const step = (write: BootStep['write']): void => {
+      steps.push({
+        write,
+        connected: element.isConnected,
+        contentId: element.getAttribute('content-id'),
+        hasSaveCallback: 'saveContentCallback' in element,
+      });
+    };
+
+    const setAttribute = element.setAttribute.bind(element);
+    element.setAttribute = (name: string, value: string): void => {
+      setAttribute(name, value);
+      if (name === 'content-id') {
+        step('content-id');
+      }
+    };
+
+    for (const name of ['saveContentCallback', 'loadContentCallback'] as const) {
+      let held: unknown;
+      Object.defineProperty(element, name, {
+        configurable: true,
+        get: () => held,
+        set: (value: unknown) => {
+          held = value;
+          // Only the assignment, not the teardown's clearing.
+          if (value !== undefined) {
+            step(name);
+          }
+        },
+      });
+    }
+
+    return element;
+  });
 }
 
 describe('mountH5pEditor', () => {
@@ -69,7 +141,30 @@ describe('mountH5pEditor', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     container.remove();
+  });
+
+  it('connects the element before it wires it, and assigns the load callback last', () => {
+    const steps: BootStep[] = [];
+    recordBootOrder(steps);
+
+    mountH5pEditor(container, options(blank(), { contentId: 'c1' }));
+
+    expect(steps.map((entry) => entry.write)).toEqual([
+      'content-id',
+      'saveContentCallback',
+      'loadContentCallback',
+    ]);
+    // Every write lands on an element that is already in the document: the
+    // component builds its root in `connectedCallback`, and a render before that
+    // throws where nothing catches it.
+    expect(steps.every((entry) => entry.connected)).toBe(true);
+    // And the render the load callback triggers finds the id and the save
+    // callback already there, which is what it needs to do anything.
+    const load = steps.at(-1);
+    expect(load?.contentId).toBe('c1');
+    expect(load?.hasSaveCallback).toBe(true);
   });
 
   it('leaves exactly one h5p-editor carrying "new" for an exercise that does not exist yet', () => {
@@ -129,12 +224,18 @@ describe('mountH5pEditor', () => {
     mountH5pEditor(container, options(recorded));
     const element = editorIn(container);
 
+    element.dispatchEvent(
+      new CustomEvent('editorloaded', {
+        detail: { contentId: 'new', ubername: 'H5P.MultiChoice 1.16' },
+      }),
+    );
     element.dispatchEvent(new CustomEvent('saved', { detail: { contentId: 'c-9' } }));
     element.dispatchEvent(new CustomEvent('save-error', { detail: { message: 'API down' } }));
     element.dispatchEvent(
       new CustomEvent('validation-error', { detail: { message: 'Set a title.' } }),
     );
 
+    expect(recorded.ready).toBe(1);
     expect(recorded.saved).toEqual(['c-9']);
     expect(recorded.errors).toEqual(['API down']);
     expect(recorded.invalid).toEqual(['Set a title.']);
@@ -180,8 +281,10 @@ describe('mountH5pEditor', () => {
 
     element.dispatchEvent(new CustomEvent('saved', { detail: { contentId: 'c-9' } }));
     element.dispatchEvent(new CustomEvent('save-error', { detail: { message: 'API down' } }));
+    element.dispatchEvent(new CustomEvent('editorloaded', { detail: {} }));
     expect(recorded.saved).toEqual([]);
     expect(recorded.errors).toEqual([]);
+    expect(recorded.ready).toBe(0);
   });
 
   it('leaves one element when the same container is mounted into twice', () => {

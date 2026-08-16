@@ -27,7 +27,12 @@ import {
 } from './h5p-exercise.model';
 import { h5pExerciseResolver } from './h5p-exercise.resolver';
 import { H5pApi, type H5pContentParameters, type H5pEditorModel } from './h5p.api';
-import { EXERCISE_SAVE_FAILED, PAGE_IS_NOT_AN_EXERCISE } from './page-messages';
+import {
+  EXERCISE_LOADING,
+  EXERCISE_PICK_TYPE,
+  EXERCISE_SAVE_FAILED,
+  PAGE_IS_NOT_AN_EXERCISE,
+} from './page-messages';
 import { PagesApi } from './pages.api';
 
 const audit = {
@@ -262,6 +267,31 @@ async function saveThroughWidget(
   harness.detectChanges();
 }
 
+/**
+ * The widget's `editorloaded`, which fires once a content type's form exists —
+ * for a new exercise, the moment the author picks one.
+ */
+function becomeReady(harness: RouterTestingHarness): void {
+  editor(harness).dispatchEvent(
+    new CustomEvent('editorloaded', {
+      detail: { contentId: 'new', ubername: 'H5P.MultiChoice 1.16' },
+    }),
+  );
+  harness.detectChanges();
+}
+
+function saveButton(harness: RouterTestingHarness): HTMLButtonElement {
+  const button = root(harness).querySelector<HTMLButtonElement>('.h5p-exercise__save');
+  if (button === null) {
+    throw new Error('Expected the screen to render a Save button');
+  }
+  return button;
+}
+
+function banner(harness: RouterTestingHarness): string | null {
+  return root(harness).querySelector('.h5p-exercise__error')?.textContent?.trim() ?? null;
+}
+
 function called(recorded: Recorded, method: string): { method: string; args: unknown[] }[] {
   return recorded.calls.filter((call) => call.method === method);
 }
@@ -345,6 +375,7 @@ describe('H5pExercisePage', () => {
   it('creates an exercise with no id and hands the result to the page form', async () => {
     const recorded = setup();
     const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
 
     await saveThroughWidget(harness);
 
@@ -359,6 +390,7 @@ describe('H5pExercisePage', () => {
   it('saves an existing exercise under its own id', async () => {
     const recorded = setup({ pages: [ATTACHED] });
     const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
 
     await saveThroughWidget(harness);
 
@@ -406,20 +438,108 @@ describe('H5pExercisePage', () => {
     );
   });
 
-  it('enables Save as soon as the widget is mounted, and not on the editor’s own event', async () => {
-    // The mount is the only readiness signal there is: `editorloaded` never
-    // reaches the host page with the client assets this API pins, so a Save
-    // gated on it would never enable. ADR-019 has the evidence.
+  it('keeps Save disabled until the widget has a form, since it cannot honour one before', async () => {
+    // `H5PEditorComponent.save()` calls `getParams()` on an editor with no form
+    // and throws a raw TypeError *before* it reaches any of its own
+    // `dispatchAndThrowError` calls — a failure that reports itself nowhere. So
+    // the button waits for `editorloaded` rather than for the mount.
     setup();
     const harness = await open('/pages/p1/exercise');
 
-    const save = root(harness).querySelector<HTMLButtonElement>('.h5p-exercise__save');
-    expect(save?.disabled).toBe(false);
+    expect(saveButton(harness).disabled).toBe(true);
+
+    becomeReady(harness);
+
+    expect(saveButton(harness).disabled).toBe(false);
+  });
+
+  it('tells a new exercise’s author to pick a content type, and does not call that loading', async () => {
+    // The widget is not loading — its content type list is up. Printing
+    // "Loading…" over a working control is the lie this case exists to prevent.
+    setup();
+    const harness = await open('/pages/p1/exercise');
+
+    expect(root(harness).querySelector('.h5p-exercise__waiting')?.textContent?.trim()).toBe(
+      EXERCISE_PICK_TYPE,
+    );
+    expect(root(harness).querySelector('mat-progress-bar')).toBeNull();
+
+    becomeReady(harness);
+
+    expect(root(harness).querySelector('.h5p-exercise__waiting')).toBeNull();
+  });
+
+  it('says an existing exercise is loading, and shows a progress bar while it is', async () => {
+    setup({ pages: [ATTACHED] });
+    const harness = await open('/pages/p1/exercise');
+
+    expect(root(harness).querySelector('.h5p-exercise__waiting')?.textContent?.trim()).toBe(
+      EXERCISE_LOADING,
+    );
+    expect(root(harness).querySelector('mat-progress-bar')).not.toBeNull();
+
+    becomeReady(harness);
+
+    expect(root(harness).querySelector('.h5p-exercise__waiting')).toBeNull();
+    expect(root(harness).querySelector('mat-progress-bar')).toBeNull();
+  });
+
+  it('says something when the widget’s own save throws without reporting itself', async () => {
+    // The regression QA found: `getParams()` raising a raw TypeError produces no
+    // `save-error` and no `validation-error`, and a bare `.catch(() => {})` then
+    // left a button that did nothing and said nothing.
+    setup();
+    const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
+
+    editor(harness).save = () => Promise.reject(new TypeError('reading ‘params’'));
+    saveButton(harness).click();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(banner(harness)).toBe(EXERCISE_SAVE_FAILED);
+    expect(TestBed.inject(Router).url).toBe('/pages/p1/exercise');
+  });
+
+  it('says something when the element was never upgraded, rather than throwing at the click', async () => {
+    // `H5P_DEFINE_ELEMENTS` is a no-op here, so the element has no `save` at all
+    // — the same shape as a browser where the custom element failed to register.
+    setup();
+    const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
+
+    saveButton(harness).click();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(banner(harness)).toBe(EXERCISE_SAVE_FAILED);
+  });
+
+  it('prefers the widget’s own sentence over the house one when it dispatched an event', async () => {
+    setup();
+    const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
+
+    const element = editor(harness);
+    element.save = () => {
+      element.dispatchEvent(
+        new CustomEvent('validation-error', {
+          detail: { message: "The main title of the content hasn't been set." },
+        }),
+      );
+      return Promise.reject(new Error('validation-error: …'));
+    };
+    saveButton(harness).click();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(banner(harness)).toBe("The main title of the content hasn't been set.");
   });
 
   it('tears the widget down on the way out, leaving nothing that can navigate', async () => {
     setup();
     const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
 
     const element = editor(harness);
     const container = element.parentElement;
@@ -440,9 +560,10 @@ describe('H5pExercisePage', () => {
     expect(stateResult()).toBeUndefined();
   });
 
-  it('asks before leaving a mounted widget, since nothing can ask it whether it is dirty', async () => {
+  it('asks before leaving a widget with a form in it, since nothing can ask it whether it is dirty', async () => {
     const recorded = setup();
     const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
 
     await TestBed.inject(Router).navigate(['/pages', 'p1']);
     await harness.fixture.whenStable();
@@ -453,6 +574,7 @@ describe('H5pExercisePage', () => {
   it('does not prompt on the navigation a successful save itself triggers', async () => {
     const recorded = setup();
     const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
 
     await saveThroughWidget(harness);
 
@@ -465,6 +587,7 @@ describe('H5pExercisePage', () => {
     // the first, say — does not ask about work that is no longer on screen.
     const recorded = setup();
     const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
 
     await TestBed.inject(Router).navigate(['/pages', 'p1']);
     await harness.fixture.whenStable();
