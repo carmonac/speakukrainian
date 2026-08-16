@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_LOCALES, MAX_LOCALIZED_TEXT_LENGTH, MAX_RICH_TEXT_LENGTH } from './common.js';
 import {
+  H5P_NEEDS_CONTENT_MESSAGE,
   contentPageSchema,
   createContentPageSchema,
   editableContentPageFields,
   h5pExercisePageBodySchema,
   listPagesQuerySchema,
   pageBodySchema,
+  publishBlockedReason,
   richTextPageBodySchema,
   storedH5pExercisePageBodySchema,
   updateContentPageSchema,
@@ -164,6 +166,39 @@ describe('pageBodySchema strictness', () => {
   });
 });
 
+describe('publishBlockedReason', () => {
+  it('names the missing exercise for an H5P body that has none', () => {
+    expect(
+      publishBlockedReason(pageBodySchema.parse({ type: 'h5p_exercise', h5pContentId: null })),
+    ).toBe(H5P_NEEDS_CONTENT_MESSAGE);
+  });
+
+  it('blocks nothing once an exercise is attached', () => {
+    expect(
+      publishBlockedReason(pageBodySchema.parse({ type: 'h5p_exercise', h5pContentId: 'h5p-42' })),
+    ).toBeNull();
+  });
+
+  it('blocks nothing for the body types the rule says nothing about', () => {
+    // The predicate is keyed on the discriminant, so a rich-text body with no
+    // exercise in it is not "an exercise page with no exercise".
+    expect(
+      publishBlockedReason(pageBodySchema.parse({ type: 'rich_text', content: {} })),
+    ).toBeNull();
+    expect(publishBlockedReason(pageBodySchema.parse({ type: 'subsection_list' }))).toBeNull();
+  });
+
+  it('answers about the body alone, with no status to consult', () => {
+    // The status half belongs to the refinement below: a draft H5P page with no
+    // exercise is still a page that *cannot be published*, which is what the
+    // page form's Publish button asks. Answering `null` here because the page is
+    // a draft would leave that button enabled and the refusal to the API.
+    const empty = pageBodySchema.parse({ type: 'h5p_exercise', h5pContentId: null });
+    expect(publishBlockedReason(empty)).toBe(H5P_NEEDS_CONTENT_MESSAGE);
+    expect(publishBlockedReason({ ...empty, h5pContentId: 'h5p-42' })).toBeNull();
+  });
+});
+
 describe('contentPageSchema', () => {
   it('refuses to publish an H5P page with no uploaded content', () => {
     // Publishing an empty exercise would render a blank frame to learners.
@@ -173,6 +208,10 @@ describe('contentPageSchema', () => {
       body: { type: 'h5p_exercise', h5pContentId: null, explanationPosition: 'above' },
     });
     expect(result.success).toBe(false);
+    // Pathed at the field and worded by the extracted function, which is what
+    // `PagesService.fail` quotes into the 422 the admin would otherwise show.
+    expect(result.error?.issues[0]?.path).toEqual(['body', 'h5pContentId']);
+    expect(result.error?.issues[0]?.message).toBe(H5P_NEEDS_CONTENT_MESSAGE);
   });
 
   it('allows publishing once H5P content exists', () => {
