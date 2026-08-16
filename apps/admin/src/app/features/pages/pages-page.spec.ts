@@ -383,12 +383,14 @@ describe('PagesPage', () => {
     await chooseSection(harness, 'Grammar points');
     await openNewPageMenu(harness);
 
+    // Every page type, now that each one has an editor on the form: the menu is
+    // `pageTypeSchema.options`, so a type reachable only by hand-typing `?type=`
+    // cannot exist.
     expect(newPageItems()).toEqual([
       { label: 'Rich text', href: '/pages/new?sectionId=grammar&type=rich_text' },
       { label: 'Subsection list', href: '/pages/new?sectionId=grammar&type=subsection_list' },
+      { label: 'H5P exercise', href: '/pages/new?sectionId=grammar&type=h5p_exercise' },
     ]);
-    // #13 adds this one; offering it now would open a form with no body editor.
-    expect(newPageItems().some((item) => item.href.includes('h5p_exercise'))).toBe(false);
   });
 
   it('refuses New page for a link section, which the API would reject', async () => {

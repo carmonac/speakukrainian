@@ -33,6 +33,7 @@ import type {
 } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
+import { navigationState } from '../../core/router/navigation-state';
 import type { HasUnsavedChanges } from '../../core/router/unsaved-changes.guard';
 import { showOnceEdited } from '../../shared/forms/show-once-edited';
 import { slugValidator, slugify } from '../../shared/forms/slug';
@@ -43,15 +44,18 @@ import {
   toPlainLocalized,
 } from '../../shared/rich-text/localized-plain-text';
 import { sectionTitle } from '../sections/sections.model';
+import { EXERCISE_RESULT_STATE, type ExerciseResult } from './h5p-exercise.model';
 import {
-  BODY_TYPE_UNAVAILABLE,
+  EXERCISE_NEEDS_PAGE,
+  EXERCISE_NEEDS_SAVE,
+  NO_EXERCISE_YET,
   PAGE_SLUG_TAKEN_FALLBACK,
   PAGE_TYPE_LABELS,
   PLAIN_SEO_HINT,
   PLAIN_TITLE_HINT,
   PUBLISH_NEEDS_SAVE,
 } from './page-messages';
-import { AUTHORABLE_PAGE_TYPES, emptyBodyFor } from './page-body';
+import { emptyBodyFor } from './page-body';
 import type { PageFormData } from './page-form.resolver';
 import { sortOrderValidator } from './page-validators';
 import { sectionPathOfPage } from './pages.model';
@@ -77,11 +81,11 @@ interface PageFormValue {
  * never touches `body.content`, and knows nothing about rich text, audio,
  * images, H5P or subsection lists.
  *
- * Giving a body type an editor (#13) touches three places and no others: the
- * component itself, the `@case` in the template that renders it, and one entry
- * in {@link AUTHORABLE_PAGE_TYPES}. What the control *starts* from is
- * deliberately not one of them — {@link emptyBodyFor} is keyed on `PageType`, so
- * this form cannot seed a page with the body of a type nobody asked for.
+ * Giving a body type an editor touches two places and no others: the component
+ * itself, and the `@case` in the template that renders it. What the control
+ * *starts* from is deliberately not one of them — {@link emptyBodyFor} is keyed
+ * on `PageType`, so this form cannot seed a page with the body of a type nobody
+ * asked for.
  *
  * {@link ownSectionId} is passed to the `subsection_list` branch, and only to
  * it: the binding lives on the `@case`. That is not body-type knowledge leaking
@@ -133,7 +137,7 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
   protected readonly plainTitleHint = PLAIN_TITLE_HINT;
   protected readonly plainSeoHint = PLAIN_SEO_HINT;
   protected readonly publishNeedsSave = PUBLISH_NEEDS_SAVE;
-  protected readonly bodyTypeUnavailable = BODY_TYPE_UNAVAILABLE;
+  protected readonly noExerciseYet = NO_EXERCISE_YET;
 
   /** Publish and Unpublish answer with the whole page, so this is rewritten. */
   protected readonly page = linkedSignal(() => this.formData().page);
@@ -175,14 +179,26 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
 
   protected readonly isEdit = computed(() => this.formData().page !== null);
   protected readonly typeLabel = computed(() => PAGE_TYPE_LABELS[this.formData().type]);
+
   /**
-   * #13 deletes this, the `@default` branch in the template and
-   * `BODY_TYPE_UNAVAILABLE` together — once every type has an editor, there is
-   * no page this form can open and not edit.
+   * The attached exercise, for the provisional `h5p_exercise` panel. Read off
+   * the **control** and not off the stored page, so the id the widget route
+   * just handed back shows before the author saves.
    */
-  protected readonly bodyEditorAvailable = computed(() =>
-    AUTHORABLE_PAGE_TYPES.includes(this.formData().type),
-  );
+  private readonly bodyValue = toSignal(this.form.controls.body.valueChanges, {
+    initialValue: this.form.controls.body.value,
+  });
+
+  protected readonly exercise = computed(() => {
+    const body = this.bodyValue();
+    return body.type === 'h5p_exercise' ? body : null;
+  });
+
+  /** The widget route is keyed on a stored page, so it has no target without one. */
+  protected readonly exerciseRoute = computed(() => {
+    const id = this.formData().page?.id;
+    return id === undefined ? ['/pages'] : ['/pages', id, 'exercise'];
+  });
 
   /**
    * The section this page lives in — from the resolved section, or from the
@@ -199,9 +215,7 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
    * but Save reaching for a field that is not there is worth refusing here
    * rather than at the API.
    */
-  protected readonly canSave = computed(
-    () => this.bodyEditorAvailable() && (this.isEdit() || this.formData().section !== null),
-  );
+  protected readonly canSave = computed(() => this.isEdit() || this.formData().section !== null);
 
   protected readonly sectionLabel = computed(() => {
     const section = this.formData().section;
@@ -269,6 +283,7 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
         body: page.body,
       });
       this.form.markAsPristine();
+      this.applyExerciseResult(page.body);
     }
 
     this.form.controls.slug.valueChanges
@@ -278,6 +293,57 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
 
   hasUnsavedChanges(): boolean {
     return this.form.dirty;
+  }
+
+  /**
+   * Why the exercise link is refused, or `''` when it is not.
+   *
+   * The widget route reads the **stored** page, so an unsaved body edit would
+   * be invisible to it and overwritten on the way back. Refusing is the same
+   * move Publish makes, and it needs no second mechanism: carrying a draft body
+   * across in `history.state` would preserve the body while silently discarding
+   * unsaved title, slug and SEO edits.
+   *
+   * A method rather than a `computed`, for the reason the Publish button's own
+   * `form.dirty` binding has: a control's dirty flag is not a signal, and what
+   * repaints it is the change detection pass the edit that set it caused.
+   */
+  protected exerciseBlockedReason(): string {
+    if (!this.isEdit()) {
+      return EXERCISE_NEEDS_PAGE;
+    }
+    return this.form.dirty ? EXERCISE_NEEDS_SAVE : '';
+  }
+
+  /**
+   * Takes the content id the widget route just saved and puts it on the body
+   * control, leaving the author to press Save — this form posts the **whole**
+   * body, so letting the widget route write the page as well is how a body edit
+   * gets lost.
+   *
+   * **Conditional on the value differing from the stored one.**
+   * `history.state` outlives the navigation, so a refresh of `/pages/:id`
+   * replays it; without this, that replay would re-dirty a form the author had
+   * already saved.
+   */
+  private applyExerciseResult(stored: PageBody): void {
+    const result = navigationState<ExerciseResult>(this.router, EXERCISE_RESULT_STATE);
+    if (
+      result === undefined ||
+      stored.type !== 'h5p_exercise' ||
+      stored.h5pContentId === result.contentId
+    ) {
+      return;
+    }
+
+    this.form.controls.body.setValue({
+      ...stored,
+      h5pContentId: result.contentId,
+      // Left off rather than stored empty: `h5pLibrary` is optional, and an
+      // empty string would be a value that means nothing.
+      ...(result.mainLibrary === '' ? {} : { h5pLibrary: result.mainLibrary }),
+    });
+    this.form.markAsDirty();
   }
 
   protected async submit(): Promise<void> {
