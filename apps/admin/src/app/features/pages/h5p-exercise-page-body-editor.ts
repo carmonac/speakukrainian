@@ -43,13 +43,12 @@ import { LocalesStore } from '../../core/locales/locales.store';
 import { showsApiMessage } from '../../core/http/error.interceptor';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { LocalizedRichTextEditor } from '../../shared/rich-text/localized-rich-text-editor';
-import { reattachExercise } from './h5p-exercise.model';
+import { reattachExercise, reportAttachment } from './h5p-exercise.model';
 import { H5pApi } from './h5p.api';
 import { emptyBodyFor } from './page-body';
 import {
   EXERCISE_CONTENT_MISSING,
   EXERCISE_NEEDS_PAGE,
-  EXERCISE_PREVIOUS_DETACHED,
   EXERCISE_SUMMARY_FAILED,
   EXERCISE_UPLOAD_HINT,
   NO_EXERCISE_YET,
@@ -296,7 +295,10 @@ export class H5pExercisePageBodyEditor implements ControlValueAccessor, Validato
    * On success the id reaches the **body first** and the index is reconciled
    * after. The package is on the server by then, and the body is the
    * authoritative record of what the page shows; failing the upload because a
-   * bookkeeping call failed would discard content already stored.
+   * bookkeeping call failed would discard content already stored. The order is
+   * not merely tidier: Save on the page form is **not** disabled while an
+   * upload is in flight, so emitting after the attach would leave a window in
+   * which Save stores the previous id and orphans the package just installed.
    */
   private async upload(file: File): Promise<void> {
     if (!isH5pPackageFilename(file.name)) {
@@ -324,14 +326,14 @@ export class H5pExercisePageBodyEditor implements ControlValueAccessor, Validato
       this.h5pLibrary.set(result.mainLibrary === '' ? undefined : result.mainLibrary);
       this.emit();
 
-      const { detachedPrevious } = await reattachExercise(this.api, {
-        pageId,
-        previousContentId,
-        nextContentId: result.contentId,
-      });
-      if (detachedPrevious) {
-        this.notifications.info(EXERCISE_PREVIOUS_DETACHED);
-      }
+      reportAttachment(
+        this.notifications,
+        await reattachExercise(this.api, {
+          pageId,
+          previousContentId,
+          nextContentId: result.contentId,
+        }),
+      );
     } catch (error) {
       // A rejection the API explained itself — 413 naming the limit, 400 naming
       // what is wrong with the package — has already been toasted verbatim by

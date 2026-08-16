@@ -5,10 +5,11 @@ import { FormControl, NgModel, ReactiveFormsModule } from '@angular/forms';
 import { By } from '@angular/platform-browser';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { provideRouter } from '@angular/router';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 import {
   MAX_H5P_UPLOAD_BYTES,
+  MAX_RICH_TEXT_LENGTH,
   h5pExercisePageBodySchema,
   h5pUploadTooLargeMessage,
   notAnH5pPackageMessage,
@@ -25,6 +26,7 @@ import { H5pExercisePageBodyEditor } from './h5p-exercise-page-body-editor';
 import { H5pApi } from './h5p.api';
 import { emptyBodyFor } from './page-body';
 import {
+  EXERCISE_ATTACH_FAILED,
   EXERCISE_CONTENT_MISSING,
   EXERCISE_NEEDS_PAGE,
   EXERCISE_NEEDS_SAVE,
@@ -107,6 +109,12 @@ interface Options {
   uploadFails?: unknown;
   uploaded?: H5pSaveResult;
   attachFails?: boolean;
+  /**
+   * Holds the attach open until the test releases it, so what the control holds
+   * *while* the index is being reconciled is observable. That window is the
+   * whole of the body-write-before-attach decision.
+   */
+  attachGate?: Subject<H5pContent>;
 }
 
 interface Recorded {
@@ -145,6 +153,9 @@ describe('H5pExercisePageBodyEditor', () => {
       },
       attach: (contentId: string, pageId: string) => {
         recorded.sequence.push(`attach(${contentId}, ${pageId})`);
+        if (options.attachGate !== undefined) {
+          return options.attachGate.asObservable();
+        }
         return options.attachFails === true
           ? throwError(() => new HttpErrorResponse({ status: 409, statusText: 'Conflict' }))
           : of(row(contentId, { pageId }));
@@ -217,14 +228,22 @@ describe('H5pExercisePageBodyEditor', () => {
     return root().querySelector(selector)?.textContent?.trim() ?? '';
   }
 
-  /** Hands the component a file the way the OS picker would. */
-  async function choose(file: File): Promise<void> {
+  /**
+   * Hands the component a file the way the OS picker would, and returns without
+   * waiting for the flow it starts — which is what makes the window between the
+   * body write and the attach observable.
+   */
+  function beginChoose(file: File): void {
     const input = root().querySelector<HTMLInputElement>('.h5p-body__picker');
     if (!input) {
       throw new Error('Expected a file input');
     }
     Object.defineProperty(input, 'files', { value: [file], configurable: true });
     input.dispatchEvent(new Event('change'));
+  }
+
+  async function choose(file: File): Promise<void> {
+    beginChoose(file);
     await settle();
     await settle();
   }
@@ -375,6 +394,17 @@ describe('H5pExercisePageBodyEditor', () => {
     expect(h5pExercisePageBodySchema.safeParse(control().value).success).toBe(true);
   });
 
+  it('carries an explanation whose only entry is blank but present', async () => {
+    // A tab the author opened and left empty. ADR-009 makes blank-but-present
+    // meaningful, and testing for real text would mean a `DOMParser` per locale
+    // per keystroke to answer a question ADR-009 already answers at render time.
+    await setup();
+
+    await typeExplanation(EN, '<p></p>');
+
+    expect(value().explanation).toEqual({ en: '<p></p>' });
+  });
+
   it('leaves a page with no exercise saveable — only publishing is refused', async () => {
     // An author writes the explanation, saves the draft, and attaches an
     // exercise later. `validate` refusing a null id would make that impossible.
@@ -385,7 +415,26 @@ describe('H5pExercisePageBodyEditor', () => {
     expect(value().h5pContentId).toBeNull();
   });
 
+  it('refuses a body the schema would refuse, so the form says so before the API does', async () => {
+    // The `Validator` half of the component's contract, which both siblings
+    // pin. Reachable rather than theoretical: `explanation` is bounded by
+    // `MAX_RICH_TEXT_LENGTH`, so this is an author pasting a long lesson — and
+    // without the refusal it reaches the API as a 400 instead of a message on
+    // the field.
+    await setup();
+
+    control().setValue(exerciseBody({ explanation: { en: 'a'.repeat(MAX_RICH_TEXT_LENGTH + 1) } }));
+    await settle();
+
+    expect(control().valid).toBe(false);
+    expect(control().errors).toEqual({ body: true });
+  });
+
   it('refuses a file that is not an H5P package before any request', async () => {
+    // The extension, and only the extension. A `.txt` **renamed** to `.h5p`
+    // necessarily passes this and is refused by the API — which reads the ZIP
+    // — with "The file is not a readable ZIP archive…". That division of labour
+    // is deliberate: the browser catches what it can see, the API guarantees.
     await setup();
 
     await choose(packageFile('notes.txt'));
@@ -451,16 +500,56 @@ describe('H5pExercisePageBodyEditor', () => {
     expect(recorded.infos).toEqual([EXERCISE_PREVIOUS_DETACHED]);
   });
 
-  it('keeps the uploaded exercise on the body when the attach fails', async () => {
+  it('puts the id on the body before the attach has answered', async () => {
+    // **This is the issue's central decision, and the one test that fails when
+    // it is reversed.** Save on the page form is not disabled while an upload
+    // is in flight, so an author who presses Save inside this window with the
+    // emit moved after the attach would store the *previous* id and orphan the
+    // package just installed. Every other assertion here passes either way,
+    // because the summary read lands a change-detection pass later regardless.
+    const attachGate = new Subject<H5pContent>();
+    await setup({ attachGate });
+
+    beginChoose(packageFile());
+    await settle();
+
+    // The attach has been issued and cannot have answered: nothing but the gate
+    // below can complete it. The control already holds the new exercise.
+    expect(recorded.sequence.slice(0, 2)).toEqual([
+      'upload(telling-the-time.h5p)',
+      'attach(c-new, p1)',
+    ]);
+    expect(value().h5pContentId).toBe('c-new');
+    expect(value().h5pLibrary).toBe('H5P.MultiChoice 1.16');
+
+    attachGate.next(row('c-new', { pageId: 'p1' }));
+    attachGate.complete();
+    await settle();
+
+    expect(value().h5pContentId).toBe('c-new');
+  });
+
+  it('keeps the uploaded exercise on the body when the attach fails, and says what survived', async () => {
     // The package is installed by then. Discarding it to protect an index the
-    // API explicitly allows to be stale would throw away the author's work.
+    // API explicitly allows to be stale would throw away the author's work —
+    // and the interceptor's own toast for the failed call lands straight after
+    // an upload that visibly worked, so something has to say which failed.
     await setup({ attachFails: true });
 
     await choose(packageFile());
 
     expect(value().h5pContentId).toBe('c-new');
-    // The interceptor carries the API's own sentence; nothing is added here.
-    expect(recorded.errors).toEqual([]);
+    expect(recorded.errors).toEqual([EXERCISE_ATTACH_FAILED]);
+  });
+
+  it('says the attach failed rather than that the previous exercise was detached', async () => {
+    // One snackbar, last one wins: raising both would make the first a flash.
+    await setup({ body: exerciseBody({ h5pContentId: 'c1' }), attachFails: true });
+
+    await choose(packageFile());
+
+    expect(recorded.errors).toEqual([EXERCISE_ATTACH_FAILED]);
+    expect(recorded.infos).toEqual([]);
   });
 
   it('leaves the body untouched when the upload itself fails', async () => {

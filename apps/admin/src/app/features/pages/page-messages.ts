@@ -86,6 +86,24 @@ export const EXERCISE_PREVIOUS_DETACHED =
   'The previous exercise was detached from this page. It was not deleted — it is still in the H5P content list.';
 
 /**
+ * The attach failed after the exercise was already stored.
+ *
+ * It has to say **both** halves, because only one of them is visible: the
+ * upload plainly worked, and the interceptor's own toast for the failed call
+ * ("Failed to fetch", or a 5xx sentence) arrives straight after it and reads as
+ * though the upload was what failed. There is one `MatSnackBar` and the last
+ * message wins, so this one replaces that — which is the right way round, since
+ * this is the only sentence that says what survived.
+ *
+ * It deliberately does not also say the previous exercise was detached. Two
+ * toasts in a row means the first is a flash nobody reads, and of the two this
+ * is the surprising one; what the author most needs to know is that the page is
+ * fine.
+ */
+export const EXERCISE_ATTACH_FAILED =
+  'The exercise was uploaded and this page now uses it. Recording which page it belongs to failed, so the H5P content list will show it as unattached.';
+
+/**
  * The rule the browser pre-checks, stated before the file picker opens rather
  * than after a refused upload. Both halves come from `packages/shared`, which is
  * where the API reads them from too.

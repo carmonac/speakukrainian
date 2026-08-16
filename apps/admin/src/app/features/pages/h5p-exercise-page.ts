@@ -23,17 +23,13 @@ import {
   H5P_NEW_CONTENT_ID,
   mountH5pEditor,
   reattachExercise,
+  reportAttachment,
   type ExerciseResult,
   type H5pEditorHost,
 } from './h5p-exercise.model';
 import type { H5pExerciseData } from './h5p-exercise.resolver';
 import { H5pApi } from './h5p.api';
-import {
-  EXERCISE_LOADING,
-  EXERCISE_PICK_TYPE,
-  EXERCISE_PREVIOUS_DETACHED,
-  EXERCISE_SAVE_FAILED,
-} from './page-messages';
+import { EXERCISE_LOADING, EXERCISE_PICK_TYPE, EXERCISE_SAVE_FAILED } from './page-messages';
 import { pageTitle } from './pages.model';
 
 /**
@@ -220,16 +216,23 @@ export class H5pExercisePage implements HasUnsavedChanges {
       mainLibrary: this.saveResult?.mainLibrary ?? '',
     };
 
-    const { detachedPrevious } = await reattachExercise(this.api, {
-      pageId: this.exerciseData().page.id,
-      // The resolver's own copy of `body.h5pContentId`, which is what the page
-      // named on the way in — so a save under a new id is a replace.
-      previousContentId: this.exerciseData().contentId,
-      nextContentId: contentId,
-    });
-    if (detachedPrevious) {
-      this.notifications.info(EXERCISE_PREVIOUS_DETACHED);
-    }
+    reportAttachment(
+      this.notifications,
+      await reattachExercise(this.api, {
+        pageId: this.exerciseData().page.id,
+        // The resolver's own copy of `body.h5pContentId`, which is what the
+        // page named on the way in — so a save under a new id is a replace.
+        //
+        // **That replace is not reachable from the UI today**: the widget saves
+        // an existing exercise back to the same content id, so entering this
+        // screen on a page that already has one and saving attaches nothing and
+        // detaches nothing. The branch is defensive, and the only thing that
+        // exercises it is the spec's forced `savedAs`. Worth knowing before
+        // someone reads the dead detach as dead code.
+        previousContentId: this.exerciseData().contentId,
+        nextContentId: contentId,
+      }),
+    );
 
     await this.router.navigate(['/pages', this.exerciseData().page.id], {
       state: { [EXERCISE_RESULT_STATE]: result },

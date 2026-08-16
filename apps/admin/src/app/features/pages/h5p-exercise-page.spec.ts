@@ -29,6 +29,7 @@ import {
 import { h5pExerciseResolver } from './h5p-exercise.resolver';
 import { H5pApi, type H5pContentParameters, type H5pEditorModel } from './h5p.api';
 import {
+  EXERCISE_ATTACH_FAILED,
   EXERCISE_LOADING,
   EXERCISE_PICK_TYPE,
   EXERCISE_PREVIOUS_DETACHED,
@@ -127,6 +128,11 @@ interface Options {
   /**
    * Forces the id a save resolves with, so the widget's own replace case — the
    * page named one exercise and the save produced another — is reachable.
+   *
+   * **It is not reachable from the UI**: the editor saves an existing exercise
+   * back to the same content id, so entering `/pages/:id/exercise` on a page
+   * that already has one and saving attaches nothing and detaches nothing. The
+   * branch is defensive; this option is the only thing that exercises it.
    */
   savedAs?: string;
 }
@@ -490,8 +496,9 @@ describe('H5pExercisePage', () => {
 
     expect(TestBed.inject(Router).url).toBe('/pages/p1');
     expect(stateResult()?.contentId).toBe('c-new');
-    // The interceptor carries the API's own sentence; nothing is added here.
-    expect(recorded.errors).toEqual([]);
+    // The interceptor's own toast lands straight after a save that visibly
+    // worked, so this says which of the two failed and what survived.
+    expect(recorded.errors).toEqual([EXERCISE_ATTACH_FAILED]);
   });
 
   it('keeps the author and their work on the screen when the save fails', async () => {

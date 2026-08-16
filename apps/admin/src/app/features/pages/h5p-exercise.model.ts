@@ -1,6 +1,8 @@
 import { firstValueFrom } from 'rxjs';
 import type { SaveH5pContentInput } from '@speakukrainian/shared';
+import type { NotificationService } from '../../core/notifications/notification.service';
 import type { H5pApi, H5pEditorModel } from './h5p.api';
+import { EXERCISE_ATTACH_FAILED, EXERCISE_PREVIOUS_DETACHED } from './page-messages';
 
 /** The tag `H5P_DEFINE_ELEMENTS` registers, and the one this screen mounts. */
 const H5P_EDITOR_TAG = 'h5p-editor';
@@ -192,6 +194,22 @@ export interface AttachmentChange {
   nextContentId: string;
 }
 
+/** What {@link reattachExercise} did, which is what {@link reportAttachment} reads. */
+export interface AttachmentResult {
+  /**
+   * Whether the index now names this page for the new exercise. `true` when
+   * there was nothing to do — the page already owned it — because the index is
+   * then already right.
+   */
+  attached: boolean;
+  /**
+   * Whether an exercise was displaced. Answers whether there was one, not
+   * whether the API agreed to clear its row: the notice is true either way,
+   * because the page body is what decides what the page shows.
+   */
+  detachedPrevious: boolean;
+}
+
 /**
  * Points `h5pContent.pageId` at the new exercise and clears it on the old one.
  *
@@ -213,27 +231,37 @@ export interface AttachmentChange {
  * 409 `attached-elsewhere` is unreachable through either flow — it is surfaced,
  * not designed around.
  *
- * `detachedPrevious` answers whether there was an exercise to displace, not
- * whether the API agreed: the notice the caller raises is true either way,
- * because the page body is what decides what the page shows.
+ * **Nothing repairs a stale row, and the index is not one-to-one.** The early
+ * return means an exercise whose row lost its `pageId` — one created before
+ * this code existed, or one whose attach failed — is never re-attached by a
+ * later edit-and-save, even though the call would be a harmless 200. Separately,
+ * the widget attaches *before* the author saves the page form, so an abandoned
+ * form leaves a row naming a page whose body does not name it, and a second
+ * exercise built on that page then names it too. Nothing reads the index in
+ * Phase 1, so both cost nothing today; both stop costing nothing the moment an
+ * H5P content list exists, and neither is fixable from here — a repair needs a
+ * screen that can see the rows.
  */
 export async function reattachExercise(
   api: H5pApi,
   change: AttachmentChange,
-): Promise<{ detachedPrevious: boolean }> {
+): Promise<AttachmentResult> {
   const { pageId, previousContentId, nextContentId } = change;
   if (previousContentId === nextContentId) {
-    return { detachedPrevious: false };
+    return { attached: true, detachedPrevious: false };
   }
 
+  let attached = true;
   try {
     await firstValueFrom(api.attach(nextContentId, pageId));
   } catch {
-    // Reported by the HTTP error interceptor.
+    // The interceptor has toasted the API's own sentence; what that sentence
+    // fails to say is what survived, which is `reportAttachment`'s job.
+    attached = false;
   }
 
   if (previousContentId === null) {
-    return { detachedPrevious: false };
+    return { attached, detachedPrevious: false };
   }
 
   try {
@@ -241,7 +269,29 @@ export async function reattachExercise(
   } catch {
     // Reported by the HTTP error interceptor.
   }
-  return { detachedPrevious: true };
+  return { attached, detachedPrevious: true };
+}
+
+/**
+ * Tells the author what the reconciliation did, in the one place that decides
+ * it — both flows raise the same sentence for the same outcome, and neither
+ * chooses the channel for itself.
+ *
+ * A failed attach outranks a detach notice. Both are true, but there is a
+ * single `MatSnackBar` and the last `open` replaces the one before it, so two
+ * calls means the first is a flash nobody reads. Of the two, the one the author
+ * cannot otherwise work out is that the upload succeeded despite the error
+ * toast that follows it.
+ */
+export function reportAttachment(
+  notifications: NotificationService,
+  result: AttachmentResult,
+): void {
+  if (!result.attached) {
+    notifications.error(EXERCISE_ATTACH_FAILED);
+  } else if (result.detachedPrevious) {
+    notifications.info(EXERCISE_PREVIOUS_DETACHED);
+  }
 }
 
 /**

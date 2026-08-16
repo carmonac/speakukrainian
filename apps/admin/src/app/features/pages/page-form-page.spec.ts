@@ -867,6 +867,19 @@ describe('PageFormPage', () => {
     expect(calls.some((call) => call.method === 'publish')).toBe(false);
   });
 
+  it('refuses the publish request itself, not only the button that sends it', async () => {
+    // Clicking a button that has just been asserted `disabled` proves the
+    // button and nothing else. The guard in `setPublished` is what stops a
+    // request the API would answer 422 — invoked directly, which is also what a
+    // future caller of this method would do.
+    const { calls } = setup({ pages: [EXERCISE_PAGE] });
+    const harness = await open('/pages/page-h5p');
+
+    await form(harness)['setPublished'](true);
+
+    expect(calls.some((call) => call.method === 'publish')).toBe(false);
+  });
+
   it('publishes an exercise page once the stored body names an exercise', async () => {
     const { calls } = setup({ pages: [page('page-h5p-3', { body: exerciseBody('c-9') })] });
     const harness = await open('/pages/page-h5p-3');
