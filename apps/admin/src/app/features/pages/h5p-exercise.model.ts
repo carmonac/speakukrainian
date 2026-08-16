@@ -1,5 +1,6 @@
+import { firstValueFrom } from 'rxjs';
 import type { SaveH5pContentInput } from '@speakukrainian/shared';
-import type { H5pEditorModel } from './h5p.api';
+import type { H5pApi, H5pEditorModel } from './h5p.api';
 
 /** The tag `H5P_DEFINE_ELEMENTS` registers, and the one this screen mounts. */
 const H5P_EDITOR_TAG = 'h5p-editor';
@@ -181,6 +182,66 @@ export function mountH5pEditor(container: HTMLElement, mount: H5pEditorMount): (
     element.saveContentCallback = undefined;
     container.replaceChildren();
   };
+}
+
+/** One page's move from the exercise it showed to the one it will show. */
+export interface AttachmentChange {
+  pageId: string;
+  /** What the stored body named, or `null` for a page with no exercise yet. */
+  previousContentId: string | null;
+  nextContentId: string;
+}
+
+/**
+ * Points `h5pContent.pageId` at the new exercise and clears it on the old one.
+ *
+ * **It never throws, and it never blocks the body write.** By the time either
+ * flow calls this the content is already on the server — the package is
+ * installed, or the widget's save has returned — and
+ * `contentPage.body.h5pContentId` is the authoritative record of what the page
+ * shows, which `h5p.service.ts` and ADR-007 both say. `h5pContent.pageId` is an
+ * index over it that the API explicitly allows to be stale. So a caller writes
+ * the id to the body first and reconciles the index here; failing the upload
+ * because the bookkeeping call failed would discard content already stored, to
+ * protect an index nothing keeps consistent anyway. The API's own sentence has
+ * already reached the author as the error interceptor's toast.
+ *
+ * **Attach before detach.** Detaching first opens a window in which no row
+ * names the page, and leaves nothing to fall back to if the attach then fails.
+ * `H5pContentRepository.setPageId` is idempotent when the row already names
+ * this page, so re-attaching what the page already owns is a 200 no-op and the
+ * 409 `attached-elsewhere` is unreachable through either flow — it is surfaced,
+ * not designed around.
+ *
+ * `detachedPrevious` answers whether there was an exercise to displace, not
+ * whether the API agreed: the notice the caller raises is true either way,
+ * because the page body is what decides what the page shows.
+ */
+export async function reattachExercise(
+  api: H5pApi,
+  change: AttachmentChange,
+): Promise<{ detachedPrevious: boolean }> {
+  const { pageId, previousContentId, nextContentId } = change;
+  if (previousContentId === nextContentId) {
+    return { detachedPrevious: false };
+  }
+
+  try {
+    await firstValueFrom(api.attach(nextContentId, pageId));
+  } catch {
+    // Reported by the HTTP error interceptor.
+  }
+
+  if (previousContentId === null) {
+    return { detachedPrevious: false };
+  }
+
+  try {
+    await firstValueFrom(api.detach(previousContentId));
+  } catch {
+    // Reported by the HTTP error interceptor.
+  }
+  return { detachedPrevious: true };
 }
 
 /**

@@ -1,12 +1,15 @@
+import { of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SaveH5pContentInput } from '@speakukrainian/shared';
+import type { H5pContent, SaveH5pContentInput } from '@speakukrainian/shared';
 import {
   H5P_NEW_CONTENT_ID,
   mountH5pEditor,
+  reattachExercise,
   type H5pEditorContent,
   type H5pEditorHost,
   type H5pEditorMount,
 } from './h5p-exercise.model';
+import type { H5pApi } from './h5p.api';
 
 /**
  * `h5p-editor` is deliberately **not** defined in this file. An upgraded element
@@ -294,5 +297,123 @@ describe('mountH5pEditor', () => {
 
     expect(container.querySelectorAll('h5p-editor')).toHaveLength(1);
     expect(editorIn(container).getAttribute('content-id')).toBe('c2');
+  });
+});
+
+const ROW: H5pContent = {
+  id: 'c1',
+  title: 'Telling the time',
+  mainLibrary: 'H5P.MultiChoice 1.16',
+  pageId: 'p1',
+  storagePath: 'h5p/content/c1',
+  sizeBytes: 4096,
+  audit: {
+    createdAt: '2026-01-01T00:00:00Z',
+    createdBy: 'admin',
+    updatedAt: '2026-01-01T00:00:00Z',
+    updatedBy: 'admin',
+  },
+};
+
+interface Reattached {
+  /** Every call in the order it was made, which is the invariant under test. */
+  sequence: string[];
+}
+
+interface ApiOptions {
+  attachFails?: boolean;
+  detachFails?: boolean;
+}
+
+function stubApi(recorded: Reattached, apiOptions: ApiOptions = {}): H5pApi {
+  return {
+    attach: (contentId: string, pageId: string) => {
+      recorded.sequence.push(`attach(${contentId}, ${pageId})`);
+      return apiOptions.attachFails === true
+        ? throwError(() => new Error('offline'))
+        : of({ ...ROW, id: contentId, pageId });
+    },
+    detach: (contentId: string) => {
+      recorded.sequence.push(`detach(${contentId})`);
+      return apiOptions.detachFails === true
+        ? throwError(() => new Error('offline'))
+        : of({ ...ROW, id: contentId, pageId: null });
+    },
+  } as unknown as H5pApi;
+}
+
+describe('reattachExercise', () => {
+  it('attaches the new exercise before it detaches the old one', async () => {
+    // Detaching first opens a window in which no row names the page, and leaves
+    // nothing to fall back to if the attach then fails. The order is the point,
+    // so the sequence is asserted rather than the two calls' presence.
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded), {
+      pageId: 'p1',
+      previousContentId: 'c-old',
+      nextContentId: 'c-new',
+    });
+
+    expect(recorded.sequence).toEqual(['attach(c-new, p1)', 'detach(c-old)']);
+    expect(result).toEqual({ detachedPrevious: true });
+  });
+
+  it('attaches only, on a page that had no exercise', async () => {
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded), {
+      pageId: 'p1',
+      previousContentId: null,
+      nextContentId: 'c-new',
+    });
+
+    expect(recorded.sequence).toEqual(['attach(c-new, p1)']);
+    expect(result).toEqual({ detachedPrevious: false });
+  });
+
+  it('asks for nothing at all when the page already owns this exercise', async () => {
+    // A re-save of the same exercise through the widget. The attach would be a
+    // 200 no-op, but a detach of the id we just attached would undo it.
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded), {
+      pageId: 'p1',
+      previousContentId: 'c1',
+      nextContentId: 'c1',
+    });
+
+    expect(recorded.sequence).toEqual([]);
+    expect(result).toEqual({ detachedPrevious: false });
+  });
+
+  it('still detaches the old exercise when the attach failed', async () => {
+    // The body write goes ahead either way, so leaving the old row pointing at
+    // this page would leave the index naming an exercise the page no longer
+    // shows — the worse of the two stale states.
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded, { attachFails: true }), {
+      pageId: 'p1',
+      previousContentId: 'c-old',
+      nextContentId: 'c-new',
+    });
+
+    expect(recorded.sequence).toEqual(['attach(c-new, p1)', 'detach(c-old)']);
+    expect(result).toEqual({ detachedPrevious: true });
+  });
+
+  it('resolves rather than rejecting when the detach fails', async () => {
+    // The caller writes the body next; a rejection here would abort a write of
+    // content that is already on the server.
+    const recorded: Reattached = { sequence: [] };
+
+    await expect(
+      reattachExercise(stubApi(recorded, { detachFails: true }), {
+        pageId: 'p1',
+        previousContentId: 'c-old',
+        nextContentId: 'c-new',
+      }),
+    ).resolves.toEqual({ detachedPrevious: true });
   });
 });

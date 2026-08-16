@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { SaveH5pContentInput } from '@speakukrainian/shared';
+import type { H5pContent, SaveH5pContentInput } from '@speakukrainian/shared';
 import { environment } from '../../../environments/environment';
 import { H5pApi } from './h5p.api';
 
@@ -23,6 +23,21 @@ const SAVED = {
   contentId: 'c1',
   title: 'Telling the time',
   mainLibrary: 'H5P.MultiChoice 1.16',
+};
+
+const CONTENT: H5pContent = {
+  id: 'c1',
+  title: 'Telling the time',
+  mainLibrary: 'H5P.MultiChoice 1.16',
+  pageId: 'page-1',
+  storagePath: 'h5p/content/c1',
+  sizeBytes: 4096,
+  audit: {
+    createdAt: '2026-01-01T00:00:00Z',
+    createdBy: 'admin',
+    updatedAt: '2026-01-01T00:00:00Z',
+    updatedBy: 'admin',
+  },
 };
 
 describe('H5pApi', () => {
@@ -83,6 +98,53 @@ describe('H5pApi', () => {
     const request = httpMock.expectOne(`${environment.apiBaseUrl}/h5p/editor/c1`);
     expect(request.request.method).toBe('POST');
     request.flush(SAVED);
+  });
+
+  it('installs an uploaded package through the package route, not the editor one', () => {
+    // `POST /h5p/content` unpacks a `.h5p` and registers its libraries;
+    // `POST /h5p/editor` saves parameters the widget produced. Both answer an
+    // `H5pSaveResult`, so nothing on this side would notice the mix-up.
+    const file = new File(['PK'], 'telling-the-time.h5p');
+    api.uploadPackage(file).subscribe();
+
+    const request = httpMock.expectOne(`${environment.apiBaseUrl}/h5p/content`);
+    expect(request.request.method).toBe('POST');
+    // Multipart under the field name the route's `@UploadedFile()` reads. The
+    // entry is a copy, not the same object — `append` with a filename rebuilds
+    // it — so it is identified by what the API sees.
+    const entry = (request.request.body as FormData).get('file');
+    expect(entry).toBeInstanceOf(File);
+    expect((entry as File).name).toBe('telling-the-time.h5p');
+    request.flush(SAVED, { status: 201, statusText: 'Created' });
+  });
+
+  it('reads one index row for the attached exercise’s title', () => {
+    api.content('c1').subscribe();
+
+    const request = httpMock.expectOne(`${environment.apiBaseUrl}/h5p/content/c1`);
+    expect(request.request.method).toBe('GET');
+    request.flush(CONTENT);
+  });
+
+  it('attaches an exercise by naming the page in the body', () => {
+    // `attachH5pContentSchema` is a `strictObject`, so any other key is a 400.
+    api.attach('c1', 'page-1').subscribe();
+
+    const request = httpMock.expectOne(`${environment.apiBaseUrl}/h5p/content/c1/attach`);
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({ pageId: 'page-1' });
+    request.flush(CONTENT);
+  });
+
+  it('detaches through its own route, with no page id to get wrong', () => {
+    // A detach that posted `{ pageId: null }` to the attach route would be a
+    // 400: the schema is non-nullable, deliberately.
+    api.detach('c1').subscribe();
+
+    const request = httpMock.expectOne(`${environment.apiBaseUrl}/h5p/content/c1/detach`);
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toBeNull();
+    request.flush({ ...CONTENT, pageId: null });
   });
 
   it('answers with the save result the page body records', async () => {
