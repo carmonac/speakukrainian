@@ -56,6 +56,9 @@ importers:
       '@angular/router':
         specifier: ^22.1.0
         version: 22.1.0(@angular/common@22.1.0(@angular/core@22.1.0(@angular/compiler@22.1.0)(rxjs@7.8.2))(rxjs@7.8.2))(@angular/core@22.1.0(@angular/compiler@22.1.0)(rxjs@7.8.2))(@angular/platform-browser@22.1.0(@angular/animations@22.1.0(@angular/core@22.1.0(@angular/compiler@22.1.0)(rxjs@7.8.2)))(@angular/common@22.1.0(@angular/core@22.1.0(@angular/compiler@22.1.0)(rxjs@7.8.2))(rxjs@7.8.2))(@angular/core@22.1.0(@angular/compiler@22.1.0)(rxjs@7.8.2)))(rxjs@7.8.2)
+      '@lumieducation/h5p-webcomponents':
+        specifier: ^10.0.4
+        version: 10.0.4
       '@speakukrainian/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -1633,6 +1636,9 @@ packages:
 
   '@lumieducation/h5p-server@10.0.4':
     resolution: {integrity: sha512-FFM+r444HSj4pLmUcERX9FAZgvgawsaEOE9+TNhqA2sjonC13YMfLoPr3w7wLAitALEgzq1ONzBk+vgDsvMfzw==}
+
+  '@lumieducation/h5p-webcomponents@10.0.4':
+    resolution: {integrity: sha512-VV/etL+znPzHhAMsq6nZAoe6qfVO8YsD0KtkiTzMkVldG5zEuju6LK5+estdeU1QGmXyZKLYHiOI2NyDIxUetg==}
 
   '@microsoft/tsdoc@0.16.0':
     resolution: {integrity: sha512-xgAyonlVVS+q7Vc7qLW0UrJU7rSFcETRWsqdXZtjzRU8dF+6CkozTK4V4y1LwOX7j8r/vHphjDeMeGI4tNGeGA==}
@@ -3400,6 +3406,9 @@ packages:
 
   asynckit@0.4.0:
     resolution: {integrity: sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q==}
+
+  await-lock@2.2.2:
+    resolution: {integrity: sha512-aDczADvlvTGajTDjcjpJMqRkOF6Qdz3YbPZm/PyW6tKPkx2hlYBzxMhEywM/tU72HrVZjgl5VCdRuMlA7pZ8Gw==}
 
   axios@1.19.0:
     resolution: {integrity: sha512-ht/iuYZXEjFxLH/Hkezgd7m6JKlHHXEUSneaDz8uZe1Gj5QZtCnpyDsckvAiEnT89OEbCLmnte4R4sn7P0EKFw==}
@@ -7532,6 +7541,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@lumieducation/h5p-webcomponents@10.0.4':
+    dependencies:
+      await-lock: 2.2.2
+      deepmerge: 4.3.1
+
   '@microsoft/tsdoc@0.16.0': {}
 
   '@modelcontextprotocol/sdk@1.29.0(supports-color@8.1.1)(zod@4.4.3)':
@@ -9046,6 +9060,8 @@ snapshots:
   async@3.2.3: {}
 
   asynckit@0.4.0: {}
+
+  await-lock@2.2.2: {}
 
   axios@1.19.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1):
     dependencies:
