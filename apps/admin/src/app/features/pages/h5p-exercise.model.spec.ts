@@ -1,12 +1,18 @@
+import { of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SaveH5pContentInput } from '@speakukrainian/shared';
+import type { H5pContent, SaveH5pContentInput } from '@speakukrainian/shared';
+import type { NotificationService } from '../../core/notifications/notification.service';
 import {
   H5P_NEW_CONTENT_ID,
   mountH5pEditor,
+  reattachExercise,
+  reportAttachment,
   type H5pEditorContent,
   type H5pEditorHost,
   type H5pEditorMount,
 } from './h5p-exercise.model';
+import type { H5pApi } from './h5p.api';
+import { EXERCISE_ATTACH_FAILED, EXERCISE_PREVIOUS_DETACHED } from './page-messages';
 
 /**
  * `h5p-editor` is deliberately **not** defined in this file. An upgraded element
@@ -294,5 +300,179 @@ describe('mountH5pEditor', () => {
 
     expect(container.querySelectorAll('h5p-editor')).toHaveLength(1);
     expect(editorIn(container).getAttribute('content-id')).toBe('c2');
+  });
+});
+
+const ROW: H5pContent = {
+  id: 'c1',
+  title: 'Telling the time',
+  mainLibrary: 'H5P.MultiChoice 1.16',
+  pageId: 'p1',
+  storagePath: 'h5p/content/c1',
+  sizeBytes: 4096,
+  audit: {
+    createdAt: '2026-01-01T00:00:00Z',
+    createdBy: 'admin',
+    updatedAt: '2026-01-01T00:00:00Z',
+    updatedBy: 'admin',
+  },
+};
+
+interface Reattached {
+  /** Every call in the order it was made, which is the invariant under test. */
+  sequence: string[];
+}
+
+interface ApiOptions {
+  attachFails?: boolean;
+  detachFails?: boolean;
+}
+
+function stubApi(recorded: Reattached, apiOptions: ApiOptions = {}): H5pApi {
+  return {
+    attach: (contentId: string, pageId: string) => {
+      recorded.sequence.push(`attach(${contentId}, ${pageId})`);
+      return apiOptions.attachFails === true
+        ? throwError(() => new Error('offline'))
+        : of({ ...ROW, id: contentId, pageId });
+    },
+    detach: (contentId: string) => {
+      recorded.sequence.push(`detach(${contentId})`);
+      return apiOptions.detachFails === true
+        ? throwError(() => new Error('offline'))
+        : of({ ...ROW, id: contentId, pageId: null });
+    },
+  } as unknown as H5pApi;
+}
+
+describe('reattachExercise', () => {
+  it('attaches the new exercise before it detaches the old one', async () => {
+    // Detaching first opens a window in which no row names the page, and leaves
+    // nothing to fall back to if the attach then fails. The order is the point,
+    // so the sequence is asserted rather than the two calls' presence.
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded), {
+      pageId: 'p1',
+      previousContentId: 'c-old',
+      nextContentId: 'c-new',
+    });
+
+    expect(recorded.sequence).toEqual(['attach(c-new, p1)', 'detach(c-old)']);
+    expect(result).toEqual({ attached: true, detachedPrevious: true });
+  });
+
+  it('attaches only, on a page that had no exercise', async () => {
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded), {
+      pageId: 'p1',
+      previousContentId: null,
+      nextContentId: 'c-new',
+    });
+
+    expect(recorded.sequence).toEqual(['attach(c-new, p1)']);
+    expect(result).toEqual({ attached: true, detachedPrevious: false });
+  });
+
+  it('asks for nothing at all when the page already owns this exercise', async () => {
+    // A re-save of the same exercise through the widget. The attach would be a
+    // 200 no-op, but a detach of the id we just attached would undo it.
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded), {
+      pageId: 'p1',
+      previousContentId: 'c1',
+      nextContentId: 'c1',
+    });
+
+    expect(recorded.sequence).toEqual([]);
+    // `attached: true` with nothing sent: the index already names this page, so
+    // there is nothing to warn about.
+    expect(result).toEqual({ attached: true, detachedPrevious: false });
+  });
+
+  it('still detaches the old exercise when the attach failed', async () => {
+    // The body write goes ahead either way, so leaving the old row pointing at
+    // this page would leave the index naming an exercise the page no longer
+    // shows — the worse of the two stale states.
+    const recorded: Reattached = { sequence: [] };
+
+    const result = await reattachExercise(stubApi(recorded, { attachFails: true }), {
+      pageId: 'p1',
+      previousContentId: 'c-old',
+      nextContentId: 'c-new',
+    });
+
+    expect(recorded.sequence).toEqual(['attach(c-new, p1)', 'detach(c-old)']);
+    // And it says the attach failed, which is the only way the caller can tell
+    // the author that the upload nonetheless survived.
+    expect(result).toEqual({ attached: false, detachedPrevious: true });
+  });
+
+  it('resolves rather than rejecting when the detach fails', async () => {
+    // The caller writes the body next; a rejection here would abort a write of
+    // content that is already on the server.
+    const recorded: Reattached = { sequence: [] };
+
+    await expect(
+      reattachExercise(stubApi(recorded, { detachFails: true }), {
+        pageId: 'p1',
+        previousContentId: 'c-old',
+        nextContentId: 'c-new',
+      }),
+    ).resolves.toEqual({ attached: true, detachedPrevious: true });
+  });
+});
+
+describe('reportAttachment', () => {
+  function collect(): { notifications: NotificationService; said: string[] } {
+    const said: string[] = [];
+    return {
+      said,
+      notifications: {
+        success: (message: string) => said.push(`success: ${message}`),
+        info: (message: string) => said.push(`info: ${message}`),
+        error: (message: string) => said.push(`error: ${message}`),
+      } as unknown as NotificationService,
+    };
+  }
+
+  it('says nothing when the index caught up and nothing was displaced', () => {
+    const { notifications, said } = collect();
+
+    reportAttachment(notifications, { attached: true, detachedPrevious: false });
+
+    expect(said).toEqual([]);
+  });
+
+  it('reassures the author that a displaced exercise was not deleted', () => {
+    const { notifications, said } = collect();
+
+    reportAttachment(notifications, { attached: true, detachedPrevious: true });
+
+    expect(said).toEqual([`info: ${EXERCISE_PREVIOUS_DETACHED}`]);
+  });
+
+  it('says what survived a failed attach, rather than leaving the error toast to speak', () => {
+    // The interceptor's own toast — "Failed to fetch", or a 5xx sentence —
+    // lands straight after an upload that visibly worked, and reads as though
+    // the upload was what failed. There is one snackbar and the last message
+    // wins, so this one has to be the last.
+    const { notifications, said } = collect();
+
+    reportAttachment(notifications, { attached: false, detachedPrevious: false });
+
+    expect(said).toEqual([`error: ${EXERCISE_ATTACH_FAILED}`]);
+  });
+
+  it('prefers the failure to the reassurance when a replace half-failed', () => {
+    // Both are true; two `open` calls in a row means the first is a flash
+    // nobody reads, and the surprising one is the one worth the slot.
+    const { notifications, said } = collect();
+
+    reportAttachment(notifications, { attached: false, detachedPrevious: true });
+
+    expect(said).toEqual([`error: ${EXERCISE_ATTACH_FAILED}`]);
   });
 });

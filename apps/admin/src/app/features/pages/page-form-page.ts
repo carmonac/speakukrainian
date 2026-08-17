@@ -23,13 +23,14 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
-import type {
-  ContentPage,
-  LocalizedText,
-  PageBody,
-  RichText,
-  Seo,
-  UpdateContentPageInput,
+import {
+  publishBlockedReason,
+  type ContentPage,
+  type LocalizedText,
+  type PageBody,
+  type RichText,
+  type Seo,
+  type UpdateContentPageInput,
 } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
@@ -48,7 +49,6 @@ import { EXERCISE_RESULT_STATE, type ExerciseResult } from './h5p-exercise.model
 import {
   EXERCISE_NEEDS_PAGE,
   EXERCISE_NEEDS_SAVE,
-  NO_EXERCISE_YET,
   PAGE_SLUG_TAKEN_FALLBACK,
   PAGE_TYPE_LABELS,
   PLAIN_SEO_HINT,
@@ -59,6 +59,7 @@ import { emptyBodyFor } from './page-body';
 import type { PageFormData } from './page-form.resolver';
 import { sortOrderValidator } from './page-validators';
 import { sectionPathOfPage } from './pages.model';
+import { H5pExercisePageBodyEditor } from './h5p-exercise-page-body-editor';
 import { RichTextPageBodyEditor } from './rich-text-page-body-editor';
 import { SubsectionListPageBodyEditor } from './subsection-list-page-body-editor';
 import { PagesApi, type CreatePageBody } from './pages.api';
@@ -107,6 +108,7 @@ interface PageFormValue {
     MatProgressBarModule,
     MatTooltipModule,
     LocalizedRichTextEditor,
+    H5pExercisePageBodyEditor,
     RichTextPageBodyEditor,
     SubsectionListPageBodyEditor,
   ],
@@ -137,7 +139,6 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
   protected readonly plainTitleHint = PLAIN_TITLE_HINT;
   protected readonly plainSeoHint = PLAIN_SEO_HINT;
   protected readonly publishNeedsSave = PUBLISH_NEEDS_SAVE;
-  protected readonly noExerciseYet = NO_EXERCISE_YET;
 
   /** Publish and Unpublish answer with the whole page, so this is rewritten. */
   protected readonly page = linkedSignal(() => this.formData().page);
@@ -179,26 +180,6 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
 
   protected readonly isEdit = computed(() => this.formData().page !== null);
   protected readonly typeLabel = computed(() => PAGE_TYPE_LABELS[this.formData().type]);
-
-  /**
-   * The attached exercise, for the provisional `h5p_exercise` panel. Read off
-   * the **control** and not off the stored page, so the id the widget route
-   * just handed back shows before the author saves.
-   */
-  private readonly bodyValue = toSignal(this.form.controls.body.valueChanges, {
-    initialValue: this.form.controls.body.value,
-  });
-
-  protected readonly exercise = computed(() => {
-    const body = this.bodyValue();
-    return body.type === 'h5p_exercise' ? body : null;
-  });
-
-  /** The widget route is keyed on a stored page, so it has no target without one. */
-  protected readonly exerciseRoute = computed(() => {
-    const id = this.formData().page?.id;
-    return id === undefined ? ['/pages'] : ['/pages', id, 'exercise'];
-  });
 
   /**
    * The section this page lives in — from the resolved section, or from the
@@ -316,6 +297,30 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
   }
 
   /**
+   * Why Publish is refused, or `''`.
+   *
+   * The body half comes from `publishBlockedReason` in `packages/shared` —
+   * the same function `contentPageSchema`'s refinement calls, so the sentence
+   * shown here and the one in the API's 422 cannot drift. Re-parsing the page
+   * as published would answer "would this be valid" rather than "why not", and
+   * a second refinement added later would then be refused in the wrong words.
+   *
+   * It reads {@link page}, the stored truth, not the form's value: publish
+   * patches `status` alone and is already refused while dirty, so there is no
+   * window in which this judges a body the API has not seen.
+   *
+   * A method rather than a `computed`, for {@link exerciseBlockedReason}'s
+   * reason: a control's `dirty` flag is not a signal.
+   */
+  protected publishBlockedReasonText(): string {
+    if (this.form.dirty) {
+      return PUBLISH_NEEDS_SAVE;
+    }
+    const page = this.page();
+    return page === null ? '' : (publishBlockedReason(page.body) ?? '');
+  }
+
+  /**
    * Takes the content id the widget route just saved and puts it on the body
    * control, leaving the author to press Save — this form posts the **whole**
    * body, so letting the widget route write the page as well is how a body edit
@@ -392,10 +397,18 @@ export class PageFormPage implements OnInit, HasUnsavedChanges {
    * `status` alone, so unsaved body edits would not be written, and refreshing
    * the form from the response would either discard those edits or leave a form
    * claiming to be pristine when it is not.
+   *
+   * Publishing is refused a second way, by the body rule, and **only** in that
+   * direction: a page the rule refuses is one the API would answer 422 for, and
+   * unpublishing such a page is exactly how an author would recover from having
+   * one live.
    */
   protected async setPublished(published: boolean): Promise<void> {
     const current = this.page();
     if (current === null || this.form.dirty || this.saving()) {
+      return;
+    }
+    if (published && publishBlockedReason(current.body) !== null) {
       return;
     }
 

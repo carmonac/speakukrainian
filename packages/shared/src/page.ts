@@ -178,6 +178,34 @@ export type PageBodyParseInput = z.input<typeof pageBodySchema>;
 /** A page's own id: `documentIdSchema` under the name the routes use. */
 export const pageIdSchema = documentIdSchema;
 
+/**
+ * The sentence {@link publishBlockedReason} answers with, and the one
+ * `contentPageSchema`'s refinement carries into the API's 422 — so the admin's
+ * refusal and the API's are literally the same string.
+ */
+export const H5P_NEEDS_CONTENT_MESSAGE =
+  'An H5P page cannot be published before its H5P content is uploaded';
+
+/**
+ * Why this body may not be published yet, or `null` when nothing stands in the
+ * way.
+ *
+ * Extracted rather than copied into the admin, because the rule reaches an
+ * author through two paths that must not drift: the page form refuses Publish
+ * with it before sending anything, and `contentPageSchema`'s refinement below
+ * turns the same predicate into the API's 422. The rule is about the **body**
+ * alone; the refinement supplies the `status === 'published'` half, since only
+ * a page has a status.
+ *
+ * `PageBody` and not the stored variant: the two differ only in Zod bounds,
+ * which do not change an inferred type, so one signature serves both sides.
+ */
+export function publishBlockedReason(body: PageBody): string | null {
+  return body.type === 'h5p_exercise' && body.h5pContentId === null
+    ? H5P_NEEDS_CONTENT_MESSAGE
+    : null;
+}
+
 /** The SEO block as a stored document holds it — lenient, per ADR-012. */
 export const storedSeoSchema = z.object({
   metaTitle: storedLocalizedTextSchema.optional(),
@@ -232,13 +260,10 @@ export const contentPageSchema = z
     publishedAt: z.string().nullable().default(null),
     audit: auditSchema,
   })
-  .refine(
-    (p) => p.status !== 'published' || p.body.type !== 'h5p_exercise' || p.body.h5pContentId,
-    {
-      message: 'An H5P page cannot be published before its H5P content is uploaded',
-      path: ['body', 'h5pContentId'],
-    },
-  );
+  .refine((p) => p.status !== 'published' || publishBlockedReason(p.body) === null, {
+    message: H5P_NEEDS_CONTENT_MESSAGE,
+    path: ['body', 'h5pContentId'],
+  });
 
 export type ContentPage = z.infer<typeof contentPageSchema>;
 

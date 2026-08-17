@@ -1,4 +1,8 @@
-import type { PageType } from '@speakukrainian/shared';
+import {
+  H5P_PACKAGE_EXTENSION,
+  formatMaxH5pUploadSize,
+  type PageType,
+} from '@speakukrainian/shared';
 
 // The wording both page screens share, so the list and the form explain a
 // restriction in the same words and a test asserts one constant rather than a
@@ -71,6 +75,64 @@ export const EXERCISE_PICK_TYPE = 'Choose a content type above to start building
 
 /** An H5P page that has no exercise attached yet. */
 export const NO_EXERCISE_YET = 'No exercise on this page yet.';
+
+/**
+ * Raised after a replace, and worded to close the question it provokes: the
+ * previous exercise is still installed and still in the H5P content list, and
+ * nothing in Phase 1 deletes it. `DELETE /api/h5p/content/:id` exists but is
+ * wired to no screen, so "detached" is the whole of what happened.
+ */
+export const EXERCISE_PREVIOUS_DETACHED =
+  'The previous exercise was detached from this page. It was not deleted — it is still in the H5P content list.';
+
+/**
+ * The attach failed after the exercise was already stored.
+ *
+ * It has to say **both** halves, because only one of them is visible: the
+ * upload plainly worked, and the interceptor's own toast for the failed call
+ * ("Failed to fetch", or a 5xx sentence) arrives straight after it and reads as
+ * though the upload was what failed. There is one `MatSnackBar` and the last
+ * message wins, so this one replaces that — which is the right way round, since
+ * this is the only sentence that says what survived.
+ *
+ * It deliberately does not also say the previous exercise was detached. Two
+ * toasts in a row means the first is a flash nobody reads, and of the two this
+ * is the surprising one; what the author most needs to know is that the page is
+ * fine.
+ */
+export const EXERCISE_ATTACH_FAILED =
+  'The exercise was uploaded and this page now uses it. Recording which page it belongs to failed, so the H5P content list will show it as unattached.';
+
+/**
+ * The rule the browser pre-checks, stated before the file picker opens rather
+ * than after a refused upload. Both halves come from `packages/shared`, which is
+ * where the API reads them from too.
+ */
+export const EXERCISE_UPLOAD_HINT = `A ${H5P_PACKAGE_EXTENSION} package, under ${formatMaxH5pUploadSize()}.`;
+
+/**
+ * The attached exercise's index row could not be read, so its title is unknown
+ * — but the id on the body is still good and the page still shows the exercise.
+ * The interceptor has already toasted the API's own sentence.
+ */
+export const EXERCISE_SUMMARY_FAILED = 'Could not read the attached exercise’s details.';
+
+/**
+ * The narrower case: `GET /h5p/content/:id` answered 404, so the body names an
+ * exercise that is gone. Worth its own sentence, because the remedy is to
+ * upload or build another one rather than to retry.
+ */
+export const EXERCISE_CONTENT_MISSING =
+  'The exercise this page names no longer exists. Upload or build another one.';
+
+/**
+ * Literally true, and it has to stay checkable: `h5p.config.ts` sets
+ * `setFinishedEnabled: false` and wires no `IContentUserDataStorage`, so
+ * nothing records an attempt. The flag is stored for the learner-accounts work
+ * that will read it.
+ */
+export const TRACK_RESULTS_HINT =
+  'Nothing is recorded yet — learner accounts do not exist. The setting is stored for when they do.';
 
 export const PLAIN_TITLE_HINT =
   'Formatting is not kept — the title is used in menus, breadcrumbs and the browser tab.';

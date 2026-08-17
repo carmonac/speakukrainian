@@ -1,5 +1,8 @@
+import { firstValueFrom } from 'rxjs';
 import type { SaveH5pContentInput } from '@speakukrainian/shared';
-import type { H5pEditorModel } from './h5p.api';
+import type { NotificationService } from '../../core/notifications/notification.service';
+import type { H5pApi, H5pEditorModel } from './h5p.api';
+import { EXERCISE_ATTACH_FAILED, EXERCISE_PREVIOUS_DETACHED } from './page-messages';
 
 /** The tag `H5P_DEFINE_ELEMENTS` registers, and the one this screen mounts. */
 const H5P_EDITOR_TAG = 'h5p-editor';
@@ -181,6 +184,114 @@ export function mountH5pEditor(container: HTMLElement, mount: H5pEditorMount): (
     element.saveContentCallback = undefined;
     container.replaceChildren();
   };
+}
+
+/** One page's move from the exercise it showed to the one it will show. */
+export interface AttachmentChange {
+  pageId: string;
+  /** What the stored body named, or `null` for a page with no exercise yet. */
+  previousContentId: string | null;
+  nextContentId: string;
+}
+
+/** What {@link reattachExercise} did, which is what {@link reportAttachment} reads. */
+export interface AttachmentResult {
+  /**
+   * Whether the index now names this page for the new exercise. `true` when
+   * there was nothing to do — the page already owned it — because the index is
+   * then already right.
+   */
+  attached: boolean;
+  /**
+   * Whether an exercise was displaced. Answers whether there was one, not
+   * whether the API agreed to clear its row: the notice is true either way,
+   * because the page body is what decides what the page shows.
+   */
+  detachedPrevious: boolean;
+}
+
+/**
+ * Points `h5pContent.pageId` at the new exercise and clears it on the old one.
+ *
+ * **It never throws, and it never blocks the body write.** By the time either
+ * flow calls this the content is already on the server — the package is
+ * installed, or the widget's save has returned — and
+ * `contentPage.body.h5pContentId` is the authoritative record of what the page
+ * shows, which `h5p.service.ts` and ADR-007 both say. `h5pContent.pageId` is an
+ * index over it that the API explicitly allows to be stale. So a caller writes
+ * the id to the body first and reconciles the index here; failing the upload
+ * because the bookkeeping call failed would discard content already stored, to
+ * protect an index nothing keeps consistent anyway. The API's own sentence has
+ * already reached the author as the error interceptor's toast.
+ *
+ * **Attach before detach.** Detaching first opens a window in which no row
+ * names the page, and leaves nothing to fall back to if the attach then fails.
+ * `H5pContentRepository.setPageId` is idempotent when the row already names
+ * this page, so re-attaching what the page already owns is a 200 no-op and the
+ * 409 `attached-elsewhere` is unreachable through either flow — it is surfaced,
+ * not designed around.
+ *
+ * **Nothing repairs a stale row, and the index is not one-to-one.** The early
+ * return means an exercise whose row lost its `pageId` — one created before
+ * this code existed, or one whose attach failed — is never re-attached by a
+ * later edit-and-save, even though the call would be a harmless 200. Separately,
+ * the widget attaches *before* the author saves the page form, so an abandoned
+ * form leaves a row naming a page whose body does not name it, and a second
+ * exercise built on that page then names it too. Nothing reads the index in
+ * Phase 1, so both cost nothing today; both stop costing nothing the moment an
+ * H5P content list exists, and neither is fixable from here — a repair needs a
+ * screen that can see the rows.
+ */
+export async function reattachExercise(
+  api: H5pApi,
+  change: AttachmentChange,
+): Promise<AttachmentResult> {
+  const { pageId, previousContentId, nextContentId } = change;
+  if (previousContentId === nextContentId) {
+    return { attached: true, detachedPrevious: false };
+  }
+
+  let attached = true;
+  try {
+    await firstValueFrom(api.attach(nextContentId, pageId));
+  } catch {
+    // The interceptor has toasted the API's own sentence; what that sentence
+    // fails to say is what survived, which is `reportAttachment`'s job.
+    attached = false;
+  }
+
+  if (previousContentId === null) {
+    return { attached, detachedPrevious: false };
+  }
+
+  try {
+    await firstValueFrom(api.detach(previousContentId));
+  } catch {
+    // Reported by the HTTP error interceptor.
+  }
+  return { attached, detachedPrevious: true };
+}
+
+/**
+ * Tells the author what the reconciliation did, in the one place that decides
+ * it — both flows raise the same sentence for the same outcome, and neither
+ * chooses the channel for itself.
+ *
+ * A failed attach outranks a detach notice. Both are true, but there is a
+ * single `MatSnackBar` and the last `open` replaces the one before it, so two
+ * calls means the first is a flash nobody reads. Of the two, the one the author
+ * cannot otherwise work out is that the upload succeeded despite the error
+ * toast that follows it.
+ */
+export function reportAttachment(
+  notifications: NotificationService,
+  result: AttachmentResult,
+): void {
+  if (!result.attached) {
+    notifications.error(EXERCISE_ATTACH_FAILED);
+  } else if (result.detachedPrevious) {
+    notifications.info(EXERCISE_PREVIOUS_DETACHED);
+  }
 }
 
 /**

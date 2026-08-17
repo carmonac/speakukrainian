@@ -67,7 +67,10 @@
           </p>
 
           @if (isEdit()) {
-            <span class="page-form__publish-hint" [matTooltip]="form.dirty ? publishNeedsSave : ''">
+            <!-- Unpublish is held back by the dirty form alone: the body rule
+                 refuses publication, and a page that is live despite it is one
+                 an author has to be able to take down. -->
+            <span class="page-form__publish-hint" [matTooltip]="publishBlockedReasonText()">
               @if (status() === 'published') {
                 <button
                   matButton
@@ -83,15 +86,15 @@
                   matButton="filled"
                   type="button"
                   class="page-form__publish"
-                  [disabled]="form.dirty || saving()"
+                  [disabled]="publishBlockedReasonText() !== '' || saving()"
                   (click)="setPublished(true)"
                 >
                   Publish
                 </button>
               }
             </span>
-            @if (form.dirty) {
-              <p class="page-form__publish-blocked">{{ publishNeedsSave }}</p>
+            @if (publishBlockedReasonText(); as reason) {
+              <p class="page-form__publish-blocked">{{ reason }}</p>
             }
           } @else {
             <p class="page-form__hint">A new page is saved as a draft. Publish it once it reads the way you want.</p>
@@ -111,40 +114,15 @@
               <app-subsection-list-page-body-editor formControlName="body" [ownSectionId]="ownSectionId()" />
             }
             @case ('h5p_exercise') {
-              <!-- Provisional, and #13 replaces the whole panel with the real
-                   body editor: the explanation, its position, `trackResults`,
-                   the `.h5p` upload and the replace flow are all its. What is
-                   here is the minimum that makes the widget route reachable and
-                   its result visible. -->
-              @if (exercise(); as body) {
-                @if (body.h5pContentId === null) {
-                  <p class="page-form__exercise-empty">{{ noExerciseYet }}</p>
-                } @else {
-                  <p class="page-form__exercise-attached">
-                    Exercise <code class="page-form__exercise-id">{{ body.h5pContentId }}</code>
-                    @if (body.h5pLibrary) {
-                      <span class="page-form__exercise-library">{{ body.h5pLibrary }}</span>
-                    }
-                  </p>
-                }
-
-                <!-- A disabled anchor is not disabled, and a tooltip on a
-                     disabled control is unreachable — so the refusal is a
-                     disabled button inside a tooltipped span, the shape
-                     `pages-page.html`'s New page hint uses. -->
-                @if (exerciseBlockedReason(); as reason) {
-                  <span class="page-form__exercise-hint" [matTooltip]="reason">
-                    <button matButton type="button" class="page-form__exercise-link" disabled>
-                      {{ body.h5pContentId === null ? 'Create exercise' : 'Edit exercise' }}
-                    </button>
-                  </span>
-                  <p class="page-form__exercise-blocked">{{ reason }}</p>
-                } @else {
-                  <a matButton type="button" class="page-form__exercise-link" [routerLink]="exerciseRoute()">
-                    {{ body.h5pContentId === null ? 'Create exercise' : 'Edit exercise' }}
-                  </a>
-                }
-              }
+              <!-- `exerciseBlockedReason` is called from here, not passed as a
+                   reference, so it keeps re-evaluating per change detection
+                   pass: what it reads is the form's dirty flag, which is not a
+                   signal. -->
+              <app-h5p-exercise-page-body-editor
+                formControlName="body"
+                [pageId]="formData().page?.id ?? null"
+                [exerciseBlockedReason]="exerciseBlockedReason()"
+              />
             }
           }
         </fieldset>

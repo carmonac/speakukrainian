@@ -9,6 +9,7 @@ import { of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type {
   ContentPage,
+  H5pContent,
   H5pSaveResult,
   LocaleCode,
   PageBody,
@@ -28,8 +29,10 @@ import {
 import { h5pExerciseResolver } from './h5p-exercise.resolver';
 import { H5pApi, type H5pContentParameters, type H5pEditorModel } from './h5p.api';
 import {
+  EXERCISE_ATTACH_FAILED,
   EXERCISE_LOADING,
   EXERCISE_PICK_TYPE,
+  EXERCISE_PREVIOUS_DETACHED,
   EXERCISE_SAVE_FAILED,
   PAGE_IS_NOT_AN_EXERCISE,
 } from './page-messages';
@@ -121,18 +124,40 @@ interface Options {
   /** Which content ids `GET /h5p/editor/:id` knows about; others 404. */
   content?: string[];
   saveFails?: boolean;
+  attachFails?: boolean;
+  /**
+   * Forces the id a save resolves with, so the widget's own replace case — the
+   * page named one exercise and the save produced another — is reachable.
+   *
+   * **It is not reachable from the UI**: the editor saves an existing exercise
+   * back to the same content id, so entering `/pages/:id/exercise` on a page
+   * that already has one and saving attaches nothing and detaches nothing. The
+   * branch is defensive; this option is the only thing that exercises it.
+   */
+  savedAs?: string;
 }
 
 interface Recorded {
   calls: { method: string; args: unknown[] }[];
   dialogs: number;
   errors: string[];
+  infos: string[];
 }
+
+const ROW: H5pContent = {
+  id: 'c1',
+  title: 'Telling the time',
+  mainLibrary: 'H5P.MultiChoice 1.16',
+  pageId: 'p1',
+  storagePath: 'h5p/content/c1',
+  sizeBytes: 4096,
+  audit,
+};
 
 function setup(options: Options = {}): Recorded {
   const stored = new Map((options.pages ?? [EMPTY_EXERCISE]).map((entry) => [entry.id, entry]));
   const known = new Set(options.content ?? ['c1']);
-  const recorded: Recorded = { calls: [], dialogs: 0, errors: [] };
+  const recorded: Recorded = { calls: [], dialogs: 0, errors: [], infos: [] };
 
   const notFound = (): HttpErrorResponse =>
     new HttpErrorResponse({ status: 404, statusText: 'Not Found' });
@@ -162,7 +187,20 @@ function setup(options: Options = {}): Recorded {
       recorded.calls.push({ method: 'save', args: [contentId, input] });
       return options.saveFails === true
         ? throwError(() => new HttpErrorResponse({ status: 500, statusText: 'Server Error' }))
-        : of<H5pSaveResult>({ ...SAVED, contentId: contentId ?? SAVED.contentId });
+        : of<H5pSaveResult>({
+            ...SAVED,
+            contentId: options.savedAs ?? contentId ?? SAVED.contentId,
+          });
+    },
+    attach: (contentId: string, pageId: string) => {
+      recorded.calls.push({ method: 'attach', args: [contentId, pageId] });
+      return options.attachFails === true
+        ? throwError(() => new HttpErrorResponse({ status: 409, statusText: 'Conflict' }))
+        : of<H5pContent>({ ...ROW, id: contentId, pageId });
+    },
+    detach: (contentId: string) => {
+      recorded.calls.push({ method: 'detach', args: [contentId] });
+      return of<H5pContent>({ ...ROW, id: contentId, pageId: null });
     },
   } as unknown as H5pApi;
 
@@ -199,7 +237,7 @@ function setup(options: Options = {}): Recorded {
         provide: NotificationService,
         useValue: {
           success: () => {},
-          info: () => {},
+          info: (message: string) => recorded.infos.push(message),
           error: (message: string) => recorded.errors.push(message),
         } as unknown as NotificationService,
       },
@@ -397,6 +435,70 @@ describe('H5pExercisePage', () => {
     expect(called(recorded, 'save')).toEqual([{ method: 'save', args: ['c1', BODY] }]);
     expect(TestBed.inject(Router).url).toBe('/pages/p1');
     expect(stateResult()?.contentId).toBe('c1');
+  });
+
+  it('attaches the new exercise to the page before handing the id back', async () => {
+    // The attach for this flow lives here and not in the body editor, whose
+    // `writeValue` also runs on every page load — an attach there would fire on
+    // page open, including the load this navigation causes.
+    const recorded = setup();
+    const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
+
+    await saveThroughWidget(harness);
+
+    expect(called(recorded, 'attach')).toEqual([{ method: 'attach', args: ['c-new', 'p1'] }]);
+    // Nothing was displaced, so nothing is said about a previous exercise.
+    expect(called(recorded, 'detach')).toEqual([]);
+    expect(recorded.infos).toEqual([]);
+    expect(stateResult()?.contentId).toBe('c-new');
+  });
+
+  it('does not re-attach an exercise the page already owns, and detaches nothing', async () => {
+    // A plain edit-and-save of the attached exercise. A detach of the id just
+    // attached would undo the attachment the page depends on.
+    const recorded = setup({ pages: [ATTACHED] });
+    const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
+
+    await saveThroughWidget(harness);
+
+    expect(called(recorded, 'attach')).toEqual([]);
+    expect(called(recorded, 'detach')).toEqual([]);
+    expect(recorded.infos).toEqual([]);
+  });
+
+  it('detaches the exercise it replaced, and says it was not deleted', async () => {
+    const recorded = setup({ pages: [ATTACHED], savedAs: 'c-new' });
+    const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
+
+    await saveThroughWidget(harness);
+
+    // Attach before detach: detaching first opens a window in which no row
+    // names the page.
+    expect(
+      recorded.calls
+        .filter((call) => call.method === 'attach' || call.method === 'detach')
+        .map((call) => [call.method, ...(call.args as string[])].join(' ')),
+    ).toEqual(['attach c-new p1', 'detach c1']);
+    expect(recorded.infos).toEqual([EXERCISE_PREVIOUS_DETACHED]);
+  });
+
+  it('still hands the id back when the attach fails', async () => {
+    // The exercise is saved by then; refusing to hand its id back would strand
+    // it, and the page body is the authoritative record either way.
+    const recorded = setup({ attachFails: true });
+    const harness = await open('/pages/p1/exercise');
+    becomeReady(harness);
+
+    await saveThroughWidget(harness);
+
+    expect(TestBed.inject(Router).url).toBe('/pages/p1');
+    expect(stateResult()?.contentId).toBe('c-new');
+    // The interceptor's own toast lands straight after a save that visibly
+    // worked, so this says which of the two failed and what survived.
+    expect(recorded.errors).toEqual([EXERCISE_ATTACH_FAILED]);
   });
 
   it('keeps the author and their work on the screen when the save fails', async () => {
