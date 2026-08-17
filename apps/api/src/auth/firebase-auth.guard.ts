@@ -6,9 +6,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import type { Auth } from 'firebase-admin/auth';
+import type { Auth, DecodedIdToken } from 'firebase-admin/auth';
 import type { Request } from 'express';
 import type { UserRole } from '@speakukrainian/shared';
+import { authUnavailable, meansBadCredential } from './auth-failure.js';
 import { FIREBASE_AUTH } from './auth.tokens.js';
 import { IS_PUBLIC_KEY } from './public.decorator.js';
 
@@ -40,6 +41,12 @@ export interface RequestWithUser extends Request {
  * credentials: the caller `H5pUrlTokenGuard` established stands and the header
  * below is never verified, even if it names someone else. `H5pUrlTokenGuard`'s
  * docblock says why that is the right way round.
+ *
+ * **A refusal here says whose fault it is.** An expired, revoked, malformed or
+ * unsigned token, a disabled account and an account deleted since the token was
+ * issued are the caller's, and stay a 401; every other Auth failure is this
+ * server's and becomes a logged 503. `auth-failure.ts` states that rule — for
+ * this guard and for `H5pUrlTokenGuard` — and is where the reasoning lives.
  */
 @Injectable()
 export class FirebaseAuthGuard implements CanActivate {
@@ -68,16 +75,23 @@ export class FirebaseAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing bearer token');
     }
 
+    // Only the awaited call is inside the `try`, so nothing after it can be
+    // misclassified as an Auth failure and answered as one.
+    let decoded: DecodedIdToken;
     try {
-      const decoded = await this.auth.verifyIdToken(header.slice('Bearer '.length), true);
-      request.user = {
-        uid: decoded.uid,
-        email: decoded.email,
-        role: (decoded['role'] as UserRole | undefined) ?? 'student',
-      };
-      return true;
-    } catch {
+      decoded = await this.auth.verifyIdToken(header.slice('Bearer '.length), true);
+    } catch (error) {
+      if (!meansBadCredential(error)) {
+        throw authUnavailable('a bearer token', error);
+      }
       throw new UnauthorizedException('Invalid or expired token');
     }
+
+    request.user = {
+      uid: decoded.uid,
+      email: decoded.email,
+      role: (decoded['role'] as UserRole | undefined) ?? 'student',
+    };
+    return true;
   }
 }

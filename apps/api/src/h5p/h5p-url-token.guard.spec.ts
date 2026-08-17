@@ -1,10 +1,16 @@
 import 'reflect-metadata';
-import { UnauthorizedException, type ExecutionContext } from '@nestjs/common';
+import {
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+  type ExecutionContext,
+} from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { H5PConfig } from '@lumieducation/h5p-server';
 import type { Auth, UserRecord } from 'firebase-admin/auth';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { AUTH_UNAVAILABLE_MESSAGE } from '../auth/auth-failure.js';
 import type { AuthenticatedUser, RequestWithUser } from '../auth/firebase-auth.guard.js';
 import type { Env } from '../config/configuration.js';
 import { H5pUrlTokenService } from './h5p-url-token.service.js';
@@ -32,21 +38,38 @@ interface AuthDouble {
   auth: Auth;
   /** Every record the double will answer with, by uid. */
   records: Map<string, Partial<UserRecord>>;
+  /** How a lookup fails, by uid. Consulted before {@link AuthDouble.records}. */
+  failures: Map<string, unknown>;
 }
 
+/**
+ * An `Auth` that fails the way the SDK does: an `Error` carrying a
+ * `<prefix>/<code>`. A bare `Error` would be read as a failure of this server's,
+ * which is a different answer.
+ */
 function createAuth(): AuthDouble {
   const records = new Map<string, Partial<UserRecord>>();
+  const failures = new Map<string, unknown>();
 
   const auth = {
     getUser: (uid: string): Promise<UserRecord> => {
+      const failure = failures.get(uid);
+      if (failure !== undefined) {
+        return Promise.reject(failure);
+      }
+
       const record = records.get(uid);
       return record
         ? Promise.resolve(record as UserRecord)
-        : Promise.reject(new Error('there is no user record corresponding to the provided uid'));
+        : Promise.reject(
+            Object.assign(new Error('there is no user record corresponding to the provided uid'), {
+              code: 'auth/user-not-found',
+            }),
+          );
     },
   } as unknown as Auth;
 
-  return { auth, records };
+  return { auth, records, failures };
 }
 
 function createService(): H5pUrlTokenService {
@@ -73,6 +96,7 @@ function contextFor(
 describe('H5pUrlTokenGuard', () => {
   let guard: H5pUrlTokenGuard;
   let authDouble: AuthDouble;
+  let logged: MockInstance<Logger['error']>;
 
   const editorRecord = (uid = UID): Partial<UserRecord> => ({
     uid,
@@ -87,8 +111,13 @@ describe('H5pUrlTokenGuard', () => {
   const expiredToken = (uid = UID): string => signH5pUrlToken(SECRET, uid, Date.now() - 1);
 
   beforeEach(() => {
+    logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     authDouble = createAuth();
     guard = new H5pUrlTokenGuard(new Reflector(), createService(), authDouble.auth);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('does nothing at all on a route that does not accept a URL token', async () => {
@@ -225,12 +254,47 @@ describe('H5pUrlTokenGuard', () => {
     expect(request.user).toBeUndefined();
   });
 
-  it('refuses every failure with a 401 and never a 500', async () => {
+  it('refuses a malformed token with a 401 and never a 500', async () => {
     const { context } = contextFor(
       { query: { token: 'not.a.token.at.all' } },
       Routes.prototype.accepts,
     );
 
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('answers an Auth outage with a 503 that names the cause in the log', async () => {
+    authDouble.failures.set(
+      UID,
+      Object.assign(new Error('socket hang up'), { code: 'app/network-error' }),
+    );
+    const { context, request } = contextFor(
+      { query: { token: validToken() } },
+      Routes.prototype.accepts,
+    );
+
+    const rejected: unknown = await guard.canActivate(context).catch((error: unknown) => error);
+
+    expect(rejected).toBeInstanceOf(ServiceUnavailableException);
+    expect((rejected as ServiceUnavailableException).getStatus()).toBe(503);
+    expect((rejected as ServiceUnavailableException).message).toBe(AUTH_UNAVAILABLE_MESSAGE);
+    expect(request.user).toBeUndefined();
+    expect(logged).toHaveBeenCalledTimes(1);
+    const line = logged.mock.calls[0]?.[0];
+    expect(line).toContain(UID);
+    expect(line).toContain('firebase code: app/network-error');
+  });
+
+  it('does not tell an author their account is gone when Auth is down', async () => {
+    authDouble.records.set(UID, editorRecord());
+    authDouble.failures.set(
+      UID,
+      Object.assign(new Error('the backend is unavailable'), { code: 'auth/internal-error' }),
+    );
+    const { context } = contextFor({ query: { token: validToken() } }, Routes.prototype.accepts);
+
+    const rejected: unknown = await guard.canActivate(context).catch((error: unknown) => error);
+
+    expect((rejected as Error).message).not.toBe(H5P_URL_TOKEN_UNKNOWN_USER_MESSAGE);
   });
 });
