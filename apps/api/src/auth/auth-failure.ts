@@ -8,7 +8,7 @@ const logger = new Logger('AuthFailure');
  * `auth.getUser` has exactly one caller-fault code, so the H5P URL-token guard
  * narrows on this single literal and treats everything else as ours.
  */
-export const USER_NOT_FOUND_CODE = 'auth/user-not-found';
+const USER_NOT_FOUND_CODE = 'auth/user-not-found';
 
 /**
  * What a caller is told when this server could not check their credential at
@@ -36,6 +36,11 @@ export const AUTH_UNAVAILABLE_MESSAGE =
  * `auth/user-not-found` belongs here too: `checkRevoked` resolves the account,
  * so a token issued before the account was deleted is a stale credential, which
  * is the caller's problem and not this server's.
+ *
+ * `auth/argument-error` is also what a failure to fetch Google's public signing
+ * certificates arrives as, so a certificate-endpoint outage is answered 401 from
+ * this list and is not distinguishable here. ADR-020 records why that residual
+ * is named rather than fixed.
  *
  * Read out of `firebase-admin@13`'s own sources — `lib/utils/error.js` defines
  * the codes and `lib/auth/token-verifier.js` chooses between them — so a
@@ -97,42 +102,21 @@ export function meansBadCredential(error: unknown): boolean {
 
 /**
  * Records an Auth failure this server caused, and returns what to answer with.
- * `subject` names the credential path, e.g. `a bearer token`.
+ * `subject` names what could not be checked, e.g. `a bearer token`.
  *
- * **503 and not 401**, because the concrete harm of the 401 is not telemetry:
- * `apps/admin/src/app/core/http/error.interceptor.ts` navigates to `/login` on
- * *any* 401, so an Auth outage answered as a bad credential throws every author
- * out of whatever they were editing into a login screen that also cannot work.
- * Its `>= 500` branch instead raises generic wording and stays on the page.
- * Distinguishing the outage leaks nothing: both unknown-user branches sit behind
- * a credential the caller must already hold — a valid HMAC over a payload we
- * minted, or a fully verified ID token — so neither is an account-enumeration
- * oracle, and "this server cannot reach Firebase Auth" is not a per-account
- * fact. 503 rather than 500 because the condition is transient and
- * retry-shaped. No `Retry-After`: nothing here knows the duration.
+ * ADR-020 carries the argument — why a 503 rather than a 401, and why `error`
+ * rather than `warn`. What is local to this function is what the line says:
  *
- * **`error` and not `warn`**, because the answer is a 5xx and ADR-017 already
- * has the filter log every 5xx at `error` — splitting one failure across two
- * levels would make the level meaningless — and because "no author can sign in"
- * is a page, which a `warn` is not. The SDK's own `HttpClient` retries 503s and
- * connection resets before rejecting, so what reaches here has already survived
- * retries and is not a blip.
- *
- * **Two `error` lines per failing request is expected.** The filter's line names
- * the request (`503 GET /api/…`); this one names the cause, which is the
- * Firebase code and nothing else has it. The URL is deliberately not repeated —
- * the filter already carries it, and the URL-token routes carry the token itself
- * in a query parameter and in a path segment, so a second line would put a
- * second copy of a credential in the log. Neither the token nor the
- * `Authorization` header is ever logged for the same reason.
- *
- * **The residual, named rather than fixed.** A failure to fetch Google's public
- * signing certificates becomes `JwtError(KEY_FETCH_ERROR)`, and
- * `mapJwtErrorToAuthError` (`lib/auth/token-verifier.js`) falls through to
- * `auth/argument-error` — the same code a forged token gets. So a
- * certificate-endpoint outage is answered 401 and is not distinguishable here.
- * The only evidence separating the two is the upstream library's prose, and
- * matching on that where a code exists is a thing this repo refuses to do.
+ * - It logs and **returns**, so a call site reads `throw authUnavailable(…)`
+ *   and the stack starts where the request was actually refused.
+ * - The Firebase `code` goes in the first argument because it is the one useful
+ *   field the stack does not carry; the error's message does not, since V8
+ *   renders a stack as `Name: message\n    at …`.
+ * - **No URL**, for the plain reason that the filter's own line already carries
+ *   it (ADR-017) and this line adds nothing by repeating it. Not a redaction
+ *   measure: ADR-007 decided that a URL token appears unredacted in this
+ *   server's request logs and in Cloud Run's, and that is where the
+ *   credentials-in-logs question is settled.
  */
 export function authUnavailable(subject: string, error: unknown): ServiceUnavailableException {
   logger.error(

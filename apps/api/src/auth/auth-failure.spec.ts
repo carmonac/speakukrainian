@@ -116,6 +116,24 @@ describe('authUnavailable', () => {
     expect(stack).toBe(cause.stack);
   });
 
+  it('names no credential, so a later edit adding the request URL fails here', () => {
+    // Every other assertion is `toContain` and so can only catch a removal. This
+    // is the one that catches an *addition*: the URL-token routes carry the
+    // token in `?token=` and in a path segment, and the bearer path has the
+    // header, so a line built from `request.url` or from the header would show
+    // up as one of these two fragments.
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+    authUnavailable(
+      'the account an H5P editor URL token names (uid uid-1)',
+      firebaseError('app/network-error', 'GET /api/h5p/ajax?token=a-secret failed'),
+    );
+
+    const [line] = error.mock.calls[0] as [string, string];
+    expect(line).not.toContain('token=');
+    expect(line).not.toContain('Bearer');
+  });
+
   it('still answers, and says so, when the rejection carries no code', () => {
     const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
 

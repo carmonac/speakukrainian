@@ -1240,11 +1240,13 @@ trees were never fetched — what an offline `pnpm install` leaves behind.
 what the filter is handed no longer carries the cause: the `H5pError`'s `debugMessage`, the requested
 path plus `send`'s own `EACCES`, and the Firebase `code` are each discarded to build the generic
 answer, whose stack starts at the throw site. The filter's line says _a 5xx was answered for this
-request_; theirs says _why_. Two lines at the same level, correlated by the URL — deleting the
-hand-written one to avoid the duplicate would delete the only record of the cause. `auth-failure.ts`
-is the one that does **not** repeat the URL into its own line even for correlation: the URL-token
-routes carry the credential in a query parameter and in a path segment, so a second copy would be a
-second copy of a token in the log (ADR-020).
+request_; theirs says _why_. Two lines at the same level, correlated by the URL the filter's line
+carries — deleting the hand-written one to avoid the duplicate would delete the only record of the
+cause. `auth-failure.ts` is the one that does not restate the URL in its own line, for the plain
+reason that it would add nothing: `h5p.responses.ts` does restate it, because that path can fail
+after the headers are out, where the filter never classifies the request at all. Neither is a
+redaction measure — ADR-007 records, deliberately, that an H5P URL token appears **unredacted** in
+this server's request logs and in Cloud Run's, and is where that question is settled.
 
 **Once the headers are sent, nothing is written.** The filter ended with an unconditional
 `response.status(status).json(body)`, which on a flushed response throws from inside a filter, where
@@ -1539,7 +1541,9 @@ It is unreachable locally in any case: with `FIREBASE_AUTH_EMULATOR_HOST` set th
 verification and fetches no keys.
 
 _Cost._ Two `error` lines per failing request — the filter's, which names the request, and
-`auth-failure.ts`'s, which names the Firebase code the filter cannot see. And a `firebase-admin` bump
+`auth-failure.ts`'s, which names the Firebase code the filter cannot see. Ours does not restate the
+URL, because the filter's already carries it; that is about duplication and not about secrecy, since
+ADR-007 already accepts that a URL token reaches the request logs unredacted. And a `firebase-admin` bump
 that renames a code silently widens the 503 branch, which is the safe direction but is why the unit
 tests name every code as a literal: the specs are the alarm. A renamed `auth/user-not-found` would
 answer a deleted account with a 503, which is wrong but honest and logged.

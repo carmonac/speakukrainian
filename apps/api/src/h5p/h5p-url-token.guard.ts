@@ -108,7 +108,7 @@ export class H5pUrlTokenGuard implements CanActivate {
       if (meansUnknownUser(error)) {
         throw new UnauthorizedException(H5P_URL_TOKEN_UNKNOWN_USER_MESSAGE);
       }
-      throw authUnavailable(`the H5P editor URL token for uid ${uid}`, error);
+      throw authUnavailable(`the account an H5P editor URL token names (uid ${uid})`, error);
     });
 
     if (record.disabled) {
