@@ -107,8 +107,10 @@ export function meansBadCredential(error: unknown): boolean {
  * ADR-020 carries the argument — why a 503 rather than a 401, and why `error`
  * rather than `warn`. What is local to this function is what the line says:
  *
- * - It logs and **returns**, so a call site reads `throw authUnavailable(…)`
- *   and the stack starts where the request was actually refused.
+ * - It logs and **returns**, so a call site reads `throw authUnavailable(…)`.
+ *   The same shape as `h5p.errors.ts`'s `toHttpException`, which also logs the
+ *   cause and returns a sanitized exception for its two callers to throw; the
+ *   refusal stays a `throw` at the guard, where the control flow is read.
  * - The Firebase `code` goes in the first argument because it is the one useful
  *   field the stack does not carry; the error's message does not, since V8
  *   renders a stack as `Name: message\n    at …`.
