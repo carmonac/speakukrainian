@@ -28,6 +28,7 @@ import { unsavedChangesGuard } from '../../core/router/unsaved-changes.guard';
 import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { RichTextEditor } from '../../shared/rich-text/rich-text-editor';
 import { SectionsApi } from '../sections/sections.api';
+import { H5P_DEFINE_PLAYER_ELEMENT } from './h5p-elements';
 import { EXERCISE_RESULT_STATE, type ExerciseResult } from './h5p-exercise.model';
 import { H5pApi } from './h5p.api';
 import {
@@ -245,6 +246,11 @@ function setup(options: Options = {}): Recorded {
           },
         } as unknown as H5pApi,
       },
+      // No test here opens the exercise preview, and the factory is
+      // `providedIn: 'root'` so it would only run on first injection anyway. It
+      // is here because the day one does, the failure without it is a *hang*
+      // rather than a red test.
+      { provide: H5P_DEFINE_PLAYER_ELEMENT, useValue: () => {} },
       {
         provide: LocalesStore,
         useValue: {

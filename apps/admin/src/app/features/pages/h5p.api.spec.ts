@@ -75,6 +75,24 @@ describe('H5pApi', () => {
     });
   });
 
+  it('asks for the player model of one exercise, with no query parameters at all', () => {
+    // The absent `?lang` is the assertion, not an omission: that parameter picks
+    // the player's own chrome (#36), so adding it would put the preview locale
+    // into the mount key and reload the exercise on every language change.
+    api.playerModel('c1').subscribe();
+
+    const request = httpMock.expectOne(`${environment.apiBaseUrl}/h5p/play/c1`);
+    expect(request.request.method).toBe('GET');
+    expect(request.request.params.keys()).toEqual([]);
+    request.flush({
+      contentId: 'c1',
+      integration: {},
+      scripts: [],
+      styles: [],
+      embedTypes: ['iframe'],
+    });
+  });
+
   it('reads stored parameters from the params route, not the editor one', () => {
     api.contentParameters('c1').subscribe();
 

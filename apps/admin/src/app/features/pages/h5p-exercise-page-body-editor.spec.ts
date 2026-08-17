@@ -22,8 +22,9 @@ import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { MediaPickerService } from '../../shared/media/media-picker.service';
 import { RichTextEditor } from '../../shared/rich-text/rich-text-editor';
+import { H5P_DEFINE_PLAYER_ELEMENT } from './h5p-elements';
 import { H5pExercisePageBodyEditor } from './h5p-exercise-page-body-editor';
-import { H5pApi } from './h5p.api';
+import { H5pApi, type H5pPlayerModel } from './h5p.api';
 import { emptyBodyFor } from './page-body';
 import {
   EXERCISE_ATTACH_FAILED,
@@ -164,6 +165,16 @@ describe('H5pExercisePageBodyEditor', () => {
         recorded.sequence.push(`detach(${contentId})`);
         return of(row(contentId, { pageId: null }));
       },
+      playerModel: (contentId: string) => {
+        recorded.sequence.push(`play(${contentId})`);
+        return of<H5pPlayerModel>({
+          contentId,
+          integration: { contents: {} },
+          scripts: [],
+          styles: [],
+          embedTypes: ['iframe'],
+        });
+      },
     } as unknown as H5pApi;
 
     TestBed.configureTestingModule({
@@ -171,6 +182,10 @@ describe('H5pExercisePageBodyEditor', () => {
         provideNoopAnimations(),
         provideRouter([]),
         { provide: H5pApi, useValue: api },
+        // A no-op, so `<h5p-player>` is never upgraded: jsdom has no
+        // `ResizeObserver` and fetches no script tags, so an upgraded element
+        // would hang this suite rather than fail it.
+        { provide: H5P_DEFINE_PLAYER_ELEMENT, useValue: () => {} },
         {
           provide: LocalesStore,
           useValue: {
@@ -272,6 +287,37 @@ describe('H5pExercisePageBodyEditor', () => {
     const option = options.find((entry) => entry.textContent?.trim() === label);
     if (!option) {
       throw new Error(`Expected an option "${label}"`);
+    }
+    option.click();
+    await settle();
+    await settle();
+  }
+
+  async function togglePreview(): Promise<void> {
+    const toggle = root().querySelector<HTMLButtonElement>('.h5p-body__preview-toggle');
+    if (!toggle) {
+      throw new Error('Expected a preview toggle');
+    }
+    toggle.click();
+    await settle();
+    await settle();
+  }
+
+  async function choosePreviewLocale(label: string): Promise<void> {
+    const trigger = root().querySelector<HTMLElement>(
+      '.h5p-body__preview-locale .mat-mdc-select-trigger',
+    );
+    if (!trigger) {
+      throw new Error('Expected the preview locale select');
+    }
+    trigger.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const options = Array.from(document.querySelectorAll<HTMLElement>('mat-option'));
+    const option = options.find((entry) => entry.textContent?.trim() === label);
+    if (!option) {
+      throw new Error(`Expected a locale option "${label}"`);
     }
     option.click();
     await settle();
@@ -641,6 +687,74 @@ describe('H5pExercisePageBodyEditor', () => {
     expect(control().pristine).toBe(true);
     expect(text('.h5p-body__title')).toBe('Telling the time');
     expect(text('.h5p-body__position')).toBe('Below the exercise');
+  });
+
+  it('offers no preview at all on a page that names no exercise', async () => {
+    await setup();
+
+    expect(root().querySelector('.h5p-body__preview')).toBeNull();
+  });
+
+  it('offers the preview but fetches nothing until the author opens it', async () => {
+    // Opening a page form must not boot a player: the model is a request, and
+    // the mount loads H5P's scripts into the document for the session.
+    await setup({ body: exerciseBody({ h5pContentId: 'c1' }) });
+
+    expect(text('.h5p-body__preview-toggle')).toBe('Preview exercise');
+    expect(root().querySelector('app-h5p-exercise-preview')).toBeNull();
+    expect(recorded.sequence).toEqual(['content(c1)']);
+  });
+
+  it('leaves exactly one player behind when the preview is closed and reopened', async () => {
+    await setup({ body: exerciseBody({ h5pContentId: 'c1' }) });
+
+    await togglePreview();
+    expect(root().querySelectorAll('h5p-player')).toHaveLength(1);
+    expect(text('.h5p-body__preview-toggle')).toBe('Hide preview');
+
+    await togglePreview();
+    expect(root().querySelectorAll('h5p-player')).toHaveLength(0);
+
+    await togglePreview();
+    expect(root().querySelectorAll('h5p-player')).toHaveLength(1);
+  });
+
+  it('previews the explanation in the chosen language, falling back to the default', async () => {
+    await setup({
+      body: exerciseBody({
+        h5pContentId: 'c1',
+        explanation: { en: '<p>Hello</p>', uk: '<p>Привіт</p>' },
+      }),
+    });
+
+    await togglePreview();
+    expect(text('.h5p-preview__explanation')).toBe('Hello');
+
+    await choosePreviewLocale('UK');
+    expect(text('.h5p-preview__explanation')).toBe('Привіт');
+
+    // A locale the author has not written falls back to the default, so nothing
+    // renders blank on a language that only exists in the picker.
+    control().setValue(exerciseBody({ h5pContentId: 'c1', explanation: { en: '<p>Hello</p>' } }));
+    await settle();
+    expect(text('.h5p-preview__explanation')).toBe('Hello');
+  });
+
+  it('keeps the exercise mounted while the explanation is typed and the position flips', async () => {
+    // The same guarantee the preview's own spec pins, asserted here through the
+    // real wiring: `playerModel` is asked once and the element is the same one.
+    await setup({ body: exerciseBody({ h5pContentId: 'c1' }) });
+
+    await togglePreview();
+    const mounted = root().querySelector('h5p-player');
+
+    await typeExplanation(EN, '<p>Listen, then answer.</p>');
+    await typeExplanation(EN, '<p>Listen, then answer twice.</p>');
+    await choosePosition('Below the exercise');
+
+    expect(text('.h5p-preview__explanation')).toBe('Listen, then answer twice.');
+    expect(recorded.sequence.filter((entry) => entry.startsWith('play('))).toEqual(['play(c1)']);
+    expect(root().querySelector('h5p-player')).toBe(mounted);
   });
 
   it('stops accepting edits when the control is disabled', async () => {

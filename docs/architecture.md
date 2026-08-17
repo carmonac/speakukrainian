@@ -1465,31 +1465,87 @@ field ADR-007 says the editor-model route must never send — so the declared ty
 here by design. `h5p-exercise.model.ts` therefore declares its own narrow structural types over the
 two JSON responses and over the part of the element this screen drives.
 
-_Why `defineElements` is behind an injection token._ `H5P_DEFINE_ELEMENTS` exists so a spec can
-leave `h5p-editor` **undefined**. A defined element upgrades on append, and `connectedCallback`
-constructs a `ResizeObserver` — which jsdom does not implement — and then awaits `onload` on every
-script the model lists, which jsdom never fetches, so a spec that upgraded the element would _hang_
-rather than fail. Undefined, it is an ordinary `HTMLElement` carrying attributes, expando properties
-and real listeners, which is the whole surface this screen touches.
+_Why `defineElements` is behind an injection token, and why there are two of them._
+`H5P_DEFINE_EDITOR_ELEMENT` exists so a spec can leave `h5p-editor` **undefined**. A defined element
+upgrades on append, and `connectedCallback` constructs a `ResizeObserver` — which jsdom does not
+implement — and then awaits `onload` on every script the model lists, which jsdom never fetches, so a
+spec that upgraded the element would _hang_ rather than fail. Undefined, it is an ordinary
+`HTMLElement` carrying attributes, expando properties and real listeners, which is the whole surface
+these screens touch. `H5P_DEFINE_PLAYER_ELEMENT` registers `h5p-player` for the preview on the same
+terms, and it is a **second token rather than one call registering both tags**: a spec must be able
+to leave one tag undefined without leaving the other one undefined too, and
+`H5PPlayerComponent.connectedCallback` builds its own `ResizeObserver` (`h5p-player.js:178`).
 
 _What no test in this repository can establish._ In ADR-013's terms: jsdom implements no
 `ResizeObserver`, executes no external or cross-origin script, and runs no
 `iframe.contentDocument.write`. So the suite covers the route, the resolver, the request shapes, the
 mount's own contract — **including its write order**, by instrumenting the element `mountH5pEditor`
-creates rather than by upgrading it — the teardown and the `history.state` hand-off. A green suite
-is still **not** evidence that the widget boots. Those checks are manual, and each PR that touches
+and `mountH5pPlayer` create rather than by upgrading it — the teardown, the `history.state` hand-off
+and, for the preview, that editing the explanation re-mounts nothing. A green suite is still **not**
+evidence that either the widget or the player boots. Those checks are manual, and each PR that touches
 this screen states what was actually seen. Both defects found in this screen so far were found that
 way and neither was reachable from a unit test; and the first attempt at explaining one of them from
 the console alone produced the retraction above, which is the standard of evidence these checks are
 held to.
 
-_One H5P surface per screen._ `window.H5PIntegration` is merged and never replaced,
-`window.h5pIsInitialized` is set once and never cleared, and the scripts are appended to
-`document.head` for the life of the browser session — nothing is torn down, because removing the
-tags would not un-define `window.H5P` and re-adding them would re-execute them. Within one SPA
-session that makes editor → page form → editor untested territory for these components, whose
-reference host is a page load per screen. The editor route and #13's player preview therefore stay
-on separate routes; this is the paragraph to re-read if that ever changes.
+_Two H5P surfaces in one session, and what each leaves behind._ The admin mounts `<h5p-editor>` on
+`/pages/:id/exercise` and `<h5p-player>` in the `h5p_exercise` body editor's preview panel, and an
+author moves between them without a page load. Nothing is torn down when they do: the scripts are
+appended to `document.head` for the life of the session, because removing the tags would not
+un-define `window.H5P` and re-adding them would re-execute them. Five things follow, each read out of
+`@lumieducation/h5p-webcomponents@10.0.4`'s `build/es2015` and cited so it is recognised rather than
+rediscovered.
+
+**`window.h5pIsInitialized` is an editor-only hazard, not the editor↔player one.** `h5p-editor.js:296-299`
+both writes and reads it; `H5PPlayerComponent.render` ends with a bare `window.H5P.init(this.root)`
+and no guard at all (`h5p-player.js:355`). So an earlier editor mount cannot stop the player
+initialising, and a player mount sets nothing that would stop a later editor. What the flag does
+block is a **second editor mount** in one session, which is the widget route's own territory and is
+unchanged by the preview.
+
+**`mergeH5PIntegration` concatenates arrays.** `h5p-utils.js:27` calls `deepmerge` with no
+`arrayMerge`, and `deepmerge@4.3.1` concatenates by default, so `window.H5PIntegration.core.scripts`
+and `.core.styles` grow on every mount within a session. `addScripts` and `addStylesheets` dedupe on
+`data-h5p-src` and `data-h5p-href` (`dom-utils.js:22-26`, `:59-64`), so no duplicate tag is emitted
+and nothing breaks. **Do not "fix" it** — it is inside the vendored component; a 200-entry
+`core.scripts` in a console is expected.
+
+**`integration.editor` survives** in `window.H5PIntegration` after the widget route is left,
+including the two minted URL tokens the editor-model route sends. The player never reads it. Not a
+new exposure — the tokens were already in the document that fetched them — but they outlive the
+route.
+
+**The embed type decides whether H5P's stylesheets enter the admin.** `render` prefers `renderDiv`
+when the content's `embedTypes` includes `div` (`h5p-player.js:335-340`), and `renderDiv` does
+`addStylesheets(playerModel.styles, document.head)` (`:361`) — permanently, for the session.
+`renderIframe` (`:375-386`) adds none, and isolates the exercise in an iframe. `H5PPlayer` passes the
+content's own `h5p.json` `embedTypes` straight through (`h5p-server`'s `H5PPlayer.js:174`),
+`ContentMetadata.js:39` defaults it to `['iframe']`, and this repository's package fixture sets
+`['iframe']` (`apps/api/test/fixtures/h5p-package.ts:74`) — but **real content mostly does not**:
+h5p.org's own MultiChoice export (`multiple-choice-713.h5p`) declares `['div']`, and previewing it
+put 22 `link[data-h5p-href]` into `document.head`, where the same page previewing the fixture put 0.
+Both numbers are from the #70 manual round, in one browser session. So `renderDiv` is the branch an
+author will usually see, and the leak is real rather than theoretical. What it cost, measured the
+same way: a screenshot of `/sections` reached by router navigation from a document carrying those 22
+stylesheets was **byte-identical** to one loaded fresh with none, because H5P's core CSS is
+`.h5p-*`-scoped. The check to repeat when this changes is
+`document.querySelectorAll('head link[data-h5p-href]').length` with the preview open — `0` means
+`renderIframe` ran, anything above it means those stylesheets are in the document for the rest of
+the session.
+
+**The mount order is the boot, and the player differs from the editor in one way.** `render` returns
+early when `loadContentCallback` is unset (`h5p-player.js:308-310`), `this.root` is created in
+`connectedCallback` (`:172-186`), the `loadContentCallback` setter calls `render` without awaiting it
+(`:82-88`), and `render`'s own `catch` writes `this.root.innerHTML` (`:317`). So assigning the
+callback before the element is connected reaches `undefined.innerHTML` inside an `async` method: an
+unhandled rejection and a blank panel. `mountH5pPlayer` therefore appends, sets `content-id`, and
+assigns `loadContentCallback` **last** — the same order as `mountH5pEditor`. The difference is that
+the player does **not** special-case a falsy `content-id` the way the editor special-cases `'new'`:
+`attributeChangedCallback` forwards whatever it has (`:143-149`), so never mounting without an id is
+the caller's guarantee, and the preview panel is behind an `@if` on the id for that reason.
+
+`console.log('readOnlyState', …)` on every player render is the package's own line (`:313`). Not
+ours, not removable, not a defect.
 
 ### ADR-020 — An Auth failure that is not the caller's is a 503, logged once
 

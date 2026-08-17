@@ -5,6 +5,7 @@ import {
   forwardRef,
   inject,
   input,
+  linkedSignal,
   signal,
   viewChild,
 } from '@angular/core';
@@ -34,8 +35,10 @@ import {
   h5pUploadTooLargeMessage,
   isH5pPackageFilename,
   notAnH5pPackageMessage,
+  resolveLocalized,
   type H5pContent,
   type H5pExercisePageBody,
+  type LocaleCode,
   type PageBody,
   type RichText,
 } from '@speakukrainian/shared';
@@ -43,15 +46,18 @@ import { LocalesStore } from '../../core/locales/locales.store';
 import { showsApiMessage } from '../../core/http/error.interceptor';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { LocalizedRichTextEditor } from '../../shared/rich-text/localized-rich-text-editor';
+import { H5pExercisePreview } from './h5p-exercise-preview';
 import { reattachExercise, reportAttachment } from './h5p-exercise.model';
 import { H5pApi } from './h5p.api';
 import { emptyBodyFor } from './page-body';
 import {
   EXERCISE_CONTENT_MISSING,
   EXERCISE_NEEDS_PAGE,
+  EXERCISE_PREVIEW_HINT,
   EXERCISE_SUMMARY_FAILED,
   EXERCISE_UPLOAD_HINT,
   NO_EXERCISE_YET,
+  PREVIEW_LOCALE_LABEL,
   TRACK_RESULTS_HINT,
 } from './page-messages';
 
@@ -110,6 +116,7 @@ const FAILED: SummaryState = { status: 'failed', content: null };
     MatSelectModule,
     MatTooltipModule,
     LocalizedRichTextEditor,
+    H5pExercisePreview,
   ],
   providers: [
     {
@@ -148,13 +155,17 @@ export class H5pExercisePageBodyEditor implements ControlValueAccessor, Validato
    */
   readonly exerciseBlockedReason = input.required<string>();
 
-  protected readonly locales = inject(LocalesStore).codes;
+  private readonly store = inject(LocalesStore);
+  protected readonly locales = this.store.codes;
+  private readonly defaultCode = this.store.defaultCode;
 
   protected readonly noExerciseYet = NO_EXERCISE_YET;
   protected readonly uploadHint = EXERCISE_UPLOAD_HINT;
   protected readonly summaryFailed = EXERCISE_SUMMARY_FAILED;
   protected readonly contentMissing = EXERCISE_CONTENT_MISSING;
   protected readonly trackResultsHint = TRACK_RESULTS_HINT;
+  protected readonly previewHint = EXERCISE_PREVIEW_HINT;
+  protected readonly previewLocaleLabel = PREVIEW_LOCALE_LABEL;
   protected readonly acceptAttribute = H5P_PACKAGE_EXTENSION;
 
   protected readonly h5pContentId = signal<string | null>(EMPTY_BODY.h5pContentId);
@@ -204,6 +215,38 @@ export class H5pExercisePageBodyEditor implements ControlValueAccessor, Validato
   protected readonly uploadBlockedReason = computed(() =>
     this.pageId() === null ? EXERCISE_NEEDS_PAGE : '',
   );
+
+  /**
+   * Derived view state with nothing shareable in it, so it is not routed:
+   * ADR-005 is about state a refresh would *lose*, and a refresh re-derives this
+   * from the default locale at no cost.
+   */
+  protected readonly previewLocale = linkedSignal<LocaleCode | null>(
+    () => this.defaultCode() ?? this.locales()[0] ?? null,
+  );
+
+  /**
+   * Not routed either, and for a second reason: the preview is keyed on the id
+   * in the **control**, which a refresh discards in favour of the stored page's.
+   * A deep link to "preview open" could therefore play a different exercise than
+   * the one the author was looking at.
+   */
+  protected readonly previewOpen = signal(false);
+
+  protected readonly previewToggleLabel = computed(() =>
+    this.previewOpen() ? 'Hide preview' : 'Preview exercise',
+  );
+
+  /**
+   * The explanation the preview shows. A locale the author has not written falls
+   * back to the default and then to `''`, so nothing renders `undefined`.
+   */
+  protected readonly explanationHtml = computed(() => {
+    const locale = this.previewLocale();
+    return locale === null
+      ? ''
+      : resolveLocalized(this.explanation(), locale, this.defaultCode() ?? locale);
+  });
 
   protected readonly exerciseLinkLabel = computed(() =>
     this.h5pContentId() === null ? 'Create exercise' : 'Edit exercise',
@@ -279,6 +322,14 @@ export class H5pExercisePageBodyEditor implements ControlValueAccessor, Validato
   protected onExplanationPosition(position: H5pExercisePageBody['explanationPosition']): void {
     this.explanationPosition.set(position);
     this.emit();
+  }
+
+  /**
+   * Closing destroys the preview, and with it the mounted `<h5p-player>` — which
+   * is what makes reopening a fresh mount rather than a second one.
+   */
+  protected togglePreview(): void {
+    this.previewOpen.update((open) => !open);
   }
 
   protected onTrackResults(track: boolean): void {

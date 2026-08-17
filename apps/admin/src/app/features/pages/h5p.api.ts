@@ -30,12 +30,31 @@ export interface H5pContentParameters {
 }
 
 /**
+ * `GET /api/h5p/play/:contentId` — everything `<h5p-player>` boots from.
+ *
+ * Ours and not the package's, for the reason ADR-019 records for the editor
+ * model: the package's own `.d.ts` files import from
+ * `@lumieducation/h5p-server`, which does not resolve from the admin and
+ * degrades silently to `any` under `skipLibCheck`.
+ *
+ * `integration` is opaque because nothing in the admin reads a field of it — the
+ * player merges it into `window.H5PIntegration` itself. `embedTypes` is carried
+ * because it is what decides `renderDiv` against `renderIframe`
+ * (`h5p-player.js:335-340`), which is the one thing this feature can do to the
+ * admin's own styling.
+ */
+export interface H5pPlayerModel {
+  contentId: string;
+  integration: unknown;
+  scripts: string[];
+  styles: string[];
+  embedTypes: ('iframe' | 'div')[];
+}
+
+/**
  * HTTP surface for `/api/h5p`, for the authoring widget and the exercise body
  * editor. Types only — a value import of the shared barrel would pull Zod into
  * the eager bundle, as `pages.api.ts` explains.
- *
- * There is no `playerModel`: the preview is #70's, and it adds that method with
- * the component that calls it. An unused method is dead code.
  */
 @Injectable({ providedIn: 'root' })
 export class H5pApi {
@@ -54,6 +73,21 @@ export class H5pApi {
 
   contentParameters(contentId: string): Observable<H5pContentParameters> {
     return this.api.get<H5pContentParameters>(`/h5p/params/${contentId}`);
+  }
+
+  /**
+   * Everything the preview's `<h5p-player>` boots from. The route is `@Public()`
+   * and the subresources the model points at carry
+   * `Cross-Origin-Resource-Policy: cross-origin` (#62), so nothing on the API
+   * changes for this to be fetched from the admin's origin.
+   *
+   * **No `?lang`.** That parameter selects the *player's own chrome* (#36), not
+   * the explanation's language; passing it would put the preview locale into the
+   * mount key and reload the exercise every time the author switched language,
+   * and upstream ships no Ukrainian chrome anyway (ADR-007).
+   */
+  playerModel(contentId: string): Observable<H5pPlayerModel> {
+    return this.api.get<H5pPlayerModel>(`/h5p/play/${contentId}`);
   }
 
   /**
