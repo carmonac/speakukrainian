@@ -1243,10 +1243,12 @@ answer, whose stack starts at the throw site. The filter's line says _a 5xx was 
 request_; theirs says _why_. Two lines at the same level, correlated by the URL the filter's line
 carries — deleting the hand-written one to avoid the duplicate would delete the only record of the
 cause. `auth-failure.ts` is the one that does not restate the URL in its own line, for the plain
-reason that it would add nothing: `h5p.responses.ts` does restate it, because that path can fail
-after the headers are out, where the filter never classifies the request at all. Neither is a
-redaction measure — ADR-007 records, deliberately, that an H5P URL token appears **unredacted** in
-this server's request logs and in Cloud Run's, and is where that question is settled.
+reason that it would add nothing. `h5p.responses.ts` does restate it, and its own docblock gives the
+reason: `@Res()` takes the response out of Nest's hands, so the filter never sees either of the
+failures it handles — before the first byte or after it — and a line without the URL there would name
+no request at all. Neither choice is a redaction measure — ADR-007 records, deliberately, that an H5P
+URL token appears **unredacted** in this server's request logs and in Cloud Run's, and is where that
+question is settled.
 
 **Once the headers are sent, nothing is written.** The filter ended with an unconditional
 `response.status(status).json(body)`, which on a flushed response throws from inside a filter, where
@@ -1548,10 +1550,12 @@ that renames a code silently widens the 503 branch, which is the safe direction 
 tests name every code as a literal: the specs are the alarm. A renamed `auth/user-not-found` would
 answer a deleted account with a 503, which is wrong but honest and logged.
 
-_Out of scope, and named so the omission does not read as a decision._ `UsersService.setRole` has the
-same coarse `getUser` collapse and keeps it for now: it is a route an admin drives by hand with a
-person watching, not an authentication path every request crosses. `auth-failure.ts` is what a future
-issue would reuse there. There is **no e2e**: the fault has to be injected at the `Auth` seam, which
+_Out of scope, and named so the omission does not read as a decision._ `UsersService.setRole` still
+has the same coarse `getUser` collapse — every failure becomes `User <uid> not found` — and this
+issue did not narrow it: it is a route an admin drives by hand with a person watching, not an
+authentication path every request crosses. That is a known gap and not a plan; nothing is filed
+against it, and whoever closes it has `auth-failure.ts` to call. There is **no e2e**: the fault has to
+be injected at the `Auth` seam, which
 is a provider both guards receive by injection, so a unit test with a double exercises exactly this
 code — and what an HTTP-level test would add over it is the JSON envelope, which ADR-017 pins
 independently.
