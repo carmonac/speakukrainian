@@ -1502,6 +1502,12 @@ un-define `window.H5P` and re-adding them would re-execute them. Five things fol
 `@lumieducation/h5p-webcomponents@10.0.4`'s `build/es2015` and cited so it is recognised rather than
 rediscovered.
 
+_How to read the citations below._ A bare `file.js:123` is inside that pinned package version, which
+nothing here edits, so the line survives as long as the version in the sentence does. A citation into
+**this** repository names a symbol instead, because a line number in a file some later commit will
+edit has a short half-life — the fixture citation in the embed-type paragraph below was correct when
+it was written and wrong one commit later, after that fixture's own docblock grew.
+
 **`window.h5pIsInitialized` is an editor-only hazard, not the editor↔player one.** `h5p-editor.js:296-299`
 both writes and reads it; `H5PPlayerComponent.render` ends with a bare `window.H5P.init(this.root)`
 and no guard at all (`h5p-player.js:355`). So an earlier editor mount cannot stop the player
@@ -1534,9 +1540,11 @@ route.
 when the content's `embedTypes` includes `div` (`h5p-player.js:335-340`), and `renderDiv` does
 `addStylesheets(playerModel.styles, document.head)` (`:361`) — permanently, for the session.
 `renderIframe` (`:375-386`) adds none, and isolates the exercise in an iframe. `H5PPlayer` passes the
-content's own `h5p.json` `embedTypes` straight through (`h5p-server`'s `H5PPlayer.js:174`),
-`ContentMetadata.js:39` defaults it to `['iframe']`, and this repository's package fixture sets
-`['iframe']` (`apps/api/test/fixtures/h5p-package.ts:74`) — but **real content need not**: h5p.org's
+content's own `h5p.json` `embedTypes` straight through — `embedTypes: metadata.embedTypes` in the
+model it builds (`h5p-server@10.0.4`'s `H5PPlayer.js:174`) — `ContentMetadata`'s own `embedTypes`
+field defaults to `['iframe']` (`ContentMetadata.js:39`), and this repository's package fixture sets
+`['iframe']` in the `h5p.json` entry `packageEntries` builds
+(`apps/api/test/fixtures/h5p-package.ts`) — but **real content need not**: h5p.org's
 own MultiChoice export (`multiple-choice-713.h5p`) declares `['div']`, and previewing it put 22
 `link[data-h5p-href]` into `document.head`, where the same page previewing the fixture put 0. Both
 numbers are from the #70 manual round, in one browser session, and one package each is all they
