@@ -531,7 +531,9 @@ hours in one mount content-type switching, uploads and previews fail with Joubel
 **Saving is unaffected**, because `POST /api/h5p/editor[/:contentId]` is called by the admin's
 `HttpClient` with a bearer token — so the failure mode is "the widget stops fetching", never "the
 author loses work", and reloading the screen mints a fresh token. Three 401 messages keep expiry
-distinguishable from a bad link and from an account that can no longer sign in; **no** token at all
+distinguishable from a bad link and from an account that can no longer sign in, **and a 503 beside
+them**: ADR-020 reserves the third 401 for an account that is _really_ gone (`auth/user-not-found`)
+and answers every other Auth failure behind a verified token as this server's. **No** token at all
 is not an error but "this request is using the other credential", and falls through to
 `Missing bearer token`.
 
@@ -1233,12 +1235,20 @@ to add. The threshold is `>= 500`, not `=== 500`: the only 5xx `HttpException` i
 not already log by hand is a **503**, the one `GET /api/h5p/core/*` answers on a server whose client
 trees were never fetched — what an offline `pnpm install` leaves behind.
 
-**The two H5P sites keep their own lines, on purpose.** `h5p.errors.ts` and the `sendFile` path in
-`h5p-public.controller.ts` both log and then throw a _sanitized_ exception, so what the filter is
-handed no longer carries the cause: the `H5pError`'s `debugMessage`, and the requested path plus
-`send`'s own `EACCES`, are discarded to build the generic 500. The filter's line says _a 500 was
-answered for this request_; theirs says _why_. Two lines at the same level, correlated by the URL —
-deleting the hand-written one to avoid the duplicate would delete the only record of the cause.
+**Three sites keep their own lines, on purpose.** `h5p.errors.ts`, the `sendFile` path in
+`h5p-public.controller.ts` and `auth-failure.ts` all log and then throw a _sanitized_ exception, so
+what the filter is handed no longer carries the cause: the `H5pError`'s `debugMessage`, the requested
+path plus `send`'s own `EACCES`, and the Firebase `code` are each discarded to build the generic
+answer, whose stack starts at the throw site. The filter's line says _a 5xx was answered for this
+request_; theirs says _why_. Two lines at the same level, correlated by the URL the filter's line
+carries — deleting the hand-written one to avoid the duplicate would delete the only record of the
+cause. `auth-failure.ts` is the one that does not restate the URL in its own line, for the plain
+reason that it would add nothing. `h5p.responses.ts` does restate it, and its own docblock gives the
+reason: `@Res()` takes the response out of Nest's hands, so the filter never sees either of the
+failures it handles — before the first byte or after it — and a line without the URL there would name
+no request at all. Neither choice is a redaction measure — ADR-007 records, deliberately, that an H5P
+URL token appears **unredacted** in this server's request logs and in Cloud Run's, and is where that
+question is settled.
 
 **Once the headers are sent, nothing is written.** The filter ended with an unconditional
 `response.status(status).json(body)`, which on a flushed response throws from inside a filter, where
@@ -1480,6 +1490,75 @@ tags would not un-define `window.H5P` and re-adding them would re-execute them. 
 session that makes editor → page form → editor untested territory for these components, whose
 reference host is a page load per screen. The editor route and #13's player preview therefore stay
 on separate routes; this is the paragraph to re-read if that ever changes.
+
+### ADR-020 — An Auth failure that is not the caller's is a 503, logged once
+
+**The rule.** When Firebase Auth refuses, a guard answers 401 only for the codes that name a fault in
+the credential the caller sent; everything else is this server's failure to check, and answers a
+`ServiceUnavailableException` with one `error` line. It is stated in exactly one place —
+`apps/api/src/auth/auth-failure.ts` — and the two authentication guards call it rather than
+paraphrase it, because two guards restating "which failures are the caller's" is two places for that
+judgement to drift.
+
+**Stated in two directions, deliberately.** `H5pUrlTokenGuard` calls `auth.getUser`, which has exactly
+one caller-fault code, so it narrows on an allowlist of one: `auth/user-not-found`.
+`FirebaseAuthGuard` calls `verifyIdToken(token, checkRevoked)`, whose caller-fault set is large and
+open — `auth/argument-error` alone covers a bad signature, an unknown `kid` and a JWT that is not a
+JWT — so it names those codes and treats the rest as ours. Narrowing that one the other way round
+would answer 503 to every forged token, turning any scanner into a fake outage and burying the real
+one, which is the more dangerous of the two mistakes. A rejection that is not an `Error`, or carries
+no string `code`, is ours: the SDK diagnoses what it understands, and an undiagnosed throw says
+nothing about the caller.
+
+**Why 503 and not 401, and the harm is concrete rather than telemetric.** The admin's
+`error.interceptor.ts` navigates to `/login` on _any_ 401, so an outage answered as a bad credential
+threw every author out of what they were editing into a login screen that also could not work; its
+`>= 500` branch instead raises generic wording and stays on the page, which is why this fix is
+API-only. The 5xx class is also the honest one — the server could not determine who was asking — and
+it is what moves Cloud Run's error rate, where a 401 storm reads as clients misbehaving. 503 rather
+than 500 because the condition is transient and retry-shaped, and it sits under the `>= 500`
+threshold ADR-017 already set. No `Retry-After`: nothing here knows the duration.
+
+**Distinguishing the outage leaks nothing.** Both unknown-user branches sit _behind a credential the
+caller must already hold_ — the URL-token guard reaches `getUser` only after a valid HMAC over a
+payload we minted, the bearer guard reaches `auth/user-not-found` only after a fully verified ID
+token — so neither is an account-enumeration oracle. The only new fact on the wire is "this server
+cannot reach Firebase Auth right now", which is not per-account and is observable anyway from the
+failure of every authenticated request. What an indistinguishable answer costs is the whole record:
+no 5xx, no log, and no way to tell an outage from a wave of stale sessions.
+
+**`error` and not `warn`.** The answer is a 5xx, so ADR-017's filter logs it at `error` regardless,
+and logging our own cause line at `warn` would split one failure across two levels. "No author can
+sign in" is a page, which a `warn` is not. The counter-argument that a blip is noise at `error` is
+weaker than it looks: the SDK's own `HttpClient` retries 503s, `ECONNRESET` and `ETIMEDOUT` before
+rejecting, so what reaches a guard has already survived retries.
+
+**The residual, named and deliberately not fixed.** A failure to fetch Google's public signing
+certificates becomes `JwtError(KEY_FETCH_ERROR)`, and `mapJwtErrorToAuthError` falls through to
+`auth/argument-error` — the same code a forged token gets. A certificate-endpoint outage is therefore
+still answered 401. The only evidence separating it from a bad token is the upstream library's prose,
+and matching an upstream message where a code exists is a thing this repo refuses to do
+(`h5p.errors.ts`'s yauzl lists are the exception, and they exist because there is no code at all).
+It is unreachable locally in any case: with `FIREBASE_AUTH_EMULATOR_HOST` set the SDK skips signature
+verification and fetches no keys.
+
+_Cost._ Two `error` lines per failing request — the filter's, which names the request, and
+`auth-failure.ts`'s, which names the Firebase code the filter cannot see. Ours does not restate the
+URL, because the filter's already carries it; that is about duplication and not about secrecy, since
+ADR-007 already accepts that a URL token reaches the request logs unredacted. And a `firebase-admin` bump
+that renames a code silently widens the 503 branch, which is the safe direction but is why the unit
+tests name every code as a literal: the specs are the alarm. A renamed `auth/user-not-found` would
+answer a deleted account with a 503, which is wrong but honest and logged.
+
+_Out of scope, and named so the omission does not read as a decision._ `UsersService.setRole` still
+has the same coarse `getUser` collapse — every failure becomes `User <uid> not found` — and this
+issue did not narrow it: it is a route an admin drives by hand with a person watching, not an
+authentication path every request crosses. That is a known gap and not a plan; nothing is filed
+against it, and whoever closes it has `auth-failure.ts` to call. There is **no e2e**: the fault has to
+be injected at the `Auth` seam, which
+is a provider both guards receive by injection, so a unit test with a double exercises exactly this
+code — and what an HTTP-level test would add over it is the JSON envelope, which ADR-017 pins
+independently.
 
 ## Data model
 

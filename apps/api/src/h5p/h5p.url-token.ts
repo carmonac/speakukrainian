@@ -33,7 +33,14 @@ export const H5P_URL_TOKEN_EXPIRED_MESSAGE =
 /** A token that is malformed, carries a bad signature, or names another purpose. */
 export const H5P_URL_TOKEN_INVALID_MESSAGE = 'That editing link is not valid.';
 
-/** A token that verified, for a Firebase account that is gone or disabled. */
+/**
+ * A token that verified, for a Firebase account that is gone or disabled.
+ *
+ * "Gone" means `auth/user-not-found` specifically. Every other Auth failure
+ * behind this token — an outage, a socket error, a lost IAM grant — is this
+ * server's and answers the 503 `auth-failure.ts` builds, so this sentence is
+ * never said about an account that is fine.
+ */
 export const H5P_URL_TOKEN_UNKNOWN_USER_MESSAGE =
   'That editing link belongs to an account that can no longer sign in.';
 

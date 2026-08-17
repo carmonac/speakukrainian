@@ -8,6 +8,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { Auth, UserRecord } from 'firebase-admin/auth';
 import type { UserRole } from '@speakukrainian/shared';
+import { authUnavailable, meansUnknownUser } from '../auth/auth-failure.js';
 import { FIREBASE_AUTH } from '../auth/auth.tokens.js';
 import type { RequestWithUser } from '../auth/firebase-auth.guard.js';
 import { H5pUrlTokenService } from './h5p-url-token.service.js';
@@ -49,7 +50,9 @@ import {
  * demotion takes effect immediately rather than at the end of the token's
  * lifetime. The alternative — a role in the payload — would remove the read and
  * introduce a staleness window of the whole lifetime. An Auth outage therefore
- * breaks the editor's previews; that is the accepted side of the trade.
+ * breaks the editor's previews; that is the accepted side of the trade, and it
+ * is now *answered as an outage* — a logged 503 — rather than reported to the
+ * author as an account that can no longer sign in.
  */
 @Injectable()
 export class H5pUrlTokenGuard implements CanActivate {
@@ -93,18 +96,19 @@ export class H5pUrlTokenGuard implements CanActivate {
   }
 
   /**
-   * The caller's current record, or a refusal.
+   * The caller's current record, or a refusal — of one of two kinds.
    *
-   * **The diagnosis here is coarser than it reads.** Every `getUser` failure
-   * becomes "unknown user" and none is logged, so an Auth outage or a socket
-   * error tells an author whose account is perfectly fine that it can no longer
-   * sign in. `FirebaseAuthGuard` collapses the same failures the same way;
-   * narrowing to `auth/user-not-found` and letting the rest surface is worth
-   * doing in both places at once, not in one.
+   * An account that is gone or disabled is the caller's problem and answers
+   * 401; any other Auth failure is this server's and answers a logged 503, so
+   * an outage is never reported to an author as a dead account.
+   * `auth-failure.ts` states that rule for both authentication guards.
    */
   private async recordOf(uid: string): Promise<UserRecord> {
-    const record = await this.auth.getUser(uid).catch(() => {
-      throw new UnauthorizedException(H5P_URL_TOKEN_UNKNOWN_USER_MESSAGE);
+    const record = await this.auth.getUser(uid).catch((error: unknown) => {
+      if (meansUnknownUser(error)) {
+        throw new UnauthorizedException(H5P_URL_TOKEN_UNKNOWN_USER_MESSAGE);
+      }
+      throw authUnavailable(`the account an H5P editor URL token names (uid ${uid})`, error);
     });
 
     if (record.disabled) {
