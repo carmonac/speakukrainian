@@ -121,6 +121,16 @@ _Why:_ an authoring tool where a refresh loses your place, or where a link to a 
 section cannot be shared with a colleague, is a tool people work around. Angular's
 `RedirectCommand` carries state from a guard, which `createUrlTree` cannot.
 
+_A form on a route that can navigate to a sibling of itself populates in an `effect()`, never in
+`ngOnInit`._ `/schedule/:id` → `/schedule/:id` — which "open the conflicting slot" offers — reuses
+the component under the default `RouteReuseStrategy`, so the resolved input rebinds while
+`ngOnInit` does not run again: everything the arrival of a document decides belongs in an `effect()`
+on that input, meaning the field values, enable/disable, dependent group state, pristine and
+touched, and any refusal bound to the previous save. `valueChanges` subscriptions are the deliberate
+exception and stay in `ngOnInit`, because re-running them stacks a second handler on the same
+control — which is why the population must be self-sufficient rather than leaning on one of them to
+finish its job.
+
 ### ADR-006 — Public site is server-rendered per request
 
 `RenderMode.Server`, not prerendering.
@@ -952,7 +962,11 @@ trusted staff, and the alternative costs an `ownerId` argument through the repos
 owner-prefixed index, and a `403` path with nothing behind it today. What would change it: teachers
 administering their own calendars, or admins who are not all trusted with each other's time.
 Booking is the related Phase 2 hole and is closed the other way: `booked` is excluded from the patch
-schema outright, so no route can produce a slot that reads as booked with no `bookedBy`.
+schema outright, so no route can produce a slot that reads as booked with no `bookedBy`. That
+exclusion stops a slot _becoming_ booked and nothing more — `ScheduleSlotsRepository.update` will
+happily patch one that already is — so the admin's slot form refuses to edit a booked slot at all,
+and that refusal is the **admin's** and not the API's. It is the right side to put it on while
+booking does not exist: Phase 2 owns rescheduling a booked hour, and it needs to tell the learner.
 
 **A slot's `note` is localized plain text** — `LocalizedText`, not `RichText`. It is shown to a
 learner, so rule 2 makes it localized; what it is not is rich, and **two reasons decide that**: this
@@ -1009,6 +1023,30 @@ render time, so `America/Phoenix` viewed from `America/Denver` correctly draws o
 and two in July. This is not the canonicalisation the paragraph above refuses: no stored value is
 rewritten, no link is resolved, and the case-folded `sameZone` stays as the cheap path in front of
 it.
+
+**The form that authors those slots holds the same two halves apart**, and adds three decisions
+Phase 2's booking flow will meet again. Its date and time fields are on the **slot's own clock**, so
+a Madrid slot opened from a Kyiv browser reads 09:00 and not 10:00, and the browser's reading is a
+labelled second line drawn under the same "only when it would say something new" rule. An end at or
+before the start means **the next day**, not an error — the 23:30-00:30 slot the week view already
+draws has to be authorable — and only equal times are refused, because 00:00→00:00 read as the next
+day is a silent 24-hour slot that `MAX_SLOT_DURATION_HOURS` accepts. A recurrence's `until` is the
+**end of the chosen civil day in the slot's zone**, since `expandRecurrence` compares occurrence
+_starts_ against it inclusively and midnight would drop the last day's.
+
+The zone picker is the third, and it is the one that can lose data by doing nothing.
+`Intl.supportedValuesOf('timeZone')` is **canonical names only** — 418 of them on this project's
+Node, carrying `Europe/Kiev` but not `Europe/Kyiv`, `Asia/Calcutta` but not `Asia/Kolkata`, and
+neither `US/Eastern` nor `UTC` nor any `Etc/*` — while this schema accepts every one of those and
+stores the spelling it was given. A `<mat-select>` over the raw list therefore opens a slot stored in
+one of them with no matching option, renders blank, and writes whatever the admin picks next over a
+zone they never touched. So the selected zone is added to the list when the list does not already
+carry it under `sameZone`, the select compares options case-insensitively, and an unedited save omits
+`timeZone`, `startsAt` and `endsAt` from the patch rather than round-tripping them. That omission is
+exact **to the minute**, which is all the fields carry: a slot whose stored instants have non-zero
+seconds is re-timed to `:00` by an otherwise untouched save. Nothing this admin can author has them
+— every instant it sends is composed from a civil date, an `HH:mm` and a zone — so the guarantee
+holds for everything the form creates, and the exception sits beside the transition residual below.
 
 _Cost:_ a slot straddling a transition ends at a different local time than the anchor did; a
 document hand-written with a duration over 24 h is invisible to the overlap check; and overlap

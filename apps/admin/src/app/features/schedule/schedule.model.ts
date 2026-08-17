@@ -182,6 +182,26 @@ export function fallbackMonday(today: CivilDate): CivilDate {
     : EARLIEST_SCHEDULABLE_MONDAY;
 }
 
+/**
+ * The date `/schedule/new` opens on from the week view: today when it is one of
+ * the seven days on screen, else that week's Monday.
+ *
+ * The point is that a new slot lands in the week the admin is looking at. Always
+ * using today would open April's form while March is on screen; always using the
+ * Monday would make "New slot" mean the wrong day on the six days a week that
+ * are not Monday.
+ *
+ * Compared as formatted strings, which is the calendar comparison for
+ * zero-padded dates — the trick `startsBeforeWeek` already uses — and needs no
+ * zone.
+ */
+export function defaultNewSlotDate(monday: CivilDate, today: CivilDate): CivilDate {
+  const key = formatCivilDate(today);
+  const insideWeek =
+    key >= formatCivilDate(monday) && key <= formatCivilDate(addCivilDays(monday, 6));
+  return insideWeek ? today : monday;
+}
+
 /** The calendar date an instant falls on in `timeZone`. */
 export function civilDateIn(instant: string, timeZone: string): CivilDate {
   const wall = wallClockIn(new Date(instant), timeZone);

@@ -65,11 +65,27 @@
     }
   }
 
+  &__day-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
   &__day-label {
-    margin: 0 0 8px;
+    margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 0.875rem;
     font-weight: 500;
     color: var(--mat-sys-on-surface-variant, #49454f);
+  }
+
+  &__add-slot {
+    flex-shrink: 0;
   }
 
   &__slots {
@@ -92,6 +108,20 @@
   border-radius: 8px;
   border-inline-start: 3px solid var(--mat-sys-primary, #6750a4);
   background: var(--mat-sys-surface-container, #f3edf7);
+
+  // The chip is one link, so it takes the surrounding text colour rather than
+  // the browser's link blue on every line of it.
+  &__link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+
+    &:hover,
+    &:focus-visible {
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+    }
+  }
 
   &__own-time {
     display: flex;

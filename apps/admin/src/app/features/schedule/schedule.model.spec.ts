@@ -4,6 +4,7 @@ import {
   addCivilDays,
   buildWeek,
   civilDateIn,
+  defaultNewSlotDate,
   fallbackMonday,
   formatCivilDate,
   fullDateLabel,
@@ -196,6 +197,25 @@ describe('addCivilDays', () => {
     expect(formatCivilDate(addCivilDays(date('2026-03-02'), 7))).toBe('2026-03-09');
     expect(formatCivilDate(addCivilDays(date('2026-03-02'), -7))).toBe('2026-02-23');
     expect(formatCivilDate(addCivilDays(date('2025-12-29'), 7))).toBe('2026-01-05');
+  });
+});
+
+describe('defaultNewSlotDate', () => {
+  it('opens on today when today is one of the seven days on screen', () => {
+    const monday = date('2026-03-02');
+    expect(formatCivilDate(defaultNewSlotDate(monday, date('2026-03-04')))).toBe('2026-03-04');
+    // Both ends of the week are inside it, which an exclusive comparison gets
+    // wrong on exactly two days.
+    expect(formatCivilDate(defaultNewSlotDate(monday, monday))).toBe('2026-03-02');
+    expect(formatCivilDate(defaultNewSlotDate(monday, date('2026-03-08')))).toBe('2026-03-08');
+  });
+
+  it('opens on the visible week’s Monday when today is not in it', () => {
+    const monday = date('2026-03-02');
+    // Otherwise New slot would open April's form while March is on screen.
+    expect(formatCivilDate(defaultNewSlotDate(monday, date('2026-03-09')))).toBe('2026-03-02');
+    expect(formatCivilDate(defaultNewSlotDate(monday, date('2026-03-01')))).toBe('2026-03-02');
+    expect(formatCivilDate(defaultNewSlotDate(monday, date('2025-12-31')))).toBe('2026-03-02');
   });
 });
 
