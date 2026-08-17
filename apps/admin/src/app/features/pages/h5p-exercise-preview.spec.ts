@@ -8,12 +8,13 @@ import { H5pExercisePreview } from './h5p-exercise-preview';
 import { H5pApi, type H5pPlayerModel } from './h5p.api';
 import { EXERCISE_PREVIEW_FAILED } from './page-messages';
 
-/**
- * `h5p-player` is never defined here: `H5P_DEFINE_PLAYER_ELEMENT` is provided as
- * a no-op, so the element stays a plain `HTMLElement`. An upgraded one would
- * construct a `ResizeObserver` jsdom does not implement and then wait forever on
- * scripts jsdom never fetches, which hangs a run rather than failing it.
- */
+// `h5p-player` is never defined in this file: `H5P_DEFINE_PLAYER_ELEMENT` is
+// provided as a no-op, so the element stays a plain `HTMLElement`. An upgraded
+// one would construct a `ResizeObserver` jsdom does not implement and then wait
+// forever on scripts jsdom never fetches, which hangs a run rather than failing
+// it. So nothing below is evidence that the player boots — only that it is
+// mounted, torn down and re-mounted when it should be.
+
 function model(contentId: string): H5pPlayerModel {
   return {
     contentId,

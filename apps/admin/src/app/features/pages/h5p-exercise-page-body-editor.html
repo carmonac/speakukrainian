@@ -139,13 +139,23 @@
   <!-- No exercise, nothing to play: the player forwards a falsy `content-id`
        rather than refusing it, so the guard is here. The id is the one in the
        control, not the stored page's — an exercise the widget just handed back
-       is playable before the form is saved. -->
+       is playable before the form is saved.
+
+       The one part of this form that ignores `disabled()`, deliberately: the
+       panel plays content the API already holds and writes nothing, so a
+       read-only form is still a form whose exercise can be checked. -->
   @if (h5pContentId(); as contentId) {
     <fieldset class="h5p-body__preview">
       <legend>Preview</legend>
 
       <div class="h5p-body__preview-header">
-        <button matButton type="button" class="h5p-body__preview-toggle" (click)="togglePreview()">
+        <button
+          matButton
+          type="button"
+          class="h5p-body__preview-toggle"
+          [attr.aria-expanded]="previewOpen()"
+          (click)="togglePreview()"
+        >
           {{ previewToggleLabel() }}
         </button>
 

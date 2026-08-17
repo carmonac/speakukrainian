@@ -1488,6 +1488,12 @@ way and neither was reachable from a unit test; and the first attempt at explain
 the console alone produced the retraction above, which is the standard of evidence these checks are
 held to.
 
+_And the `.h5p` those checks are run against is part of the check._ This repository's own generated
+package (`apps/api/test/fixtures/h5p-package.ts`) carries no player-side JS, so previewing it renders
+an empty `.h5p-container` and throws once inside the iframe — expected, and a claim about the
+fixture rather than about the product. A manual round uses a package from h5p.org; the fixture's own
+docblock says so, which is where someone reaching for a `.h5p` will be looking.
+
 _Two H5P surfaces in one session, and what each leaves behind._ The admin mounts `<h5p-editor>` on
 `/pages/:id/exercise` and `<h5p-player>` in the `h5p_exercise` body editor's preview panel, and an
 author moves between them without a page load. Nothing is torn down when they do: the scripts are
@@ -1510,6 +1516,15 @@ and `.core.styles` grow on every mount within a session. `addScripts` and `addSt
 and nothing breaks. **Do not "fix" it** — it is inside the vendored component; a 200-entry
 `core.scripts` in a console is expected.
 
+`window.H5P.instances` grows the same way and is worth recognising beside it: one entry per mounted
+exercise, and nothing removes the dead ones. The player's `disconnectedCallback` calls
+`removeUnusedContent`, which deletes `H5PIntegration.contents['cid-…']` and touches `instances` not
+at all (`h5p-utils.js:33-38`); meanwhile every mounted player's `ResizeObserver` callback iterates
+**all** of `window.H5P.instances` and calls `instance.trigger('resize')` on each
+(`h5p-player.js:178-185`), including instances belonging to mounts already torn down. So a
+close-and-reopen leaves two entries and resizes both. Package-owned, same verdict: recorded so it is
+recognised, not repaired.
+
 **`integration.editor` survives** in `window.H5PIntegration` after the widget route is left,
 including the two minted URL tokens the editor-model route sends. The player never reads it. Not a
 new exposure — the tokens were already in the document that fetched them — but they outlive the
@@ -1521,11 +1536,12 @@ when the content's `embedTypes` includes `div` (`h5p-player.js:335-340`), and `r
 `renderIframe` (`:375-386`) adds none, and isolates the exercise in an iframe. `H5PPlayer` passes the
 content's own `h5p.json` `embedTypes` straight through (`h5p-server`'s `H5PPlayer.js:174`),
 `ContentMetadata.js:39` defaults it to `['iframe']`, and this repository's package fixture sets
-`['iframe']` (`apps/api/test/fixtures/h5p-package.ts:74`) — but **real content mostly does not**:
-h5p.org's own MultiChoice export (`multiple-choice-713.h5p`) declares `['div']`, and previewing it
-put 22 `link[data-h5p-href]` into `document.head`, where the same page previewing the fixture put 0.
-Both numbers are from the #70 manual round, in one browser session. So `renderDiv` is the branch an
-author will usually see, and the leak is real rather than theoretical. What it cost, measured the
+`['iframe']` (`apps/api/test/fixtures/h5p-package.ts:74`) — but **real content need not**: h5p.org's
+own MultiChoice export (`multiple-choice-713.h5p`) declares `['div']`, and previewing it put 22
+`link[data-h5p-href]` into `document.head`, where the same page previewing the fixture put 0. Both
+numbers are from the #70 manual round, in one browser session, and one package each is all they
+establish. So `renderDiv` must be **assumed** rather than treated as the exception, and the leak is
+real rather than theoretical. What it cost, measured the
 same way: a screenshot of `/sections` reached by router navigation from a document carrying those 22
 stylesheets was **byte-identical** to one loaded fresh with none, because H5P's core CSS is
 `.h5p-*`-scoped. The check to repeat when this changes is

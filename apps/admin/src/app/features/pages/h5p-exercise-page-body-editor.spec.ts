@@ -300,7 +300,6 @@ describe('H5pExercisePageBodyEditor', () => {
     }
     toggle.click();
     await settle();
-    await settle();
   }
 
   async function choosePreviewLocale(label: string): Promise<void> {
@@ -320,7 +319,6 @@ describe('H5pExercisePageBodyEditor', () => {
       throw new Error(`Expected a locale option "${label}"`);
     }
     option.click();
-    await settle();
     await settle();
   }
 
@@ -707,13 +705,20 @@ describe('H5pExercisePageBodyEditor', () => {
 
   it('leaves exactly one player behind when the preview is closed and reopened', async () => {
     await setup({ body: exerciseBody({ h5pContentId: 'c1' }) });
+    const expanded = (): string | null =>
+      root().querySelector('.h5p-body__preview-toggle')?.getAttribute('aria-expanded') ?? null;
+
+    expect(expanded()).toBe('false');
 
     await togglePreview();
     expect(root().querySelectorAll('h5p-player')).toHaveLength(1);
     expect(text('.h5p-body__preview-toggle')).toBe('Hide preview');
+    // The label says it to a sighted author; this says it to everyone else.
+    expect(expanded()).toBe('true');
 
     await togglePreview();
     expect(root().querySelectorAll('h5p-player')).toHaveLength(0);
+    expect(expanded()).toBe('false');
 
     await togglePreview();
     expect(root().querySelectorAll('h5p-player')).toHaveLength(1);

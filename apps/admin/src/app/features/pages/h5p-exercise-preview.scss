@@ -3,16 +3,14 @@
   flex-direction: column;
   gap: 12px;
 
+  // The wrapper only, never the HTML inside it — the rule
+  // `subsection-preview__intro` already follows, and under emulated
+  // encapsulation the alternative does not work: a child rule compiles to
+  // `.h5p-preview__explanation[_ngcontent-x] > [_ngcontent-x]:first-child`, and
+  // nodes written by `[innerHTML]` carry no `_ngcontent` attribute at all, so it
+  // matches nothing. Verified in the browser rather than assumed.
   &__explanation {
     color: var(--mat-sys-on-surface, #1d1b20);
-
-    :first-child {
-      margin-top: 0;
-    }
-
-    :last-child {
-      margin-bottom: 0;
-    }
   }
 
   // The exercise sizes its own iframe once it has booted; before that the host
