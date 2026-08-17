@@ -18,7 +18,7 @@ import type {
 import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { unsavedChangesGuard } from '../../core/router/unsaved-changes.guard';
-import { H5P_DEFINE_ELEMENTS } from './h5p-elements';
+import { H5P_DEFINE_EDITOR_ELEMENT } from './h5p-elements';
 import { H5pExercisePage } from './h5p-exercise-page';
 import {
   EXERCISE_RESULT_STATE,
@@ -225,7 +225,7 @@ function setup(options: Options = {}): Recorded {
       // A no-op, so `<h5p-editor>` is never upgraded: jsdom has no
       // `ResizeObserver` and fetches no script tags, so an upgraded element
       // would hang this suite rather than fail it.
-      { provide: H5P_DEFINE_ELEMENTS, useValue: () => {} },
+      { provide: H5P_DEFINE_EDITOR_ELEMENT, useValue: () => {} },
       {
         provide: LocalesStore,
         useValue: {
@@ -604,7 +604,7 @@ describe('H5pExercisePage', () => {
   });
 
   it('says something when the element was never upgraded, rather than throwing at the click', async () => {
-    // `H5P_DEFINE_ELEMENTS` is a no-op here, so the element has no `save` at all
+    // `H5P_DEFINE_EDITOR_ELEMENT` is a no-op here, so the element has no `save` at all
     // — the same shape as a browser where the custom element failed to register.
     setup();
     const harness = await open('/pages/p1/exercise');

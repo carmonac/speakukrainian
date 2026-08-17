@@ -16,7 +16,7 @@ import { firstValueFrom } from 'rxjs';
 import type { H5pSaveResult, SaveH5pContentInput } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
 import type { HasUnsavedChanges } from '../../core/router/unsaved-changes.guard';
-import { H5P_DEFINE_ELEMENTS } from './h5p-elements';
+import { H5P_DEFINE_EDITOR_ELEMENT } from './h5p-elements';
 import { NotificationService } from '../../core/notifications/notification.service';
 import {
   EXERCISE_RESULT_STATE,
@@ -109,7 +109,7 @@ export class H5pExercisePage implements HasUnsavedChanges {
   );
 
   constructor() {
-    inject(H5P_DEFINE_ELEMENTS)();
+    inject(H5P_DEFINE_EDITOR_ELEMENT)();
 
     effect((onCleanup) => {
       const container = this.host().nativeElement;

@@ -4,7 +4,8 @@
   gap: 16px;
 
   &__exercise,
-  &__explanation-fields {
+  &__explanation-fields,
+  &__preview {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -68,5 +69,18 @@
 
   &__explanation {
     display: block;
+  }
+
+  &__preview-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  &__preview-locale-field {
+    // Wide enough for the floating label, which is longer than any value it
+    // sits above: at 140px Material clipped it to "Preview lang". The same
+    // width, and the same reason, as the subsection-list preview's.
+    width: 200px;
   }
 }

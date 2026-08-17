@@ -5,21 +5,25 @@ import type { NotificationService } from '../../core/notifications/notification.
 import {
   H5P_NEW_CONTENT_ID,
   mountH5pEditor,
+  mountH5pPlayer,
   reattachExercise,
   reportAttachment,
   type H5pEditorContent,
   type H5pEditorHost,
   type H5pEditorMount,
+  type H5pPlayerHost,
 } from './h5p-exercise.model';
-import type { H5pApi } from './h5p.api';
+import type { H5pApi, H5pPlayerModel } from './h5p.api';
 import { EXERCISE_ATTACH_FAILED, EXERCISE_PREVIOUS_DETACHED } from './page-messages';
 
 /**
- * `h5p-editor` is deliberately **not** defined in this file. An upgraded element
- * would construct a `ResizeObserver` jsdom does not have and then wait forever
- * on scripts jsdom never fetches — a spec that hangs rather than fails. Left
- * undefined it is a plain `HTMLElement`, which is the whole surface
- * `mountH5pEditor` drives. `H5P_DEFINE_ELEMENTS` exists so this stays true.
+ * Neither `h5p-editor` nor `h5p-player` is defined in this file. An upgraded
+ * element of either tag would construct a `ResizeObserver` jsdom does not have
+ * and then wait forever on scripts jsdom never fetches — a spec that hangs
+ * rather than fails. Left undefined they are plain `HTMLElement`s, which is the
+ * whole surface `mountH5pEditor` and `mountH5pPlayer` drive.
+ * `H5P_DEFINE_EDITOR_ELEMENT` and `H5P_DEFINE_PLAYER_ELEMENT` exist so this
+ * stays true, one tag at a time.
  */
 const CONTENT: H5pEditorContent = {
   integration: { editor: { ajaxPath: '/api/h5p/ajax?token=abc&action=' } },
@@ -300,6 +304,152 @@ describe('mountH5pEditor', () => {
 
     expect(container.querySelectorAll('h5p-editor')).toHaveLength(1);
     expect(editorIn(container).getAttribute('content-id')).toBe('c2');
+  });
+});
+
+const PLAYER_MODEL: H5pPlayerModel = {
+  contentId: 'c1',
+  integration: { contents: {} },
+  scripts: ['/api/h5p/core/js/h5p.js'],
+  styles: ['/api/h5p/core/styles/h5p.css'],
+  embedTypes: ['iframe'],
+};
+
+/** What the player element looked like at the moment each boot write landed. */
+interface PlayerBootStep {
+  write: 'content-id' | 'loadContentCallback';
+  connected: boolean;
+  contentId: string | null;
+}
+
+/**
+ * The player-shaped sibling of {@link recordBootOrder}, and for the same reason:
+ * the real component renders from `attributeChangedCallback` and from the
+ * `loadContentCallback` setter, which calls `render` without awaiting it, so an
+ * out-of-order mount fails only inside a browser — `render`'s `catch` reaching
+ * `this.root.innerHTML` with no root, which is an unhandled rejection and a
+ * blank panel. Nothing in jsdom upgrades the element, so nothing here would
+ * otherwise notice.
+ */
+function recordPlayerBootOrder(steps: PlayerBootStep[]): void {
+  const createElement = document.createElement.bind(document);
+
+  vi.spyOn(document, 'createElement').mockImplementation((tag: string, ...rest: unknown[]) => {
+    const element = createElement(tag, ...(rest as []));
+    if (tag !== 'h5p-player') {
+      return element;
+    }
+
+    const step = (write: PlayerBootStep['write']): void => {
+      steps.push({
+        write,
+        connected: element.isConnected,
+        contentId: element.getAttribute('content-id'),
+      });
+    };
+
+    const setAttribute = element.setAttribute.bind(element);
+    element.setAttribute = (name: string, value: string): void => {
+      setAttribute(name, value);
+      if (name === 'content-id') {
+        step('content-id');
+      }
+    };
+
+    let held: unknown;
+    Object.defineProperty(element, 'loadContentCallback', {
+      configurable: true,
+      get: () => held,
+      set: (value: unknown) => {
+        held = value;
+        // Only the assignment, not the teardown's clearing.
+        if (value !== undefined) {
+          step('loadContentCallback');
+        }
+      },
+    });
+
+    return element;
+  });
+}
+
+describe('mountH5pPlayer', () => {
+  let container: HTMLElement;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    container.remove();
+  });
+
+  function playerIn(host: HTMLElement): H5pPlayerHost {
+    const element = host.querySelector<H5pPlayerHost>('h5p-player');
+    if (element === null) {
+      throw new Error('Expected an h5p-player in the container');
+    }
+    return element;
+  }
+
+  it('connects the element, gives it its id, and assigns the load callback last', () => {
+    const steps: PlayerBootStep[] = [];
+    recordPlayerBootOrder(steps);
+
+    mountH5pPlayer(container, { contentId: 'c1', model: PLAYER_MODEL });
+
+    expect(steps.map((entry) => entry.write)).toEqual(['content-id', 'loadContentCallback']);
+    // Every write lands on an element that is already in the document: the
+    // component builds its root in `connectedCallback`, and a render before that
+    // throws where nothing catches it.
+    expect(steps.every((entry) => entry.connected)).toBe(true);
+    // And the render the assignment triggers finds the id already there, which
+    // is the only thing it is given to fetch under.
+    expect(steps.at(-1)?.contentId).toBe('c1');
+  });
+
+  it('leaves exactly one h5p-player carrying the exercise’s id', () => {
+    mountH5pPlayer(container, { contentId: 'c1', model: PLAYER_MODEL });
+
+    expect(container.querySelectorAll('h5p-player')).toHaveLength(1);
+    expect(playerIn(container).getAttribute('content-id')).toBe('c1');
+  });
+
+  it('resolves the model it was mounted with, whatever it is asked for', async () => {
+    mountH5pPlayer(container, { contentId: 'c1', model: PLAYER_MODEL });
+
+    const load = playerIn(container).loadContentCallback;
+    if (load === undefined) {
+      throw new Error('Expected a load callback');
+    }
+
+    await expect(load('c1')).resolves.toBe(PLAYER_MODEL);
+    // The component calls it with four arguments and this mount answers with
+    // the model the caller already fetched, so nothing it passes can change it.
+    await expect(load(undefined)).resolves.toBe(PLAYER_MODEL);
+  });
+
+  it('tears down to an empty container and an unwired element', () => {
+    const teardown = mountH5pPlayer(container, { contentId: 'c1', model: PLAYER_MODEL });
+    const element = playerIn(container);
+
+    teardown();
+
+    expect(container.children).toHaveLength(0);
+    expect(element.isConnected).toBe(false);
+    // Cleared, so a render already in flight returns early instead of calling
+    // back into a destroyed panel.
+    expect(element.loadContentCallback).toBeUndefined();
+  });
+
+  it('leaves one element when the same container is mounted into twice', () => {
+    mountH5pPlayer(container, { contentId: 'c1', model: PLAYER_MODEL });
+    mountH5pPlayer(container, { contentId: 'c2', model: { ...PLAYER_MODEL, contentId: 'c2' } });
+
+    expect(container.querySelectorAll('h5p-player')).toHaveLength(1);
+    expect(playerIn(container).getAttribute('content-id')).toBe('c2');
   });
 });
 

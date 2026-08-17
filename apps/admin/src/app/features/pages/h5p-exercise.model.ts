@@ -1,11 +1,14 @@
 import { firstValueFrom } from 'rxjs';
 import type { SaveH5pContentInput } from '@speakukrainian/shared';
 import type { NotificationService } from '../../core/notifications/notification.service';
-import type { H5pApi, H5pEditorModel } from './h5p.api';
+import type { H5pApi, H5pEditorModel, H5pPlayerModel } from './h5p.api';
 import { EXERCISE_ATTACH_FAILED, EXERCISE_PREVIOUS_DETACHED } from './page-messages';
 
-/** The tag `H5P_DEFINE_ELEMENTS` registers, and the one this screen mounts. */
+/** The tag `H5P_DEFINE_EDITOR_ELEMENT` registers, and the one this screen mounts. */
 const H5P_EDITOR_TAG = 'h5p-editor';
+
+/** The tag `H5P_DEFINE_PLAYER_ELEMENT` registers, and the one the preview mounts. */
+const H5P_PLAYER_TAG = 'h5p-player';
 
 /**
  * What a brand-new exercise is called, as a **literal content id**.
@@ -60,9 +63,9 @@ export interface H5pEditorHost extends HTMLElement {
   ) => Promise<{ contentId: string }>;
   /**
    * Optional because the element only has it once it has been **upgraded**, and
-   * `H5P_DEFINE_ELEMENTS` exists precisely so that it need not be. A caller that
-   * has to handle its absence cannot mistake an un-upgraded element for a save
-   * that quietly did nothing.
+   * `H5P_DEFINE_EDITOR_ELEMENT` exists precisely so that it need not be. A
+   * caller that has to handle its absence cannot mistake an un-upgraded element
+   * for a save that quietly did nothing.
    */
   save?: () => Promise<unknown>;
 }
@@ -182,6 +185,93 @@ export function mountH5pEditor(container: HTMLElement, mount: H5pEditorMount): (
     // in flight return early instead of calling back into a destroyed screen.
     element.loadContentCallback = undefined;
     element.saveContentCallback = undefined;
+    container.replaceChildren();
+  };
+}
+
+/**
+ * The part of `H5PPlayerComponent` the preview drives.
+ *
+ * Ours and not the package's, for the reason ADR-019 records for the editor: the
+ * package's `.d.ts` files import from `@lumieducation/h5p-server`, which does
+ * not resolve from the admin and degrades silently to `any` under
+ * `skipLibCheck`.
+ */
+export interface H5pPlayerHost extends HTMLElement {
+  /**
+   * The component calls this with four arguments (`h5p-player.js:314`:
+   * `contentId`, `contextId`, `asUserId` and a `readOnlyState` boolean). Only
+   * the first could mean anything here, and this mount answers with the model it
+   * was created for regardless, so the other three are not declared.
+   */
+  loadContentCallback?: (contentId?: string) => Promise<H5pPlayerModel>;
+}
+
+/** Everything one mounted player needs, decided by the caller. */
+export interface H5pPlayerMount {
+  /**
+   * Never empty. Unlike the editor, which special-cases the literal `'new'`, the
+   * player forwards whatever `content-id` holds straight to the callback
+   * (`h5p-player.js:143-149`), so refusing an absent id is the caller's job.
+   */
+  contentId: string;
+  /** Already resolved, so no request happens in the middle of a mount. */
+  model: H5pPlayerModel;
+}
+
+/**
+ * Creates the `<h5p-player>` element, wires it, and answers with its teardown.
+ *
+ * **The order of the writes below is the boot**, exactly as it is for
+ * {@link mountH5pEditor}. `attributeChangedCallback` renders when `content-id`
+ * changes (`h5p-player.js:143-149`) and the `loadContentCallback` *setter*
+ * renders when the callback identity changes (`:82-88`), while `render` returns
+ * early when the callback is unset (`:308-310`). `this.root` is created in
+ * `connectedCallback` (`:172-186`) and `render`'s own `catch` writes
+ * `this.root.innerHTML` (`:317`), so assigning the callback before the element
+ * is connected reaches `undefined.innerHTML` inside an `async` method whose
+ * promise the setter does not await: an unhandled rejection and a blank panel.
+ * So the element is connected first, then given its id, then the load callback
+ * **last** — the one render that does anything.
+ *
+ * The element is created here rather than written in a template for the same
+ * reason: appending it ourselves is what guarantees it is connected before it is
+ * wired, and the caller's template needs no `CUSTOM_ELEMENTS_SCHEMA`.
+ *
+ * **No event listeners.** The component dispatches `initialized` and `xAPI`;
+ * nothing in the preview reads either.
+ *
+ * **Nothing global is torn down.** `addScripts` appends the player's scripts to
+ * `document.head` deduped on `data-h5p-src`, `mergeH5PIntegration` merges into
+ * `window.H5PIntegration` and never replaces it, and `removeUnusedContent` is
+ * not exported from the package's entry point — an upgraded element calls it
+ * from its own `disconnectedCallback` (`:190`). Whether the exercise's own
+ * stylesheets reach `document.head` is decided by `embedTypes`, not by this
+ * function: `renderDiv` adds them permanently (`:361`), `renderIframe` adds none
+ * (`:375-386`).
+ */
+export function mountH5pPlayer(container: HTMLElement, mount: H5pPlayerMount): () => void {
+  const element = document.createElement(H5P_PLAYER_TAG) as H5pPlayerHost;
+
+  // `replaceChildren`, so a re-run against the same container never leaves two.
+  container.replaceChildren(element);
+
+  // `setAttribute` and not the `contentId` property: the property setter only
+  // writes this attribute, and the attribute behaves the same whether or not the
+  // element has been upgraded.
+  element.setAttribute('content-id', mount.contentId);
+
+  // Last: this assignment is the render.
+  element.loadContentCallback = () => {
+    // The argument can only ever be the id this mount was created for, and the
+    // caller has already fetched under it.
+    return Promise.resolve(mount.model);
+  };
+
+  return () => {
+    // Not decoration: clearing the load callback is what makes a render already
+    // in flight return early instead of calling back into a destroyed panel.
+    element.loadContentCallback = undefined;
     container.replaceChildren();
   };
 }

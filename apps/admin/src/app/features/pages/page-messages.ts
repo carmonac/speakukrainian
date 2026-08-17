@@ -134,6 +134,24 @@ export const EXERCISE_CONTENT_MISSING =
 export const TRACK_RESULTS_HINT =
   'Nothing is recorded yet — learner accounts do not exist. The setting is stored for when they do.';
 
+/**
+ * The preview could not fetch a player model. Distinguished from
+ * {@link EXERCISE_CONTENT_MISSING}, which is about the index row above it: this
+ * one is about the playable content, and closing and reopening the panel is the
+ * retry.
+ */
+export const EXERCISE_PREVIEW_FAILED = 'Could not load the exercise to preview.';
+
+/**
+ * The two halves of the panel come from different places, and the difference is
+ * invisible: the exercise is fetched from the server under the id the form
+ * holds, so it is whatever was last **saved into H5P** — by an upload or by the
+ * authoring widget, neither of which needs the page form saved — while the
+ * explanation is what is in the form right now.
+ */
+export const EXERCISE_PREVIEW_HINT =
+  'The exercise is the version last saved to H5P; the explanation is what is in this form now, saved or not.';
+
 export const PLAIN_TITLE_HINT =
   'Formatting is not kept — the title is used in menus, breadcrumbs and the browser tab.';
 

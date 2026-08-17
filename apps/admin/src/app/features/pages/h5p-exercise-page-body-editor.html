@@ -135,4 +135,54 @@
     </mat-checkbox>
     <p class="h5p-body__hint">{{ trackResultsHint }}</p>
   </fieldset>
+
+  <!-- No exercise, nothing to play: the player forwards a falsy `content-id`
+       rather than refusing it, so the guard is here. The id is the one in the
+       control, not the stored page's — an exercise the widget just handed back
+       is playable before the form is saved.
+
+       The one part of this form that ignores `disabled()`, deliberately: the
+       panel plays content the API already holds and writes nothing, so a
+       read-only form is still a form whose exercise can be checked. -->
+  @if (h5pContentId(); as contentId) {
+    <fieldset class="h5p-body__preview">
+      <legend>Preview</legend>
+
+      <div class="h5p-body__preview-header">
+        <button
+          matButton
+          type="button"
+          class="h5p-body__preview-toggle"
+          [attr.aria-expanded]="previewOpen()"
+          (click)="togglePreview()"
+        >
+          {{ previewToggleLabel() }}
+        </button>
+
+        @if (previewOpen()) {
+          <mat-form-field appearance="outline" class="h5p-body__preview-locale-field">
+            <mat-label>{{ previewLocaleLabel }}</mat-label>
+            <mat-select
+              class="h5p-body__preview-locale"
+              [value]="previewLocale()"
+              (selectionChange)="previewLocale.set($event.value)"
+            >
+              @for (locale of locales(); track locale) {
+                <mat-option [value]="locale">{{ locale.toUpperCase() }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        }
+      </div>
+
+      @if (previewOpen()) {
+        <p class="h5p-body__hint">{{ previewHint }}</p>
+        <app-h5p-exercise-preview
+          [contentId]="contentId"
+          [explanationHtml]="explanationHtml()"
+          [position]="explanationPosition()"
+        />
+      }
+    </fieldset>
+  }
 </div>

@@ -1,0 +1,25 @@
+<div class="h5p-preview">
+  @if (position() === 'above' && explanationHtml()) {
+    <!-- `[innerHTML]`, so Angular sanitizes it: unlike a stored explanation this
+         string has not been through `PagesService.sanitizeBody`, and the
+         sanitizer is what keeps `<audio controls src>` while dropping scripts. -->
+    <div class="h5p-preview__explanation" [innerHTML]="explanationHtml()"></div>
+  }
+
+  @if (status() === 'loading') {
+    <mat-progress-bar mode="indeterminate" class="h5p-preview__progress" />
+  }
+  @if (status() === 'failed') {
+    <p class="h5p-preview__failed">{{ previewFailed }}</p>
+  }
+
+  <!-- Always rendered, never inside a conditional: `mountH5pPlayer` appends into
+       it, a container that only existed while the model was ready would be gone
+       at the moment the effect needs it, and a position flip must not destroy a
+       mounted player. -->
+  <div #host class="h5p-preview__player"></div>
+
+  @if (position() === 'below' && explanationHtml()) {
+    <div class="h5p-preview__explanation" [innerHTML]="explanationHtml()"></div>
+  }
+</div>

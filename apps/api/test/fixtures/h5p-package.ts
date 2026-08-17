@@ -19,6 +19,19 @@ import { buildRawZip, type RawZipEntry } from '../../src/h5p/h5p.raw-zip.js';
  *
  * File extensions matter: content files must be on `contentWhitelist` (`txt`
  * is) and library files on `libraryWhitelist` (`js css svg`).
+ *
+ * **This package exercises validate, install and serve. It cannot be used to
+ * judge the player, and a manual round that uses it will draw the wrong
+ * conclusion.** `main.js` below is `window.SpeakTestMain = {};` — a file that
+ * satisfies the validator's "every declared file is present" check and nothing
+ * else. There is no content-type constructor for `H5P.init` to run, so a
+ * browser previewing this package renders an **empty** `.h5p-container` and H5P
+ * core throws one `TypeError: … (reading 'on')` inside the player's iframe.
+ * Both are expected, and neither says anything about the admin's preview: the
+ * same session against a real `.h5p` (h5p.org's MultiChoice export) renders,
+ * plays and throws nothing. Judge the player against a package from h5p.org.
+ * ADR-019 records what that round measured, and #64's loop is what it costs to
+ * skip this paragraph.
  */
 
 export const MAIN_LIBRARY = {
@@ -95,6 +108,9 @@ function packageEntries(options: PackageOptions = {}): RawZipEntry[] {
         preloadedDependencies: [DEP_LIBRARY],
       }),
     },
+    // Enough for the validator, and deliberately nothing more — the reason this
+    // package is not a player fixture. See the file's docblock before using it
+    // to judge anything a browser renders.
     { name: `${MAIN_LIBRARY_DIR}/main.js`, content: 'window.SpeakTestMain = {};\n' },
     {
       // Every runnable H5P library has one, and the editor's
