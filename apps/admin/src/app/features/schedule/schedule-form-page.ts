@@ -134,8 +134,13 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
 
   /**
    * A write is in flight — a save, a cancel, a reopen or a delete. It draws the
-   * progress bar and disables every button on the action row, so nothing on this
-   * screen can be dispatched twice or raced by another action.
+   * progress bar and disables all four write buttons, so nothing on this screen
+   * can be dispatched twice or raced by another action.
+   *
+   * "Back to the week" is not one of them: it is an `<a routerLink>` with no
+   * disabled state, and it stays live deliberately. Leaving writes nothing, the
+   * request in flight is not the component's to cancel, and a screen with every
+   * way out closed is worse than arriving at the week a moment early.
    */
   protected readonly saving = signal(false);
   /** The API's own sentence about an overlapping slot, bound to the time fields. */

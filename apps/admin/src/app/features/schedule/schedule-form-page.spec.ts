@@ -100,6 +100,12 @@ interface Options {
   deferRemove?: Subject<void>;
   /** What every confirmation answers, including the unsaved-changes guard's. */
   confirm?: boolean;
+  /**
+   * Closes every confirmation the way Escape and a backdrop click do — with
+   * `undefined`, which is not a `boolean` and is what the component has to read
+   * as a no.
+   */
+  dismissed?: boolean;
   viewZone?: string;
   supported?: string[];
 }
@@ -259,7 +265,12 @@ function setup(options: Options = {}): Recorded {
             if (config?.data !== undefined) {
               recorded.dialogData.push(config.data);
             }
-            return { afterClosed: () => of(options.confirm ?? true) };
+            return {
+              afterClosed: () =>
+                of<boolean | undefined>(
+                  options.dismissed === true ? undefined : (options.confirm ?? true),
+                ),
+            };
           },
         } as unknown as MatDialog,
       },
@@ -1051,6 +1062,54 @@ describe('ScheduleFormPage', () => {
     expect(recorded.updated).toEqual([]);
   });
 
+  it('does not delete a slot when the confirmation is declined', async () => {
+    const recorded = setup({ slots: [slot('one-off')], confirm: false });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__delete');
+
+    // The dialog is the only thing standing between a click and an irreversible
+    // delete: an answer that is opened and then discarded is a cosmetic
+    // confirmation, and it looks identical from every other test.
+    expect(recorded.dialogData).toEqual([DELETE_SLOT_DIALOG]);
+    expect(recorded.removed).toEqual([]);
+    expect(recorded.successes).toEqual([]);
+    expect(TestBed.inject(Router).url).toBe('/schedule/one-off');
+  });
+
+  it('treats a dismissed confirmation as a no rather than a yes', async () => {
+    // Escape and a backdrop click close a Material dialog with `undefined`, so a
+    // handler reading anything looser than `=== true` deletes the slot on the
+    // way out of a dialog the admin never answered.
+    const recorded = setup({ slots: [slot('one-off')], dismissed: true });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__delete');
+
+    expect(recorded.dialogs).toBe(1);
+    expect(recorded.removed).toEqual([]);
+    expect(TestBed.inject(Router).url).toBe('/schedule/one-off');
+  });
+
+  it('reports no deletion when the slot is already gone', async () => {
+    // The realistic single-delete failure: another admin removed it first, so
+    // the API answers 404. Staying put is the point — the interceptor has
+    // toasted, and navigating to the week would read as a successful delete.
+    const recorded = setup({
+      slots: [slot('one-off')],
+      removeFails: new HttpErrorResponse({ status: 404, statusText: 'Not Found' }),
+    });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__delete');
+
+    expect(recorded.removed).toEqual(['one-off']);
+    expect(recorded.successes).toEqual([]);
+    expect(TestBed.inject(Router).url).toBe('/schedule/one-off');
+    // The form is live again rather than stuck behind the in-flight flag.
+    expect(disabled(harness, '.slot-form__delete')).toBe(false);
+  });
+
   it('asks only about the delete when the form was edited, and uses the stored week', async () => {
     const recorded = setup({ slots: [slot('one-off')] });
     const harness = await open('/schedule/one-off');
@@ -1089,6 +1148,24 @@ describe('ScheduleFormPage', () => {
     expect(DELETE_SERIES_DIALOG.message).toContain('has not started yet');
     expect(DELETE_SERIES_DIALOG.message).toContain('weeks you are not looking at');
     expect(DELETE_SERIES_DIALOG.message).toContain('already started');
+  });
+
+  it('does not delete the series when the confirmation is declined', async () => {
+    const recorded = setup({
+      slots: [slot('occ-2', { recurrenceId: 'series-1' })],
+      confirm: false,
+    });
+    const harness = await open('/schedule/occ-2');
+
+    await click(harness, '.slot-form__delete-series');
+
+    // The widest-reaching action on the screen — it removes occurrences in weeks
+    // nobody is looking at — so a confirmation that does not gate it is the
+    // worst of the three to get wrong.
+    expect(recorded.dialogData).toEqual([DELETE_SERIES_DIALOG]);
+    expect(recorded.removedSeries).toEqual([]);
+    expect(recorded.successes).toEqual([]);
+    expect(TestBed.inject(Router).url).toBe('/schedule/occ-2');
   });
 
   it('removes the occurrences that have not started and leaves the earlier ones', async () => {
