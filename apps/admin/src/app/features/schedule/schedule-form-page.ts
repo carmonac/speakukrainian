@@ -89,6 +89,18 @@ interface SavedSlot {
 }
 
 /**
+ * What a completed write left behind, from the form's point of view — which is
+ * only ever about the slot **this form is holding**, never about the write's
+ * reach.
+ *
+ * `'gone'` is claimable exactly once, by the single delete. A cancel and a
+ * reopen keep the slot; and a series delete may or may not take the occurrence
+ * on screen with it, because its cutoff is the API's `new Date()` and an admin
+ * can start one from an occurrence that has already begun.
+ */
+type SlotAfterWrite = 'gone' | 'may-survive';
+
+/**
  * Authors one slot, on `/schedule/new` and on `/schedule/:id` alike — the
  * `SectionFormPage` shape. Every decision is a pure function in
  * `schedule-form.model.ts`; this component measures and dispatches.
@@ -491,10 +503,10 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
     if (stored === null || !(await this.confirmed(CANCEL_SLOT_DIALOG))) {
       return;
     }
-    await this.destructively(async () => {
+    await this.writeThenLeave(async () => {
       await firstValueFrom(this.api.update(stored.id, { status: 'cancelled' }));
       return SLOT_CANCELLED;
-    });
+    }, 'may-survive');
   }
 
   /**
@@ -508,10 +520,10 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
     if (stored === null) {
       return;
     }
-    await this.destructively(async () => {
+    await this.writeThenLeave(async () => {
       await firstValueFrom(this.api.update(stored.id, { status: 'open' }));
       return SLOT_REOPENED;
-    });
+    }, 'may-survive');
   }
 
   protected async deleteSlot(): Promise<void> {
@@ -519,24 +531,25 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
     if (stored === null || !(await this.confirmed(DELETE_SLOT_DIALOG))) {
       return;
     }
-    await this.destructively(async () => {
+    await this.writeThenLeave(async () => {
       await firstValueFrom(this.api.remove(stored.id));
       return SLOT_DELETED;
-    });
+    }, 'gone');
   }
 
   protected async deleteSeries(): Promise<void> {
-    // Read out before the `await`, or the narrowing does not survive it.
+    // Captured with the question, not re-read with the answer: this is the
+    // series the admin was shown, the way `stored` is the slot they were shown.
     const recurrenceId = this.formData().slot?.recurrenceId ?? null;
     if (recurrenceId === null || !(await this.confirmed(DELETE_SERIES_DIALOG))) {
       return;
     }
-    await this.destructively(async () => {
+    await this.writeThenLeave(async () => {
       const { deleted } = await firstValueFrom(this.api.removeSeries(recurrenceId));
       // The API's own count, which is not the number of occurrences on screen:
       // the cutoff is `new Date()` inside `ScheduleService.removeSeries`.
       return seriesDeletedMessage(deleted);
-    });
+    }, 'may-survive');
   }
 
   private async confirmed(data: ConfirmDialogData): Promise<boolean> {
@@ -553,20 +566,36 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
   /**
    * Runs a write that ends the admin's business with this slot: it reports what
    * happened and goes back to the week, which is where the result is visible and
-   * what makes the week re-read (`scheduleWeekResolver` runs on arrival).
+   * what makes the week re-read (`scheduleWeekResolver` runs on arrival). Named
+   * for that shape rather than for "destructive", since a reopen destroys
+   * nothing; `LocalesPage.run` is the same busy/toast/swallow pattern.
    *
-   * `markAsPristine()` happens **before** the navigation, or `unsavedChangesGuard`
-   * asks about discarding edits to a slot that has just been deleted.
+   * **`after` decides whether the admin is asked about unsaved edits on the way
+   * out, and the two answers are not symmetric.** `markAsPristine()` disarms
+   * `unsavedChangesGuard`, so calling it always is silent data loss on every
+   * path where the slot survives: a note typed into the rich text editor and not
+   * saved would go without a word, and no dialog on this row mentions the form's
+   * fields. So it is called only for `'gone'`, where the document the edits
+   * belong to no longer exists and the prompt would offer to keep changes to
+   * nothing. Everywhere else the guard asks, and the worst case is one extra
+   * dialog after a series delete that happened to take this occurrence too —
+   * a dialog, against losing an admin's typing in silence.
+   *
+   * Before the navigation and not after: with a clean form both orders behave
+   * the same, so only `asks only about the delete when the form was edited` says
+   * which one this is.
    *
    * A failure stays on the form rather than navigating: the interceptor has
    * already toasted, and a refused reopen (409) or a `recurrenceId` the DELETE
    * route refuses (400) both leave the admin somewhere they can act.
    */
-  private async destructively(work: () => Promise<string>): Promise<void> {
+  private async writeThenLeave(work: () => Promise<string>, after: SlotAfterWrite): Promise<void> {
     this.saving.set(true);
     try {
       const message = await work();
-      this.form.markAsPristine();
+      if (after === 'gone') {
+        this.form.markAsPristine();
+      }
       this.notifications.success(message);
       // No `savedId` state: there is nothing left to highlight after a delete,
       // and a cancelled slot is already drawn distinctly.

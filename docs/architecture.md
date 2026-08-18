@@ -971,7 +971,12 @@ The refusal covers **cancelling and deleting** too, for the same reason and with
 it: `ScheduleSlotsRepository.remove` reads the document and deletes it without ever looking at
 `status`, and `removeSeries` drops every future occurrence of a series whatever each one's status
 is. So the form hides Cancel, Delete and Delete-the-series on a booked slot, and that template guard
-is the whole of it — there is no second check anywhere behind it.
+is the whole of it — there is no second check anywhere behind it. Note what that does **not** buy:
+hiding the buttons protects a booked occurrence only while the admin is standing on it. Delete the
+whole series is addressed by `recurrenceId` and not by slot, so pressing it on any _open_ sibling
+takes the booked occurrence with it, and no screen is involved at all. That is the argument for
+putting the refusal in `ScheduleSlotsRepository` when booking arrives — it belongs with the tests
+that can prove it, which need a learner who can book.
 
 Deleting a series has a second admin-side obligation, and it is about wording rather than
 permission. `ScheduleService.removeSeries` decides "future" as `new Date()` and

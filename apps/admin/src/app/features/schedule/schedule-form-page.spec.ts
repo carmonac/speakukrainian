@@ -15,6 +15,7 @@ import type {
   UpdateScheduleSlotInput,
 } from '@speakukrainian/shared';
 import { LocalesStore } from '../../core/locales/locales.store';
+import { UNSAVED_CHANGES_DIALOG } from '../../core/router/unsaved-changes.guard';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { BROWSER_TIME_ZONE } from '../../core/time/browser-time-zone';
 import { SUPPORTED_TIME_ZONES } from '../../core/time/supported-time-zones';
@@ -987,6 +988,22 @@ describe('ScheduleFormPage', () => {
     expect(TestBed.inject(Router).url).toBe('/schedule/one-off');
   });
 
+  it('still asks about unsaved edits when the slot survives the write', async () => {
+    const recorded = setup({ slots: [slot('one-off')] });
+    const harness = await open('/schedule/one-off');
+    fill(harness, '.slot-form__start', '11:00');
+
+    await click(harness, '.slot-form__cancel-slot');
+
+    // Cancelling decides about the slot, not about the draft: the note and the
+    // times typed into the form are still edits to a slot that exists, so they
+    // are not thrown away without a word. The guard's dialog is the second
+    // entry, after the action's own.
+    expect(recorded.dialogData).toEqual([CANCEL_SLOT_DIALOG, UNSAVED_CHANGES_DIALOG]);
+    expect(recorded.updated).toEqual([{ id: 'one-off', input: { status: 'cancelled' } }]);
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+  });
+
   it('offers Cancel on an open slot and Reopen on a cancelled one, never both', async () => {
     setup({ slots: [slot('open-1'), slot('off-1', { status: 'cancelled' })] });
 
@@ -1166,6 +1183,29 @@ describe('ScheduleFormPage', () => {
     expect(recorded.removedSeries).toEqual([]);
     expect(recorded.successes).toEqual([]);
     expect(TestBed.inject(Router).url).toBe('/schedule/occ-2');
+  });
+
+  it('still asks about unsaved edits after a series delete, which may spare this occurrence', async () => {
+    const recorded = setup({
+      slots: [
+        slot('occ-past', {
+          recurrenceId: 'series-1',
+          startsAt: '2026-03-02T08:00:00Z',
+          endsAt: '2026-03-02T09:00:00Z',
+        }),
+      ],
+    });
+    const harness = await open('/schedule/occ-past');
+    fill(harness, '.slot-form__start', '11:00');
+
+    await click(harness, '.slot-form__delete-series');
+
+    // This occurrence started before "now", so the series delete leaves it —
+    // `Removed 0 occurrences.` is `NO_OCCURRENCES_REMOVED` here — and the edits
+    // on screen still belong to a slot that exists. Only the single delete can
+    // claim the document is gone.
+    expect(recorded.successes).toEqual([NO_OCCURRENCES_REMOVED]);
+    expect(recorded.dialogData).toEqual([DELETE_SERIES_DIALOG, UNSAVED_CHANGES_DIALOG]);
   });
 
   it('removes the occurrences that have not started and leaves the earlier ones', async () => {
