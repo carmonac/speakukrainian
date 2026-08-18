@@ -1030,6 +1030,21 @@ describe('ScheduleFormPage', () => {
     expect(recorded.successes).toEqual([SLOT_REOPENED]);
   });
 
+  it('still asks about unsaved edits when a reopened slot survives the write', async () => {
+    const recorded = setup({ slots: [slot('off-1', { status: 'cancelled' })] });
+    const harness = await open('/schedule/off-1');
+    fill(harness, '.slot-form__start', '11:00');
+
+    await click(harness, '.slot-form__reopen-slot');
+
+    // Reopen has no confirmation of its own, so the guard's dialog is the only
+    // one here — and it is the only thing between typing a note into a cancelled
+    // slot, pressing Reopen, and losing it without a word.
+    expect(recorded.dialogData).toEqual([UNSAVED_CHANGES_DIALOG]);
+    expect(recorded.updated).toEqual([{ id: 'off-1', input: { status: 'open' } }]);
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+  });
+
   it('offers neither Cancel nor Reopen on a completed slot, but still offers Delete', async () => {
     // A completed slot is a record that an hour happened, so cancelling it
     // retroactively says nothing true. Cleaning one up is still allowed.
