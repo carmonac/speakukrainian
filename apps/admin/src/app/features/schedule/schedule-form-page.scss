@@ -114,8 +114,23 @@
 
   &__actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 16px;
+  }
+
+  // Pushed to the opposite end of the row from Save: a destructive button beside
+  // the primary one is a misclick that cannot be undone.
+  &__danger {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-inline-end: auto;
+  }
+
+  &__delete,
+  &__delete-series {
+    color: var(--mat-sys-error, #b3261e);
   }
 }

@@ -5,10 +5,11 @@ import { MatDialog } from '@angular/material/dialog';
 import { provideNoopAnimations } from '@angular/platform-browser/animations';
 import { Router, provideRouter, withComponentInputBinding } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   CreateScheduleSlotInput,
+  ListScheduleSlotsQuery,
   LocaleCode,
   ScheduleSlot,
   UpdateScheduleSlotInput,
@@ -17,7 +18,18 @@ import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import { BROWSER_TIME_ZONE } from '../../core/time/browser-time-zone';
 import { SUPPORTED_TIME_ZONES } from '../../core/time/supported-time-zones';
-import { BOOKED_READ_ONLY, EDITING_ONE_OCCURRENCE } from './schedule-messages';
+import type { ConfirmDialogData } from '../../shared/dialogs/confirm-dialog';
+import {
+  BOOKED_READ_ONLY,
+  CANCEL_SLOT_DIALOG,
+  DELETE_SERIES_DIALOG,
+  DELETE_SLOT_DIALOG,
+  EDITING_ONE_OCCURRENCE,
+  NO_OCCURRENCES_REMOVED,
+  SLOT_CANCELLED,
+  SLOT_DELETED,
+  SLOT_REOPENED,
+} from './schedule-messages';
 import { ScheduleApi } from './schedule.api';
 import { routes } from './schedule.routes';
 
@@ -74,6 +86,20 @@ interface Options {
   created?: ScheduleSlot[];
   createFails?: unknown;
   updateFails?: unknown;
+  removeFails?: unknown;
+  removeSeriesFails?: unknown;
+  /**
+   * What `removeSeries` answers with, for the tests about the count rather than
+   * about which occurrences go. Left out, the fake applies its own cutoff.
+   */
+  removeSeriesResult?: number;
+  /**
+   * Holds `remove` open, so a test can look at the screen mid-delete. Completed
+   * by hand with `next()`; a bare `complete()` would reject `firstValueFrom`.
+   */
+  deferRemove?: Subject<void>;
+  /** What every confirmation answers, including the unsaved-changes guard's. */
+  confirm?: boolean;
   viewZone?: string;
   supported?: string[];
 }
@@ -81,17 +107,45 @@ interface Options {
 interface Recorded {
   created: CreateScheduleSlotInput[];
   updated: { id: string; input: UpdateScheduleSlotInput }[];
+  removed: string[];
+  removedSeries: string[];
   read: string[];
   successes: string[];
   dialogs: number;
+  /** What each confirmation was opened with, in order. */
+  dialogData: ConfirmDialogData[];
 }
 
 function setup(options: Options = {}): Recorded {
   const stored = new Map((options.slots ?? []).map((entry) => [entry.id, entry]));
-  const recorded: Recorded = { created: [], updated: [], read: [], successes: [], dialogs: 0 };
+  const recorded: Recorded = {
+    created: [],
+    updated: [],
+    removed: [],
+    removedSeries: [],
+    read: [],
+    successes: [],
+    dialogs: 0,
+    dialogData: [],
+  };
 
   const api = {
-    list: () => of<ScheduleSlot[]>([]),
+    /**
+     * Honours the range, the way `ScheduleSlotsRepository.list` does: the slots
+     * that *intersect* `[from, to)`. Not tidiness — `buildWeek` drops a slot
+     * with no matching column into `columns[0]` rather than dropping it, so an
+     * unfiltered fake paints an out-of-week slot in Monday's column and "the
+     * deleted chip is gone" would pass or fail for the wrong reason.
+     */
+    list: (query: ListScheduleSlotsQuery) => {
+      const from = Date.parse(query.from);
+      const to = Date.parse(query.to);
+      return of<ScheduleSlot[]>(
+        [...stored.values()].filter(
+          (entry) => Date.parse(entry.startsAt) < to && Date.parse(entry.endsAt) > from,
+        ),
+      );
+    },
     get: (id: string) => {
       recorded.read.push(id);
       const found = stored.get(id);
@@ -119,7 +173,45 @@ function setup(options: Options = {}): Recorded {
       if (options.updateFails !== undefined) {
         return throwError(() => options.updateFails);
       }
-      return of<ScheduleSlot>({ ...slot(id), ...stored.get(id), ...input });
+      // Written back, or a cancelled slot re-reads as open on the week the
+      // screen navigates to.
+      const next: ScheduleSlot = { ...slot(id), ...stored.get(id), ...input };
+      stored.set(id, next);
+      return of<ScheduleSlot>(next);
+    },
+    remove: (id: string) => {
+      recorded.removed.push(id);
+      if (options.removeFails !== undefined) {
+        return throwError(() => options.removeFails);
+      }
+      stored.delete(id);
+      // `of(undefined)` and never `EMPTY`: an observable that completes without
+      // emitting rejects `firstValueFrom` with an `EmptyError`, which would
+      // reach the component as a failed delete.
+      return options.deferRemove ?? of(undefined);
+    },
+    removeSeries: (recurrenceId: string) => {
+      recorded.removedSeries.push(recurrenceId);
+      if (options.removeSeriesFails !== undefined) {
+        return throwError(() => options.removeSeriesFails);
+      }
+      if (options.removeSeriesResult !== undefined) {
+        return of({ deleted: options.removeSeriesResult });
+      }
+      // The cutoff is the API's, not the caller's: `ScheduleService.removeSeries`
+      // passes `new Date()` and `ScheduleSlotsRepository.removeSeries` keeps
+      // everything before it. A fake that dropped the whole series would leave
+      // "the occurrences that have already started stay" untestable while
+      // looking green.
+      const now = Date.now();
+      let deleted = 0;
+      for (const entry of [...stored.values()]) {
+        if (entry.recurrenceId === recurrenceId && Date.parse(entry.startsAt) >= now) {
+          stored.delete(entry.id);
+          deleted += 1;
+        }
+      }
+      return of({ deleted });
     },
   } as unknown as ScheduleApi;
 
@@ -162,9 +254,12 @@ function setup(options: Options = {}): Recorded {
       {
         provide: MatDialog,
         useValue: {
-          open: () => {
+          open: (_component: unknown, config?: { data?: ConfirmDialogData }) => {
             recorded.dialogs += 1;
-            return { afterClosed: () => of(true) };
+            if (config?.data !== undefined) {
+              recorded.dialogData.push(config.data);
+            }
+            return { afterClosed: () => of(options.confirm ?? true) };
           },
         } as unknown as MatDialog,
       },
@@ -248,7 +343,21 @@ async function pickZone(harness: RouterTestingHarness, zone: string): Promise<vo
 }
 
 function saveDisabled(harness: RouterTestingHarness): boolean | undefined {
-  return root(harness).querySelector<HTMLButtonElement>('.slot-form__save')?.disabled;
+  return disabled(harness, '.slot-form__save');
+}
+
+function disabled(harness: RouterTestingHarness, selector: string): boolean | undefined {
+  return root(harness).querySelector<HTMLButtonElement>(selector)?.disabled;
+}
+
+/**
+ * Lets a promise chain that is already running finish. `whenStable` awaits the
+ * application, not the handler, so a delete resolved by hand still has its
+ * toast and its navigation queued behind this boundary. Only `Date` is faked
+ * here, so `setTimeout` is the real one.
+ */
+function settled(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve));
 }
 
 /** A create form whose first save came back as the API's real overlap 409. */
@@ -824,5 +933,300 @@ describe('ScheduleFormPage', () => {
         input: { startsAt: '2026-03-25T08:00:00.000Z', endsAt: '2026-03-25T09:00:00.000Z' },
       },
     ]);
+  });
+
+  it('cancels a slot rather than removing it, and lands on the week that holds it', async () => {
+    const recorded = setup({ slots: [slot('one-off')] });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__cancel-slot');
+
+    expect(recorded.dialogData).toEqual([CANCEL_SLOT_DIALOG]);
+    // Exactly the status: a patch carrying the times too would move a slot
+    // nobody edited.
+    expect(recorded.updated).toEqual([{ id: 'one-off', input: { status: 'cancelled' } }]);
+    expect(recorded.removed).toEqual([]);
+    expect(recorded.successes).toEqual([SLOT_CANCELLED]);
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+  });
+
+  it('leaves the cancelled slot on the week, drawn as cancelled and in its own column', async () => {
+    setup({ slots: [slot('one-off')] });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__cancel-slot');
+
+    const chip = root(harness).querySelector('[data-slot-id="one-off"]');
+    expect(chip?.getAttribute('data-status')).toBe('cancelled');
+    expect(chip?.classList.contains('slot--cancelled')).toBe(true);
+    // 08:00Z on 6 March is 10:00 in Kyiv, so Friday's column and not Monday's —
+    // which is where `buildWeek` puts anything it cannot place.
+    expect(chip?.closest('.schedule__day')?.getAttribute('data-date')).toBe('2026-03-06');
+  });
+
+  it('does not cancel a slot when the confirmation is declined', async () => {
+    const recorded = setup({ slots: [slot('one-off')], confirm: false });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__cancel-slot');
+
+    expect(recorded.dialogData).toEqual([CANCEL_SLOT_DIALOG]);
+    expect(recorded.updated).toEqual([]);
+    expect(recorded.successes).toEqual([]);
+    expect(TestBed.inject(Router).url).toBe('/schedule/one-off');
+  });
+
+  it('offers Cancel on an open slot and Reopen on a cancelled one, never both', async () => {
+    setup({ slots: [slot('open-1'), slot('off-1', { status: 'cancelled' })] });
+
+    const harness = await open('/schedule/open-1');
+    expect(root(harness).querySelector('.slot-form__cancel-slot')).not.toBeNull();
+    expect(root(harness).querySelector('.slot-form__reopen-slot')).toBeNull();
+
+    await harness.navigateByUrl('/schedule/off-1');
+    harness.detectChanges();
+    expect(root(harness).querySelector('.slot-form__cancel-slot')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__reopen-slot')).not.toBeNull();
+  });
+
+  it('reopens a cancelled slot without asking first', async () => {
+    const recorded = setup({ slots: [slot('off-1', { status: 'cancelled' })] });
+    const harness = await open('/schedule/off-1');
+
+    await click(harness, '.slot-form__reopen-slot');
+
+    // Reopening destroys nothing and cancelling again undoes it, so it is the
+    // one action on this row with no confirmation.
+    expect(recorded.dialogs).toBe(0);
+    expect(recorded.updated).toEqual([{ id: 'off-1', input: { status: 'open' } }]);
+    expect(recorded.successes).toEqual([SLOT_REOPENED]);
+  });
+
+  it('offers neither Cancel nor Reopen on a completed slot, but still offers Delete', async () => {
+    // A completed slot is a record that an hour happened, so cancelling it
+    // retroactively says nothing true. Cleaning one up is still allowed.
+    setup({ slots: [slot('done-1', { status: 'completed' })] });
+    const harness = await open('/schedule/done-1');
+
+    expect(root(harness).querySelector('.slot-form__cancel-slot')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__reopen-slot')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__delete')).not.toBeNull();
+  });
+
+  it('deletes a slot and comes back to a week that no longer draws it', async () => {
+    const recorded = setup({
+      slots: [
+        slot('one-off'),
+        slot('keeper', { startsAt: '2026-03-03T08:00:00Z', endsAt: '2026-03-03T09:00:00Z' }),
+        slot('next-week', { startsAt: '2026-03-10T08:00:00Z', endsAt: '2026-03-10T09:00:00Z' }),
+      ],
+    });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__delete');
+
+    expect(recorded.dialogData).toEqual([DELETE_SLOT_DIALOG]);
+    expect(recorded.removed).toEqual(['one-off']);
+    expect(recorded.successes).toEqual([SLOT_DELETED]);
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+    // The week was really re-read rather than merely failing to draw: its other
+    // slot is still there.
+    expect(root(harness).querySelector('[data-slot-id="one-off"]')).toBeNull();
+    expect(root(harness).querySelector('[data-slot-id="keeper"]')).not.toBeNull();
+    // And the week really is one week: a slot outside the requested range is not
+    // drawn. `buildWeek` would put it in Monday's column, which is how "the
+    // deleted chip is gone" passes for the wrong reason.
+    expect(root(harness).querySelector('[data-slot-id="next-week"]')).toBeNull();
+  });
+
+  it('deletes without submitting the form it sits inside', async () => {
+    const recorded = setup({ slots: [slot('one-off')] });
+    const harness = await open('/schedule/one-off');
+
+    await click(harness, '.slot-form__delete');
+
+    // A `<button>` with no `type` submits the form around it, which on this
+    // route is a save of the slot being deleted.
+    expect(recorded.created).toEqual([]);
+    expect(recorded.updated).toEqual([]);
+  });
+
+  it('asks only about the delete when the form was edited, and uses the stored week', async () => {
+    const recorded = setup({ slots: [slot('one-off')] });
+    const harness = await open('/schedule/one-off');
+    fill(harness, '.slot-form__date', '2026-03-19');
+
+    await click(harness, '.slot-form__delete');
+
+    // With `markAsPristine()` after the navigation instead of before it, the
+    // unsaved-changes guard prompts about a slot that is already gone — and its
+    // dialog would be the second entry here.
+    expect(recorded.dialogData).toEqual([DELETE_SLOT_DIALOG]);
+    // The week the slot was stored in, not the one the abandoned edit named.
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+  });
+
+  it('offers "Delete the whole series" only for a slot that belongs to one', async () => {
+    setup({ slots: [slot('one-off'), slot('occ-2', { recurrenceId: 'series-1' })] });
+
+    const harness = await open('/schedule/one-off');
+    expect(root(harness).querySelector('.slot-form__delete-series')).toBeNull();
+
+    await harness.navigateByUrl('/schedule/occ-2');
+    harness.detectChanges();
+    expect(root(harness).querySelector('.slot-form__delete-series')).not.toBeNull();
+  });
+
+  it('states both halves of the series cutoff before deleting one', async () => {
+    const recorded = setup({ slots: [slot('occ-2', { recurrenceId: 'series-1' })] });
+    const harness = await open('/schedule/occ-2');
+
+    await click(harness, '.slot-form__delete-series');
+
+    expect(recorded.dialogData).toEqual([DELETE_SERIES_DIALOG]);
+    // Both halves, on the constant itself: softened to "future occurrences" this
+    // reads as "only what is on screen", which is wrong in both directions.
+    expect(DELETE_SERIES_DIALOG.message).toContain('has not started yet');
+    expect(DELETE_SERIES_DIALOG.message).toContain('weeks you are not looking at');
+    expect(DELETE_SERIES_DIALOG.message).toContain('already started');
+  });
+
+  it('removes the occurrences that have not started and leaves the earlier ones', async () => {
+    // "Now" is Wednesday 4 March, so the week landed on holds one survivor and
+    // one casualty — which makes both halves of the cutoff the same assertion.
+    const recorded = setup({
+      slots: [
+        slot('occ-past', {
+          recurrenceId: 'series-1',
+          startsAt: '2026-03-02T08:00:00Z',
+          endsAt: '2026-03-02T09:00:00Z',
+        }),
+        slot('occ-next', {
+          recurrenceId: 'series-1',
+          startsAt: '2026-03-05T08:00:00Z',
+          endsAt: '2026-03-05T09:00:00Z',
+        }),
+        slot('occ-later', {
+          recurrenceId: 'series-1',
+          startsAt: '2026-03-12T08:00:00Z',
+          endsAt: '2026-03-12T09:00:00Z',
+        }),
+      ],
+    });
+    const harness = await open('/schedule/occ-next');
+
+    await click(harness, '.slot-form__delete-series');
+
+    expect(recorded.removedSeries).toEqual(['series-1']);
+    // The API's answer and not the number of occurrences on screen.
+    expect(recorded.successes).toEqual(['Removed 2 occurrences.']);
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+    expect(root(harness).querySelector('[data-slot-id="occ-past"]')).not.toBeNull();
+    expect(root(harness).querySelector('[data-slot-id="occ-next"]')).toBeNull();
+  });
+
+  it('says "occurrence" when exactly one was removed', async () => {
+    const recorded = setup({
+      slots: [slot('occ-2', { recurrenceId: 'series-1' })],
+      removeSeriesResult: 1,
+    });
+    const harness = await open('/schedule/occ-2');
+
+    await click(harness, '.slot-form__delete-series');
+
+    expect(recorded.successes).toEqual(['Removed 1 occurrence.']);
+  });
+
+  it('says nothing was left to remove rather than "Removed 0 occurrences."', async () => {
+    const recorded = setup({
+      slots: [slot('occ-2', { recurrenceId: 'series-1' })],
+      removeSeriesResult: 0,
+    });
+    const harness = await open('/schedule/occ-2');
+
+    await click(harness, '.slot-form__delete-series');
+
+    expect(recorded.successes).toEqual([NO_OCCURRENCES_REMOVED]);
+    // Still success: the API answers 200 for a series with nothing left in the
+    // future, so there is nothing to stay on this form for.
+    expect(TestBed.inject(Router).url).toBe('/schedule?from=2026-03-02');
+  });
+
+  it('reports no removal when the series delete is refused', async () => {
+    // #47 made a malformed `recurrenceId` a 400, and that is reachable from
+    // here: `scheduleSlotSchema.recurrenceId` is any non-empty string, while the
+    // DELETE route validates it with `documentIdSchema`.
+    const recorded = setup({
+      slots: [slot('occ-2', { recurrenceId: 'series 1' })],
+      removeSeriesFails: new HttpErrorResponse({
+        status: 400,
+        error: { message: 'recurrenceId: must contain only letters, numbers, hyphens' },
+      }),
+    });
+    const harness = await open('/schedule/occ-2');
+
+    await click(harness, '.slot-form__delete-series');
+
+    expect(recorded.removedSeries).toEqual(['series 1']);
+    expect(recorded.successes).toEqual([]);
+    // Left where the admin can act; the interceptor has already toasted.
+    expect(TestBed.inject(Router).url).toBe('/schedule/occ-2');
+  });
+
+  it('offers no destructive action at all on a booked slot', async () => {
+    setup({
+      slots: [slot('taken', { status: 'booked', bookedBy: 'learner', recurrenceId: 'series-1' })],
+    });
+    const harness = await open('/schedule/taken');
+
+    // Nothing in `ScheduleSlotsRepository.remove` refuses a booked slot, so this
+    // template guard is the whole of the refusal.
+    expect(root(harness).querySelector('.slot-form__cancel-slot')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__reopen-slot')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__delete')).toBeNull();
+    expect(root(harness).querySelector('.slot-form__delete-series')).toBeNull();
+    expect(find(harness, '.slot-form__booked')).toBe(BOOKED_READ_ONLY);
+  });
+
+  it('disables the whole row while a delete is in flight', async () => {
+    const deferRemove = new Subject<void>();
+    const recorded = setup({
+      slots: [slot('occ-2', { recurrenceId: 'series-1' })],
+      deferRemove,
+    });
+    const harness = await open('/schedule/occ-2');
+
+    await click(harness, '.slot-form__delete');
+
+    expect(root(harness).querySelector('mat-progress-bar')).not.toBeNull();
+    expect(disabled(harness, '.slot-form__cancel-slot')).toBe(true);
+    expect(disabled(harness, '.slot-form__delete')).toBe(true);
+    expect(disabled(harness, '.slot-form__delete-series')).toBe(true);
+    expect(saveDisabled(harness)).toBe(true);
+
+    // A disabled form control swallows `click()`, so this issues no second
+    // delete — which is what the flag is for.
+    await click(harness, '.slot-form__delete');
+    expect(recorded.removed).toEqual(['occ-2']);
+
+    deferRemove.next();
+    deferRemove.complete();
+    await settled();
+    harness.detectChanges();
+
+    expect(recorded.successes).toEqual([SLOT_DELETED]);
+  });
+
+  it('points "Back to the week" at the stored week even after the date is retyped', async () => {
+    setup({ slots: [slot('one-off')] });
+    const harness = await open('/schedule/one-off');
+
+    fill(harness, '.slot-form__date', '2026-03-19');
+
+    // Anchored on the live interval, this sent an admin who abandoned an edit to
+    // a week the slot was never in — and would send a delete there too.
+    expect(root(harness).querySelector('.slot-form__back')?.getAttribute('href')).toBe(
+      '/schedule?from=2026-03-02',
+    );
   });
 });

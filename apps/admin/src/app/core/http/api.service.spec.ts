@@ -41,6 +41,25 @@ describe('ApiService', () => {
     req.flush([]);
   });
 
+  it('carries query params on a delete', () => {
+    // Deleting a whole schedule series addresses a set rather than a document:
+    // `DELETE /schedule/slots?recurrenceId=`.
+    api.delete('/schedule/slots', { recurrenceId: 'abc' }).subscribe();
+
+    const req = httpMock.expectOne((r) => r.url === `${environment.apiBaseUrl}/schedule/slots`);
+    expect(req.request.method).toBe('DELETE');
+    expect(req.request.params.get('recurrenceId')).toBe('abc');
+    req.flush({ deleted: 2 });
+  });
+
+  it('sends a delete with no params to the bare path', () => {
+    // The regression test for the callers that pass none — `LocalesApi.remove`
+    // and `SectionsApi.remove`. `expectOne` matches on `urlWithParams`, so this
+    // is what fails if an empty `HttpParams` ever starts appending a `?`.
+    api.delete('/locales/en').subscribe();
+    httpMock.expectOne(`${environment.apiBaseUrl}/locales/en`).flush(null);
+  });
+
   it('posts a file as multipart form data', () => {
     const file = new File(['abc'], 'clip.mp3', { type: 'audio/mpeg' });
     api.upload('/media/audio', file, { sectionId: 'sec-1' }).subscribe();

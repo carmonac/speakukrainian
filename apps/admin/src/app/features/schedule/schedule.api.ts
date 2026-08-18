@@ -12,9 +12,6 @@ import { ApiService } from '../../core/http/api.service';
  * HTTP surface for `/api/schedule/slots`. Types only — a value import of the
  * shared barrel would pull Zod into the eager bundle, as `pages.api.ts`
  * explains.
- *
- * `remove` and `removeSeries` are deliberately absent: deleting and cancelling a
- * slot are #56, and an unused method is dead code.
  */
 @Injectable({ providedIn: 'root' })
 export class ScheduleApi {
@@ -50,5 +47,30 @@ export class ScheduleApi {
 
   update(id: string, input: UpdateScheduleSlotInput): Observable<ScheduleSlot> {
     return this.api.patch<ScheduleSlot>(`/schedule/slots/${id}`, input);
+  }
+
+  /** 204, and nothing to read back. */
+  remove(id: string): Observable<void> {
+    return this.api.delete<void>(`/schedule/slots/${id}`);
+  }
+
+  /**
+   * Removes the occurrences of a series that have not started yet.
+   *
+   * **The caller does not choose the cutoff and cannot see it.** It is
+   * `new Date()` inside `ScheduleService.removeSeries`, and
+   * `ScheduleSlotsRepository.removeSeries` keeps everything before it — so this
+   * reaches every future occurrence, including ones in weeks nobody is looking
+   * at, and leaves the ones that have already started.
+   *
+   * `{ deleted: 0 }` is a 200 and not a 404: `ScheduleController.removeSeries`
+   * answers "DELETE is idempotent, and 'nothing to remove' is success".
+   *
+   * The shape is written out rather than imported because
+   * `ScheduleController.removeSeries` declares it inline too — there is nothing
+   * in `packages/shared` to import.
+   */
+  removeSeries(recurrenceId: string): Observable<{ deleted: number }> {
+    return this.api.delete<{ deleted: number }>('/schedule/slots', { recurrenceId });
   }
 }
