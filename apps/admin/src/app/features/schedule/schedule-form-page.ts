@@ -16,6 +16,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { ErrorStateMatcher } from '@angular/material/core';
+import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -27,20 +28,28 @@ import { LocalesStore } from '../../core/locales/locales.store';
 import { NotificationService } from '../../core/notifications/notification.service';
 import type { HasUnsavedChanges } from '../../core/router/unsaved-changes.guard';
 import { SUPPORTED_TIME_ZONES } from '../../core/time/supported-time-zones';
+import { ConfirmDialog, type ConfirmDialogData } from '../../shared/dialogs/confirm-dialog';
 import { LocalizedRichTextEditor } from '../../shared/rich-text/localized-rich-text-editor';
 import { showOnceEdited } from '../../shared/forms/show-once-edited';
 import {
   ALSO_IN_BROWSER_ZONE_PREFIX,
   ALSO_IN_BROWSER_ZONE_SUFFIX,
   BOOKED_READ_ONLY,
+  CANCEL_SLOT_DIALOG,
   CROSSES_MIDNIGHT,
+  DELETE_SERIES_DIALOG,
+  DELETE_SLOT_DIALOG,
   EDITING_ONE_OCCURRENCE,
   OVERLAP_FALLBACK,
   REPEAT_DAYS_HINT,
   REPEAT_UNTIL_HINT,
+  SLOT_CANCELLED,
+  SLOT_DELETED,
+  SLOT_REOPENED,
   SLOT_SAVED,
   TIMES_ARE_IN,
   WEEKDAY_LABELS,
+  seriesDeletedMessage,
   slotsCreatedMessage,
 } from './schedule-messages';
 import {
@@ -80,6 +89,18 @@ interface SavedSlot {
 }
 
 /**
+ * What a completed write left behind, from the form's point of view — which is
+ * only ever about the slot **this form is holding**, never about the write's
+ * reach.
+ *
+ * `'gone'` is claimable exactly once, by the single delete. A cancel and a
+ * reopen keep the slot; and a series delete may or may not take the occurrence
+ * on screen with it, because its cutoff is the API's `new Date()` and an admin
+ * can start one from an occurrence that has already begun.
+ */
+type SlotAfterWrite = 'gone' | 'may-survive';
+
+/**
  * Authors one slot, on `/schedule/new` and on `/schedule/:id` alike — the
  * `SectionFormPage` shape. Every decision is a pure function in
  * `schedule-form.model.ts`; this component measures and dispatches.
@@ -113,6 +134,7 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
   private readonly api = inject(ScheduleApi);
   private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
+  private readonly dialog = inject(MatDialog);
   private readonly fb = inject(FormBuilder);
   private readonly destroyRef = inject(DestroyRef);
   private readonly supportedZones = inject(SUPPORTED_TIME_ZONES);
@@ -122,6 +144,16 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
 
   protected readonly locales = inject(LocalesStore).codes;
 
+  /**
+   * A write is in flight — a save, a cancel, a reopen or a delete. It draws the
+   * progress bar and disables all four write buttons, so nothing on this screen
+   * can be dispatched twice or raced by another action.
+   *
+   * "Back to the week" is not one of them: it is an `<a routerLink>` with no
+   * disabled state, and it stays live deliberately. Leaving writes nothing, the
+   * request in flight is not the component's to cancel, and a screen with every
+   * way out closed is worse than arriving at the week a moment early.
+   */
   protected readonly saving = signal(false);
   /** The API's own sentence about an overlapping slot, bound to the time fields. */
   protected readonly overlapMessage = signal<string | null>(null);
@@ -207,6 +239,15 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
   protected readonly isSeries = computed(() => this.formData().slot?.recurrenceId != null);
 
   /**
+   * Cancel and Reopen are one control in two states, keyed off the stored status
+   * rather than off the form. A `completed` slot gets neither: it is a record
+   * that an hour happened, so cancelling it retroactively says nothing true. It
+   * still gets Delete, which is the point of being able to clean one up.
+   */
+  protected readonly canCancel = computed(() => this.formData().slot?.status === 'open');
+  protected readonly canReopen = computed(() => this.formData().slot?.status === 'cancelled');
+
+  /**
    * A booked slot is read-only here, and this guard is the **only** thing that
    * makes it so. `patchableSlotStatusSchema` excludes `booked`, which stops this
    * screen creating one; nothing in `ScheduleSlotsRepository.update` refuses a
@@ -264,12 +305,16 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
   protected readonly noteTooLong = computed(() => localesOverNoteLength(this.noteValue()));
 
   /**
-   * Where "Back to the week" goes: the week holding the slot as the form
-   * currently describes it, falling back to the stored one while the fields are
-   * still incomplete.
+   * Where "Back to the week" goes, and where a cancel, a reopen or a delete
+   * lands: the week the slot is **stored** in, not the week the fields currently
+   * describe. An admin who typed a new date and then left — or deleted the slot
+   * — would otherwise be sent to a week that slot was never in, and after a
+   * delete there is nothing there to explain the empty column. On the create
+   * route there is nothing stored, so the composed interval is the only answer
+   * and it is the one used.
    */
   protected readonly weekParams = computed<Record<string, string>>(() => {
-    const anchor = this.interval()?.startsAt ?? this.formData().slot?.startsAt ?? null;
+    const anchor = this.formData().slot?.startsAt ?? this.interval()?.startsAt ?? null;
     return anchor === null ? {} : this.weekOf(anchor);
   });
 
@@ -446,6 +491,120 @@ export class ScheduleFormPage implements OnInit, HasUnsavedChanges {
   private async updateSlot(stored: ScheduleSlot, value: SlotFormValue): Promise<SavedSlot> {
     const slot = await firstValueFrom(this.api.update(stored.id, buildSlotPatch(value, stored)));
     return { slot, message: SLOT_SAVED };
+  }
+
+  /**
+   * Marks the slot cancelled rather than removing it, so the hour stays on the
+   * calendar as a record. It is the reversible action of the three, which is why
+   * `DELETE_SLOT_DIALOG` offers it as the alternative to deleting.
+   */
+  protected async cancelSlot(): Promise<void> {
+    const stored = this.formData().slot;
+    if (stored === null || !(await this.confirmed(CANCEL_SLOT_DIALOG))) {
+      return;
+    }
+    await this.writeThenLeave(async () => {
+      await firstValueFrom(this.api.update(stored.id, { status: 'cancelled' }));
+      return SLOT_CANCELLED;
+    }, 'may-survive');
+  }
+
+  /**
+   * The one action here with no confirmation: it destroys nothing, and
+   * cancelling again undoes it. It can still be refused — a reopened slot is
+   * weighed against the window again — and the interceptor's toast quotes the
+   * API's own sentence, which names the slot it collided with.
+   */
+  protected async reopenSlot(): Promise<void> {
+    const stored = this.formData().slot;
+    if (stored === null) {
+      return;
+    }
+    await this.writeThenLeave(async () => {
+      await firstValueFrom(this.api.update(stored.id, { status: 'open' }));
+      return SLOT_REOPENED;
+    }, 'may-survive');
+  }
+
+  protected async deleteSlot(): Promise<void> {
+    const stored = this.formData().slot;
+    if (stored === null || !(await this.confirmed(DELETE_SLOT_DIALOG))) {
+      return;
+    }
+    await this.writeThenLeave(async () => {
+      await firstValueFrom(this.api.remove(stored.id));
+      return SLOT_DELETED;
+    }, 'gone');
+  }
+
+  protected async deleteSeries(): Promise<void> {
+    // Captured with the question, not re-read with the answer: this is the
+    // series the admin was shown, the way `stored` is the slot they were shown.
+    const recurrenceId = this.formData().slot?.recurrenceId ?? null;
+    if (recurrenceId === null || !(await this.confirmed(DELETE_SERIES_DIALOG))) {
+      return;
+    }
+    await this.writeThenLeave(async () => {
+      const { deleted } = await firstValueFrom(this.api.removeSeries(recurrenceId));
+      // The API's own count, which is not the number of occurrences on screen:
+      // the cutoff is `new Date()` inside `ScheduleService.removeSeries`.
+      return seriesDeletedMessage(deleted);
+    }, 'may-survive');
+  }
+
+  private async confirmed(data: ConfirmDialogData): Promise<boolean> {
+    const answer = await firstValueFrom(
+      this.dialog
+        .open<ConfirmDialog, ConfirmDialogData, boolean>(ConfirmDialog, { data })
+        .afterClosed(),
+    );
+    // Material emits `undefined` for Escape and for a backdrop click, and
+    // neither of those is a yes.
+    return answer === true;
+  }
+
+  /**
+   * Runs a write that ends the admin's business with this slot: it reports what
+   * happened and goes back to the week, which is where the result is visible and
+   * what makes the week re-read (`scheduleWeekResolver` runs on arrival). Named
+   * for that shape rather than for "destructive", since a reopen destroys
+   * nothing; `LocalesPage.run` is the same busy/toast/swallow pattern.
+   *
+   * **`after` decides whether the admin is asked about unsaved edits on the way
+   * out, and the two answers are not symmetric.** `markAsPristine()` disarms
+   * `unsavedChangesGuard`, so calling it always is silent data loss on every
+   * path where the slot survives: a note typed into the rich text editor and not
+   * saved would go without a word, and no dialog on this row mentions the form's
+   * fields. So it is called only for `'gone'`, where the document the edits
+   * belong to no longer exists and the prompt would offer to keep changes to
+   * nothing. Everywhere else the guard asks, and the worst case is one extra
+   * dialog after a series delete that happened to take this occurrence too —
+   * a dialog, against losing an admin's typing in silence.
+   *
+   * Before the navigation and not after: with a clean form both orders behave
+   * the same, so only `asks only about the delete when the form was edited` says
+   * which one this is.
+   *
+   * A failure stays on the form rather than navigating: the interceptor has
+   * already toasted, and a refused reopen (409) or a `recurrenceId` the DELETE
+   * route refuses (400) both leave the admin somewhere they can act.
+   */
+  private async writeThenLeave(work: () => Promise<string>, after: SlotAfterWrite): Promise<void> {
+    this.saving.set(true);
+    try {
+      const message = await work();
+      if (after === 'gone') {
+        this.form.markAsPristine();
+      }
+      this.notifications.success(message);
+      // No `savedId` state: there is nothing left to highlight after a delete,
+      // and a cancelled slot is already drawn distinctly.
+      await this.router.navigate(['/schedule'], { queryParams: this.weekParams() });
+    } catch {
+      // Reported by the HTTP error interceptor.
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   /** The `?from=` of the week an instant falls in, on the clock the grid uses. */

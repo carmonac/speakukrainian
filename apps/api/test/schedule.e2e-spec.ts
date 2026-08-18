@@ -8,6 +8,7 @@ import {
   MAX_LOCALES,
   MAX_SCHEDULE_RANGE_DAYS,
   MAX_SLOT_NOTE_LENGTH,
+  deleteSeriesResultSchema,
   scheduleSlotSchema,
   type ScheduleSlot,
 } from '@speakukrainian/shared';
@@ -790,7 +791,10 @@ describe('schedule slots (e2e)', () => {
     expect(future.length).toBeGreaterThan(0);
 
     const response = await removeSeries(recurrenceId).expect(200);
-    expect(response.body).toEqual({ deleted: future.length });
+    // Read through the shared schema rather than as an inline shape: the admin
+    // types this body as `DeleteSeriesResult` and counts occurrences out of it,
+    // so the field it names has to be the field this route really writes.
+    expect(deleteSeriesResultSchema.parse(response.body)).toEqual({ deleted: future.length });
 
     for (const slot of past) {
       await read(slot.id).expect(200);
@@ -803,7 +807,7 @@ describe('schedule slots (e2e)', () => {
   it('answers a series delete for an unknown series with 200 and nothing removed', async () => {
     const response = await removeSeries(UNKNOWN_ID).expect(200);
 
-    expect(response.body).toEqual({ deleted: 0 });
+    expect(deleteSeriesResultSchema.parse(response.body)).toEqual({ deleted: 0 });
   });
 
   it('refuses a reserved Firestore id on a series delete and on a slot read', async () => {

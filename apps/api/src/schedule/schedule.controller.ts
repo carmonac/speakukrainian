@@ -18,6 +18,7 @@ import {
   listScheduleSlotsQuerySchema,
   updateScheduleSlotSchema,
   type CreateScheduleSlotInput,
+  type DeleteSeriesResult,
   type ListScheduleSlotsQuery,
   type ScheduleSlot,
   type UpdateScheduleSlotInput,
@@ -107,7 +108,7 @@ export class ScheduleController {
   @HttpCode(HttpStatus.OK)
   removeSeries(
     @Query('recurrenceId', new ZodValidationPipe(documentIdSchema)) recurrenceId: string,
-  ): Promise<{ deleted: number }> {
+  ): Promise<DeleteSeriesResult> {
     return this.schedule.removeSeries(recurrenceId);
   }
 

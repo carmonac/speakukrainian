@@ -1,4 +1,5 @@
 import type { SlotStatus } from '@speakukrainian/shared';
+import type { ConfirmDialogData } from '../../shared/dialogs/confirm-dialog';
 
 // The schedule's copy in one file (the `page-messages.ts` precedent), so a spec
 // asserts a constant rather than a string copied into a template.
@@ -69,12 +70,14 @@ export const EDITING_ONE_OCCURRENCE =
 /**
  * `patchableSlotStatusSchema` excludes `booked`, so this screen cannot *create* a
  * booked slot — but nothing in `ScheduleSlotsRepository.update` refuses a patch
- * to one, so this refusal is the admin's alone. It says where the capability is
- * going, because Phase 2 owning `bookedBy`/`bookedAt` is exactly the reasoning
- * that would justify removing it.
+ * to one, and `ScheduleSlotsRepository.remove` never reads `status` at all: it
+ * reads the document, answers `not-found` if it is absent, and otherwise
+ * deletes. So the refusal is the admin's alone on all three actions, not only on
+ * editing. It says where the capability is going, because Phase 2 owning
+ * `bookedBy`/`bookedAt` is exactly the reasoning that would justify removing it.
  */
 export const BOOKED_READ_ONLY =
-  'This slot is booked, so it cannot be changed here. Booking arrives in Phase 2, which will own cancelling and rescheduling a booked slot.';
+  'This slot is booked, so it cannot be changed, cancelled or deleted here. Booking arrives in Phase 2, which will own cancelling and rescheduling a booked slot.';
 
 /** Used only if a 409 arrives with no sentence of its own to quote. */
 export const OVERLAP_FALLBACK = 'That time overlaps a slot that already exists.';
@@ -107,4 +110,64 @@ export const SLOT_SAVED = 'Slot saved.';
 /** A series answers with every occurrence it wrote, so the toast can say how many. */
 export function slotsCreatedMessage(count: number): string {
   return count === 1 ? SLOT_CREATED : `Created ${count} slots.`;
+}
+
+export const SLOT_CANCELLED = 'Slot cancelled.';
+export const SLOT_REOPENED = 'Slot reopened.';
+export const SLOT_DELETED = 'Slot deleted.';
+
+/**
+ * Deliberately silent about *why* nothing went. `{ deleted: 0 }` means either
+ * that every occurrence of the series has already started or that the series is
+ * already gone, and the answer cannot tell them apart:
+ * `ScheduleSlotsRepository.removeSeries` returns the size of a query filtered on
+ * `recurrenceId` **and** `startsAt`, so both produce an empty snapshot. This
+ * sentence is true under both, which is what any more specific wording would
+ * stop being.
+ */
+export const NO_OCCURRENCES_REMOVED = 'No future occurrences left to remove.';
+
+/**
+ * "If the time is still free" is a real condition and not a hedge: reopening
+ * patches `status` back to `open`, and `ScheduleSlotsRepository.update` skips
+ * the overlap read only while `merged.status === 'cancelled'` — so a reopen is
+ * weighed against the window and can come back a 409.
+ */
+export const CANCEL_SLOT_DIALOG: ConfirmDialogData = {
+  title: 'Cancel this slot?',
+  message:
+    'The slot stays on the calendar marked cancelled, so the hour is still accounted for. It can be reopened later if the time is still free.',
+  confirmLabel: 'Cancel the slot',
+};
+
+export const DELETE_SLOT_DIALOG: ConfirmDialogData = {
+  title: 'Delete this slot?',
+  message:
+    'The slot is removed for good. To keep the hour on the calendar as a record, cancel it instead.',
+  confirmLabel: 'Delete',
+};
+
+/**
+ * Both halves of this sentence are load-bearing, and the cutoff is why.
+ * `ScheduleService.removeSeries` passes `new Date().toISOString()` and
+ * `ScheduleSlotsRepository.removeSeries` queries `startsAt >= from`, so "future"
+ * means *now* and never the week on screen. That reaches occurrences months out
+ * that the admin cannot see, and it spares the ones on screen that have already
+ * started. Softening this to "future occurrences" is the failure mode: to an
+ * admin looking at a week, "future" reads as "the rest of this week", which is
+ * wrong in both directions at once.
+ */
+export const DELETE_SERIES_DIALOG: ConfirmDialogData = {
+  title: 'Delete the whole series?',
+  message:
+    'Every occurrence that has not started yet is removed, including ones in weeks you are not looking at. Occurrences that have already started stay.',
+  confirmLabel: 'Delete the series',
+};
+
+/** The count comes from the API's answer, never from what was asked for. */
+export function seriesDeletedMessage(count: number): string {
+  if (count === 0) {
+    return NO_OCCURRENCES_REMOVED;
+  }
+  return count === 1 ? 'Removed 1 occurrence.' : `Removed ${count} occurrences.`;
 }

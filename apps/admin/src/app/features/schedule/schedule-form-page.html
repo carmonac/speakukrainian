@@ -146,9 +146,58 @@
         }
 
         <div class="slot-form__actions">
+          <!-- The whole booked refusal for cancelling and deleting, and the only
+               thing that makes either read-only: `ScheduleSlotsRepository.remove`
+               never reads `status`, and `.removeSeries` deletes every future
+               occurrence whatever its status. Phase 2 owning `bookedBy` is what
+               would justify removing this guard; nothing else does. -->
+          @if (isEdit() && !isBooked()) {
+            <div class="slot-form__danger">
+              <!-- `type="button"` on all four: they sit inside a form whose
+                   default button type submits, so without it Delete saves the
+                   slot on its way out. -->
+              @if (canCancel()) {
+                <button
+                  matButton
+                  type="button"
+                  class="slot-form__cancel-slot"
+                  [disabled]="saving()"
+                  (click)="cancelSlot()"
+                >
+                  Cancel slot
+                </button>
+              }
+              @if (canReopen()) {
+                <button
+                  matButton
+                  type="button"
+                  class="slot-form__reopen-slot"
+                  [disabled]="saving()"
+                  (click)="reopenSlot()"
+                >
+                  Reopen slot
+                </button>
+              }
+              <button matButton type="button" class="slot-form__delete" [disabled]="saving()" (click)="deleteSlot()">
+                Delete
+              </button>
+              @if (isSeries()) {
+                <button
+                  matButton
+                  type="button"
+                  class="slot-form__delete-series"
+                  [disabled]="saving()"
+                  (click)="deleteSeries()"
+                >
+                  Delete the whole series
+                </button>
+              }
+            </div>
+          }
+
           <!-- "Back to the week", never "Cancel": cancelling a slot is a
-               different action, and #56 puts its button on this row. It stays on
-               a booked slot, which has no Save: read-only is not a dead end, and
+               different action and has its own button above. It stays on a
+               booked slot, which has no Save: read-only is not a dead end, and
                browser Back is not a link. -->
           <a matButton class="slot-form__back" routerLink="/schedule" [queryParams]="weekParams()">
             <mat-icon>arrow_back</mat-icon>

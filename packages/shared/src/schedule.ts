@@ -269,3 +269,20 @@ export const listScheduleSlotsQuerySchema = z
     },
   );
 export type ListScheduleSlotsQuery = z.infer<typeof listScheduleSlotsQuerySchema>;
+
+/**
+ * What `DELETE /schedule/slots?recurrenceId=` answers with.
+ *
+ * Declared here rather than inline on the controller so the count the admin
+ * reads is the count the API writes: the toast says "Removed 2 occurrences.",
+ * and a field renamed on one side with the other free to keep compiling would
+ * say "Removed undefined occurrences." instead (rule 1).
+ *
+ * `deleted` is a count and never a list of ids: a series delete is bounded by
+ * `MAX_SERIES_DELETE_SLOTS` and the caller has nothing to do with the documents
+ * that are gone.
+ */
+export const deleteSeriesResultSchema = z.object({
+  deleted: z.number().int().nonnegative(),
+});
+export type DeleteSeriesResult = z.infer<typeof deleteSeriesResultSchema>;

@@ -967,6 +967,24 @@ exclusion stops a slot _becoming_ booked and nothing more — `ScheduleSlotsRepo
 happily patch one that already is — so the admin's slot form refuses to edit a booked slot at all,
 and that refusal is the **admin's** and not the API's. It is the right side to put it on while
 booking does not exist: Phase 2 owns rescheduling a booked hour, and it needs to tell the learner.
+The refusal covers **cancelling and deleting** too, for the same reason and with less cover behind
+it: `ScheduleSlotsRepository.remove` reads the document and deletes it without ever looking at
+`status`, and `removeSeries` drops every future occurrence of a series whatever each one's status
+is. So the form hides Cancel, Delete and Delete-the-series on a booked slot, and that template guard
+is the whole of it — there is no second check anywhere behind it. Note what that does **not** buy:
+hiding the buttons protects a booked occurrence only while the admin is standing on it. Delete the
+whole series is addressed by `recurrenceId` and not by slot, so pressing it on any _open_ sibling
+takes the booked occurrence with it, and no screen is involved at all. That is the argument for
+putting the refusal in `ScheduleSlotsRepository` when booking arrives — it belongs with the tests
+that can prove it, which need a learner who can book.
+
+Deleting a series has a second admin-side obligation, and it is about wording rather than
+permission. `ScheduleService.removeSeries` decides "future" as `new Date()` and
+`ScheduleSlotsRepository.removeSeries` filters `startsAt >= from`, so the cutoff is **now** and
+never the week on screen. That cuts both ways at once: occurrences the admin can see but that have
+already started survive, and occurrences months out that they cannot see are removed. The admin's
+confirmation therefore states both halves. A confirmation promising only the first reads as "this
+touches what is in front of me", which is the opposite of true and is the version that misleads.
 
 **A slot's `note` is localized plain text** — `LocalizedText`, not `RichText`. It is shown to a
 learner, so rule 2 makes it localized; what it is not is rich, and **two reasons decide that**: this

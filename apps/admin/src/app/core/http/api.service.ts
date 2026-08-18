@@ -40,8 +40,18 @@ export class ApiService {
     return this.http.put<T>(this.url(path), body);
   }
 
-  delete<T>(path: string): Observable<T> {
-    return this.http.delete<T>(this.url(path));
+  /**
+   * `params` is how a delete addresses a set rather than a document — deleting a
+   * whole schedule series is `DELETE /schedule/slots?recurrenceId=`.
+   *
+   * Passing them is free for the callers that do not: `HttpRequest`'s
+   * constructor assigns `urlWithParams = url` unchanged when `params.toString()`
+   * is empty, so a path-only delete stays byte-identical to what it sent before
+   * this parameter existed. `api.service.spec.ts` pins that with an exact-URL
+   * assertion.
+   */
+  delete<T>(path: string, params?: QueryParams): Observable<T> {
+    return this.http.delete<T>(this.url(path), { params: toHttpParams(params) });
   }
 
   /** Multipart upload used for images, audio and `.h5p` packages. */
