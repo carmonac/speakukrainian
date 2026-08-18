@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import type { Observable } from 'rxjs';
 import type {
   CreateScheduleSlotInput,
+  DeleteSeriesResult,
   ListScheduleSlotsQuery,
   ScheduleSlot,
   UpdateScheduleSlotInput,
@@ -65,12 +66,8 @@ export class ScheduleApi {
    *
    * `{ deleted: 0 }` is a 200 and not a 404: `ScheduleController.removeSeries`
    * answers "DELETE is idempotent, and 'nothing to remove' is success".
-   *
-   * The shape is written out rather than imported because
-   * `ScheduleController.removeSeries` declares it inline too — there is nothing
-   * in `packages/shared` to import.
    */
-  removeSeries(recurrenceId: string): Observable<{ deleted: number }> {
-    return this.api.delete<{ deleted: number }>('/schedule/slots', { recurrenceId });
+  removeSeries(recurrenceId: string): Observable<DeleteSeriesResult> {
+    return this.api.delete<DeleteSeriesResult>('/schedule/slots', { recurrenceId });
   }
 }

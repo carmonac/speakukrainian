@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type {
   CreateScheduleSlotInput,
+  DeleteSeriesResult,
   ListScheduleSlotsQuery,
   ScheduleSlot,
   UpdateScheduleSlotInput,
@@ -97,7 +98,7 @@ export class ScheduleService {
   }
 
   /** "Future" is decided here, in one place, so no caller can choose its own cutoff. */
-  async removeSeries(recurrenceId: string): Promise<{ deleted: number }> {
+  async removeSeries(recurrenceId: string): Promise<DeleteSeriesResult> {
     const result = await this.repository.removeSeries(recurrenceId, new Date().toISOString());
     if (!result.ok) {
       this.fail(result);
